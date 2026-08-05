@@ -402,6 +402,8 @@ pub fn run() {
                     serde_json::from_str(event.payload()).unwrap_or_default();
                 let label = v.get("label").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 if let Some(overlay) = h2.get_webview_window("grid-overlay") {
+                    // ensure the preview layer never intercepts mouse input
+                    let _ = overlay.set_ignore_cursor_events(true);
                     let _ = overlay.show();
                 }
                 let state = h2.state::<AppState>();

@@ -5,6 +5,8 @@
   "windows": ["desktop", "chat", "stats", "music", "pet", "grid-overlay", "logos"],
   "permissions": [
     "core:default",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
     "opener:default",
     "dialog:default"
   ]
