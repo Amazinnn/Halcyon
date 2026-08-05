@@ -31,6 +31,13 @@ docs/                  审计、可行性、调查、ADR、风险与下一阶段
 docs/architecture/evidence/visual-v1/   v1.2 视觉截图
 ```
 
+## 一键启动
+
+双击根目录 `launch-focus.cmd`（或运行 `launch-focus.cmd`）：
+- 已有 release 可执行文件 → 直接秒开；
+- 首次或没有 → 自动执行 release 构建（`--no-bundle`，约 1–2 分钟）后启动；
+- 强制重新构建：`launch-focus.cmd rebuild`。
+
 ## 开发
 
 ```powershell
