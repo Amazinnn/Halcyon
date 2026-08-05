@@ -27,29 +27,13 @@ function level(minutes: number): number {
 <style scoped>
 .heatmap {
   display: grid;
-  grid-template-columns: repeat(15, 14px);
-  gap: 4px;
-  padding: 8px 0;
+  grid-template-columns: repeat(15, 1fr);
+  gap: 3px;
+  padding: 4px 0;
 }
-.cell {
-  width: 14px;
-  height: 14px;
-  border-radius: 3px;
-  background: #eef1f7;
-}
-.cell.lvl-0 {
-  background: #eef1f7;
-}
-.cell.lvl-1 {
-  background: #c6d6ff;
-}
-.cell.lvl-2 {
-  background: #8fb0ff;
-}
-.cell.lvl-3 {
-  background: #4f7cff;
-}
-.cell.lvl-4 {
-  background: #2b52c9;
-}
+.cell { aspect-ratio: 1; border-radius: 2px; background: rgba(163, 230, 53, 0.08); }
+.cell.lvl-1 { background: rgba(163, 230, 53, 0.28); }
+.cell.lvl-2 { background: rgba(163, 230, 53, 0.5); }
+.cell.lvl-3 { background: rgba(163, 230, 53, 0.72); }
+.cell.lvl-4 { background: #a3e635; }
 </style>

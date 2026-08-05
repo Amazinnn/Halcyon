@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
 import { useMusicStore } from "../../stores/music";
+import WindowHeader from "../../components/WindowHeader.vue";
+import AppIcon from "../../components/AppIcon.vue";
 
 const music = useMusicStore();
 
@@ -21,23 +23,20 @@ onMounted(() => {
 
 <template>
   <div class="music-window">
-    <div class="cover" data-tauri-drag-region>{{ music.track.cover }}</div>
-    <div class="meta">
-      <div class="title">{{ music.track.title }} · {{ music.track.artist }}</div>
-      <div class="progress">
-        <input
-          type="range"
-          min="0"
-          max="100"
-          :value="Math.round(music.progressRatio * 100)"
-          @input="onSeek"
-        />
-        <span class="times">{{ fmt(music.positionMs) }} / {{ fmt(music.track.durationMs) }}</span>
-      </div>
-      <div class="controls">
-        <button @click.stop="music.prev()">⏮</button>
-        <button @click.stop="music.toggle()">{{ music.playing ? "⏸" : "▶" }}</button>
-        <button @click.stop="music.next()">⏭</button>
+    <WindowHeader title="音乐" collapsible />
+    <div class="body">
+      <div class="cover" :class="`g-${music.track.cover}`"></div>
+      <div class="meta">
+        <div class="title">{{ music.track.title }} · {{ music.track.artist }}</div>
+        <div class="progress">
+          <input type="range" min="0" max="100" :value="Math.round(music.progressRatio * 100)" @input="onSeek" />
+          <span class="times num">{{ fmt(music.positionMs) }} / {{ fmt(music.track.durationMs) }}</span>
+        </div>
+        <div class="controls">
+          <button @click.stop="music.prev()"><AppIcon name="prev" /></button>
+          <button @click.stop="music.toggle()"><AppIcon :name="music.playing ? 'pause' : 'play'" /></button>
+          <button @click.stop="music.next()"><AppIcon name="next" /></button>
+        </div>
       </div>
     </div>
   </div>
@@ -45,68 +44,29 @@ onMounted(() => {
 
 <style scoped>
 .music-window {
-  height: 100vh;
+  height: 100%;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  background: rgba(24, 28, 46, 0.92);
-  border-radius: 12px;
-  color: #eef;
-  box-sizing: border-box;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
-}
-.cover {
-  width: 56px;
-  height: 56px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #4f7cff, #9b59b6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 26px;
-  flex-shrink: 0;
-}
-.meta {
-  flex: 1;
-  min-width: 0;
-}
-.title {
-  font-size: 12px;
-  white-space: nowrap;
+  flex-direction: column;
+  background: rgba(8, 13, 10, 0.4);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-lg);
   overflow: hidden;
-  text-overflow: ellipsis;
+  box-sizing: border-box;
 }
-.progress {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 2px;
-}
-.progress input {
-  flex: 1;
-  accent-color: #4f7cff;
-}
-.times {
-  font-size: 11px;
-  color: #aab4d0;
-  font-variant-numeric: tabular-nums;
-}
-.controls {
-  display: flex;
-  gap: 8px;
-  margin-top: 2px;
-}
+.body { display: flex; align-items: center; gap: 10px; padding: 10px 12px; flex: 1; }
+.cover { width: 52px; height: 52px; border-radius: var(--r-md); flex-shrink: 0; }
+.cover.g-1 { background: linear-gradient(135deg, #365314, #a3e635); }
+.cover.g-2 { background: linear-gradient(135deg, #14532d, #4ade80); }
+.cover.g-3 { background: linear-gradient(135deg, #1a2e05, #bef264); }
+.meta { flex: 1; min-width: 0; }
+.title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.progress { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.progress input { flex: 1; accent-color: var(--accent); }
+.times { font-size: 11px; color: var(--text-mid); }
+.controls { display: flex; gap: 8px; margin-top: 4px; }
 .controls button {
-  border: none;
-  background: rgba(255, 255, 255, 0.12);
-  color: #eef;
-  border-radius: 8px;
-  padding: 2px 10px;
-  cursor: pointer;
-  font-size: 13px;
+  border: none; background: rgba(255, 255, 255, 0.08); color: var(--text-hi);
+  border-radius: var(--r-sm); padding: 3px 10px; cursor: pointer; display: inline-flex;
 }
-.controls button:hover {
-  background: rgba(255, 255, 255, 0.22);
-}
+.controls button:hover { background: var(--accent-wash); color: var(--accent-bright); }
 </style>

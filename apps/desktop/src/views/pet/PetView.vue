@@ -1,39 +1,41 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { emit } from "@tauri-apps/api/event";
 import { useAgentStore } from "../../stores/agent";
 import { useUiStore } from "../../stores/ui";
-import { BUILTIN_PET_MANIFEST, validatePetManifest } from "../../lib/petPack";
+import { useGridDrag } from "../../composables/useGridDrag";
 
 const agent = useAgentStore();
 const ui = useUiStore();
+const { onPointerDown, onPointerMove, onPointerUp } = useGridDrag("pet");
 
-// Validate the built-in manifest at startup (design doc §5.4 import rules).
-const manifest = validatePetManifest(BUILTIN_PET_MANIFEST);
-
-// §7.1: chat open -> pet keeps animation but no normal bubbles.
 const bubbleVisible = computed(() => {
   if (!agent.bubble) return false;
-  if (ui.panelMode === "chat") return false;
-  if (ui.doNotDisturb || ui.lockActive) return false;
+  if (ui.chatOpen) return false;
   return Date.now() < agent.bubble.expiresAt;
 });
 
-function togglePanel() {
-  ui.togglePanel();
+function toggleChat() {
+  void emit("ui:toggle_chat", {});
 }
 </script>
 
 <template>
-  <div class="pet-window" data-tauri-drag-region>
-    <div class="bubble" v-if="bubbleVisible" :class="`prio-${agent.bubble?.priority}`">
+  <div class="pet-window" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp">
+    <div v-if="bubbleVisible" class="bubble" :class="`prio-${agent.bubble?.priority}`" data-no-drag>
       {{ agent.bubble?.text }}
     </div>
-    <div class="pet" :class="`anim-${agent.animation}`">
-      <span class="face">{{ agent.state === "error" ? "×_×" : "◕‿◕" }}</span>
-      <span class="badge" v-if="agent.state === 'waiting_permission'">!</span>
+    <div class="sprout" :class="`anim-${agent.animation}`" data-no-drag>
+      <svg viewBox="0 0 64 64" width="72" height="72">
+        <path d="M32 58 C32 42 32 30 32 22" stroke="#a3e635" stroke-width="3" fill="none" stroke-linecap="round" />
+        <path d="M32 34 C20 30 15 20 19 11 C28 11 34 21 32 34Z" fill="#4ade80" />
+        <path d="M32 26 C44 22 49 14 45 6 C37 8 31 16 32 26Z" fill="#a3e635" />
+        <path d="M30 46 C22 44 18 38 20 32 C26 33 30 38 30 46Z" fill="#16a34a" />
+      </svg>
+      <span class="halo" :class="`st-${agent.state}`"></span>
     </div>
-    <button class="open-btn" @click.stop="togglePanel">对话</button>
-    <div class="pet-name">{{ manifest.name }} · {{ agent.state }}</div>
+    <button class="open-btn" @click.stop="toggleChat">对话</button>
+    <div class="pet-name">{{ agent.state }}</div>
   </div>
 </template>
 
@@ -42,124 +44,45 @@ function togglePanel() {
   position: relative;
   width: 100%;
   height: 100%;
-  background: transparent;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 4px;
   box-sizing: border-box;
+  cursor: grab;
 }
-.pet {
-  width: 96px;
-  height: 96px;
+.sprout { position: relative; display: flex; align-items: center; justify-content: center; }
+.halo {
+  position: absolute; inset: -6px;
   border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #ffd9a0, #f2a65a 70%);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  transition: transform 0.2s;
+  border: 2px solid rgba(163, 230, 53, 0.45);
+  filter: blur(1px);
 }
-.face {
-  font-size: 34px;
-  line-height: 1;
-}
-.badge {
-  position: absolute;
-  top: 6px;
-  right: 10px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #e74c3c;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-/* placeholder animations driven by manifest animation names */
-.anim-thinking {
-  animation: bob 0.5s ease-in-out infinite alternate;
-}
-.anim-editing {
-  animation: shake 0.35s ease-in-out infinite alternate;
-}
-.anim-waiting {
-  animation: bob 1.2s ease-in-out infinite;
-}
-.anim-success {
-  animation: pop 0.6s ease-out 1;
-}
-.anim-error {
-  filter: grayscale(0.7);
-}
-@keyframes bob {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(-10px);
-  }
-}
-@keyframes shake {
-  from {
-    transform: rotate(-6deg);
-  }
-  to {
-    transform: rotate(6deg);
-  }
-}
-@keyframes pop {
-  0% {
-    transform: scale(0.8);
-  }
-  60% {
-    transform: scale(1.1);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
+.halo.st-waiting_permission { border-color: var(--warn); }
+.halo.st-error { border-color: var(--err); }
+.anim-thinking { animation: sway 0.6s ease-in-out infinite alternate; }
+.anim-editing { animation: shake 0.3s ease-in-out infinite alternate; }
+.anim-waiting { animation: pulse 1.2s ease-in-out infinite; }
+.anim-success { animation: bloom 0.6s ease-out 1; }
+.anim-error { transform: rotate(-8deg); filter: grayscale(0.5); }
+@keyframes sway { from { transform: rotate(-5deg); } to { transform: rotate(5deg); } }
+@keyframes shake { from { transform: translateX(-3px); } to { transform: translateX(3px); } }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+@keyframes bloom { 0% { transform: scale(0.8); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
 .bubble {
-  position: absolute;
-  top: 2px;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: 150px;
-  background: #fff;
-  color: #222;
-  border-radius: 10px;
-  padding: 6px 10px;
-  font-size: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  z-index: 5;
+  position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
+  max-width: 150px; background: rgba(238, 247, 230, 0.95); color: #12211a;
+  border-radius: 10px; padding: 5px 10px; font-size: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 5;
 }
-.bubble.prio-high,
-.bubble.prio-critical {
-  border: 2px solid #e74c3c;
-}
+.bubble.prio-high, .bubble.prio-critical { border: 2px solid var(--warn); }
 .open-btn {
-  border: none;
-  border-radius: 10px;
-  padding: 4px 12px;
-  font-size: 12px;
-  cursor: pointer;
-  background: rgba(30, 34, 60, 0.85);
-  color: #eef;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  border: none; border-radius: var(--r-pill);
+  padding: 4px 14px; font-size: 12px; cursor: pointer;
+  background: var(--glass-strong); color: var(--accent-bright);
+  border: 1px solid var(--glass-border);
 }
-.pet-name {
-  font-size: 10px;
-  color: #666;
-  background: rgba(255, 255, 255, 0.75);
-  border-radius: 6px;
-  padding: 1px 8px;
-}
+.pet-name { font-size: 10px; color: var(--text-low); }
 </style>

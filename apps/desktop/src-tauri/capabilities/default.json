@@ -1,10 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the four spike windows",
-  "windows": ["desktop", "pet", "panel", "music"],
+  "description": "Capability for all Focus Desktop windows (v1.2)",
+  "windows": ["desktop", "chat", "stats", "music", "pet", "grid-overlay", "logos"],
   "permissions": [
     "core:default",
-    "opener:default"
+    "opener:default",
+    "dialog:default"
   ]
 }

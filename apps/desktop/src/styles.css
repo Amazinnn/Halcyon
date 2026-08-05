@@ -1,20 +1,68 @@
-html,
-body,
-#app {
-  height: 100%;
-  margin: 0;
-  padding: 0;
+/* Focus Desktop v1.2 design tokens: deep-green base, lime "sunlight" accent,
+   pure-green system + amber/coral semantic colors. */
+:root {
+  /* base greens */
+  --bg-0: #070b09;
+  --bg-1: #0b120f;
+  --bg-2: #101a15;
+  --bg-3: #16231c;
+  /* glass */
+  --glass: rgba(20, 34, 26, 0.55);
+  --glass-strong: rgba(12, 20, 16, 0.78);
+  --glass-border: rgba(163, 230, 53, 0.14);
+  /* accent / sunlight */
+  --accent: #a3e635;
+  --accent-bright: #bef264;
+  --accent-wash: rgba(163, 230, 53, 0.16);
+  --accent-glow: rgba(163, 230, 53, 0.22);
+  /* semantic */
+  --warn: #fbbf24;
+  --err: #f87171;
+  /* text */
+  --text-hi: #eef7e6;
+  --text-mid: #a9c0a8;
+  --text-low: #5f7363;
+  /* spacing */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
+  /* radius */
+  --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-pill: 999px;
+  /* motion */
+  --t-fast: 120ms; --t-base: 200ms; --t-slow: 320ms;
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
+html, body, #app { height: 100%; margin: 0; padding: 0; }
 body {
-  font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
   -webkit-font-smoothing: antialiased;
   user-select: none;
+  color: var(--text-hi);
 }
 
-/* Transparent windows (pet / music): let the WebView show through. */
+/* transparent windows (acrylic shows through) */
 html.transparent-window,
 html.transparent-window body,
 html.transparent-window #app {
   background: transparent !important;
+}
+
+.num { font-variant-numeric: tabular-nums; }
+
+/* glass card */
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
+
+/* focus timer breathing glow */
+@keyframes breathe {
+  0%, 100% { text-shadow: 0 0 18px rgba(163, 230, 53, 0.35), 0 0 4px rgba(163, 230, 53, 0.2); }
+  50% { text-shadow: 0 0 34px rgba(163, 230, 53, 0.6), 0 0 8px rgba(163, 230, 53, 0.3); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }

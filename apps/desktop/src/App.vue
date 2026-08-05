@@ -2,9 +2,12 @@
 import { computed, onMounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import DesktopView from "./views/desktop/DesktopView.vue";
-import PetView from "./views/pet/PetView.vue";
-import PanelView from "./views/panel/PanelView.vue";
+import ChatView from "./views/chat/ChatView.vue";
+import StatsView from "./views/stats/StatsView.vue";
 import MusicView from "./views/music/MusicView.vue";
+import PetView from "./views/pet/PetView.vue";
+import LogosView from "./views/logos/LogosView.vue";
+import GridOverlayView from "./views/overlay/GridOverlayView.vue";
 import { useUiStore } from "./stores/ui";
 import { useAgentStore } from "./stores/agent";
 
@@ -12,26 +15,22 @@ const label = getCurrentWebviewWindow().label;
 
 const view = computed(() => {
   switch (label) {
-    case "desktop":
-      return DesktopView;
-    case "pet":
-      return PetView;
-    case "panel":
-      return PanelView;
-    case "music":
-      return MusicView;
-    default:
-      return DesktopView;
+    case "desktop": return DesktopView;
+    case "chat": return ChatView;
+    case "stats": return StatsView;
+    case "music": return MusicView;
+    case "pet": return PetView;
+    case "logos": return LogosView;
+    case "grid-overlay": return GridOverlayView;
+    default: return DesktopView;
   }
 });
 
 onMounted(() => {
-  // Transparent windows: make the webview background transparent.
-  if (label === "pet" || label === "music") {
+  if (["pet", "music", "logos", "chat", "stats", "grid-overlay"].includes(label)) {
     document.documentElement.classList.add("transparent-window");
     document.body.classList.add("transparent-window");
   }
-  // Each window subscribes to the shared Rust event bus (independent Pinia state).
   void useUiStore().init();
   void useAgentStore().init();
 });
