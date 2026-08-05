@@ -10,9 +10,11 @@ mod agents;
 mod drag;
 mod event_bus;
 mod grid;
+mod icons;
 mod settings;
 mod shortcuts;
 mod storage;
+mod supervision;
 mod wallpaper;
 
 use std::collections::HashMap;
@@ -25,13 +27,14 @@ use tauri::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 
 use event_bus::CoreEvent;
 use grid::GridManager;
-use settings::{GridRect, Settings, Shortcut};
+use settings::{GridRect, Settings, Shortcut, Task};
 
 pub struct AppState {
     pub settings: Mutex<Settings>,
     pub data_dir: PathBuf,
     pub screen: Mutex<(f64, f64)>, // logical width/height
     pub active_drag: Mutex<Option<drag::ActiveDrag>>,
+    pub focus_track: Mutex<supervision::FocusTrack>,
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +130,16 @@ struct Bootstrap {
     shortcuts: Vec<Shortcut>,
     acrylic_enabled: bool,
     focus_subtitle: String,
+    tasks: Vec<Task>,
+    current_task_id: Option<String>,
+    focus_minutes: u32,
+    rest_minutes: u32,
+    distraction_apps: Vec<String>,
+    allowed_apps: Vec<String>,
+    supervision_enabled: bool,
+    supervision_pause_until: Option<i64>,
+    sound_enabled: bool,
+    show_topbar: String,
 }
 
 #[tauri::command]
@@ -140,6 +153,16 @@ fn get_bootstrap(state: tauri::State<'_, AppState>) -> Bootstrap {
         shortcuts: s.shortcuts.clone(),
         acrylic_enabled: s.acrylic_enabled,
         focus_subtitle: s.focus_subtitle.clone(),
+        tasks: s.tasks.clone(),
+        current_task_id: s.current_task_id.clone(),
+        focus_minutes: s.focus_minutes,
+        rest_minutes: s.rest_minutes,
+        distraction_apps: s.distraction_apps.clone(),
+        allowed_apps: s.allowed_apps.clone(),
+        supervision_enabled: s.supervision_enabled,
+        supervision_pause_until: s.supervision_pause_until,
+        sound_enabled: s.sound_enabled,
+        show_topbar: s.show_topbar.clone(),
     }
 }
 
@@ -339,6 +362,127 @@ fn set_acrylic(app: tauri::AppHandle, state: tauri::State<'_, AppState>, enabled
 }
 
 #[tauri::command]
+fn save_task(state: tauri::State<'_, AppState>, task: Task) -> Result<Task, String> {
+    let mut settings = state.settings.lock().unwrap();
+    if task.id.is_empty() {
+        return Err("task id required".into());
+    }
+    if let Some(existing) = settings.tasks.iter_mut().find(|t| t.id == task.id) {
+        *existing = task.clone();
+    } else {
+        settings.tasks.push(task.clone());
+    }
+    let _ = settings.save(&state.data_dir);
+    Ok(task)
+}
+
+#[tauri::command]
+fn set_current_task(state: tauri::State<'_, AppState>, id: Option<String>) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap();
+    settings.current_task_id = id;
+    let _ = settings.save(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_focus_durations(state: tauri::State<'_, AppState>, focus: u32, rest: u32) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap();
+    settings.focus_minutes = focus.clamp(1, 240);
+    settings.rest_minutes = rest.clamp(1, 120);
+    let _ = settings.save(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_distraction_lists(
+    state: tauri::State<'_, AppState>,
+    black: Vec<String>,
+    white: Vec<String>,
+) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap();
+    settings.distraction_apps = black;
+    settings.allowed_apps = white;
+    let _ = settings.save(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_supervision_paused(app: tauri::AppHandle, minutes: i64) -> Result<(), String> {
+    supervision::pause_for(&app, minutes)
+}
+
+#[tauri::command]
+fn resume_supervision(app: tauri::AppHandle) -> Result<(), String> {
+    supervision::resume(&app)
+}
+
+#[tauri::command]
+fn set_supervision_enabled(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap();
+    settings.supervision_enabled = enabled;
+    let _ = settings.save(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_sound_enabled(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap();
+    settings.sound_enabled = enabled;
+    let _ = settings.save(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_show_topbar(state: tauri::State<'_, AppState>, mode: String) -> Result<(), String> {
+    if !matches!(mode.as_str(), "auto" | "on" | "off") {
+        return Err("showTopbar must be auto|on|off".into());
+    }
+    let mut settings = state.settings.lock().unwrap();
+    settings.show_topbar = mode;
+    let _ = settings.save(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn record_focus_session(
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+    started_at: String,
+    ended_at: String,
+    duration_sec: i64,
+    task_id: Option<String>,
+) -> Result<(), String> {
+    let _ = store
+        .lock()
+        .unwrap()
+        .record_focus_session(&started_at, &ended_at, duration_sec, task_id.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_today_focus_summary(
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+) -> Result<(i64, i64), String> {
+    store
+        .lock()
+        .unwrap()
+        .today_focus_summary()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_shortcut_icon(path: String) -> Result<serde_json::Value, String> {
+    match icons::extract_icon_rgba(&path) {
+        Some(data) => Ok(serde_json::json!({
+            "width": icons::ICON_SIZE,
+            "height": icons::ICON_SIZE,
+            "data": data,
+        })),
+        None => Err("no icon".into()),
+    }
+}
+
+#[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
@@ -464,6 +608,7 @@ pub fn run() {
                 data_dir,
                 screen: Mutex::new((sw, sh)),
                 active_drag: Mutex::new(None),
+                focus_track: Mutex::new(supervision::FocusTrack::default()),
             };
             app.manage(state);
 
@@ -483,7 +628,7 @@ pub fn run() {
             // core event bus + relay
             let (tx, rx) = tokio::sync::broadcast::channel::<CoreEvent>(256);
             let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(event_bus::relay_task(app_handle, rx));
+            tauri::async_runtime::spawn(event_bus::relay_task(app_handle.clone(), rx));
 
             agents::mock::spawn(tx.clone());
 
@@ -492,7 +637,8 @@ pub fn run() {
             let store = std::sync::Arc::new(Mutex::new(store));
             app.manage(store.clone());
             let tx_probe = tx.clone();
-            activity::spawn_probe(tx_probe, store);
+            activity::spawn_probe(tx_probe, store.clone());
+            supervision::spawn(app_handle.clone(), store);
 
             // ---- frontend -> core listeners ----
             let h = app.handle().clone();
@@ -535,6 +681,51 @@ pub fn run() {
                 }
             });
 
+            // frontend focus timer -> supervision focus tracking + session record
+            let hf = h.clone();
+            hf.clone().listen("focus:state_changed", move |event| {
+                let v: serde_json::Value =
+                    serde_json::from_str(event.payload()).unwrap_or_default();
+                let state = v.get("state").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let paused = v.get("paused").and_then(|x| x.as_bool()).unwrap_or(false);
+                let completed = v.get("completed").and_then(|x| x.as_bool()).unwrap_or(false);
+                let app_state = hf.state::<AppState>();
+                let mut ft = app_state.focus_track.lock().unwrap();
+                match state.as_str() {
+                    "focus" => {
+                        if !ft.active {
+                            let settings = app_state.settings.lock().unwrap();
+                            ft.task_id = settings.current_task_id.clone();
+                            ft.session_started_at = Some(chrono::Local::now().to_rfc3339());
+                            ft.session_focus_sec = 0;
+                        }
+                        ft.active = true;
+                        ft.paused = paused;
+                    }
+                    "rest" => {
+                        if ft.active && completed {
+                            let started = ft.session_started_at.clone().unwrap_or_default();
+                            let ended = chrono::Local::now().to_rfc3339();
+                            let dur = ft.session_focus_sec.max(1);
+                            let tid = ft.task_id.clone();
+                            let store_state = hf.state::<std::sync::Arc<Mutex<storage::Store>>>();
+                            let _ = store_state
+                                .lock()
+                                .unwrap()
+                                .record_focus_session(&started, &ended, dur, tid.as_deref());
+                        }
+                        ft.active = false;
+                        ft.paused = paused;
+                        ft.session_started_at = None;
+                        ft.session_focus_sec = 0;
+                    }
+                    _ => {
+                        ft.active = false;
+                        ft.paused = false;
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -551,6 +742,18 @@ pub fn run() {
             remove_shortcut,
             reorder_shortcuts,
             set_acrylic,
+            save_task,
+            set_current_task,
+            set_focus_durations,
+            set_distraction_lists,
+            set_supervision_paused,
+            resume_supervision,
+            set_supervision_enabled,
+            set_sound_enabled,
+            set_show_topbar,
+            record_focus_session,
+            get_today_focus_summary,
+            get_shortcut_icon,
             get_wallpaper,
             persist_wallpaper,
             reset_wallpaper,

@@ -44,6 +44,9 @@ export const useAgentStore = defineStore("agent", {
     lastEvent: null as AgentEventEnvelope | null,
   }),
   actions: {
+    showBubble(text: string, priority = "high") {
+      this.bubble = { text, priority, expiresAt: Date.now() + 5000 };
+    },
     async init() {
       await listen<AgentEventEnvelope>("agent:event", (e) => {
         this.lastEvent = e.payload;

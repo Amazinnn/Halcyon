@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useAgentStore } from "../../stores/agent";
 import { useUiStore } from "../../stores/ui";
+import { useSettingsStore } from "../../stores/settings";
 import { useShortcutStore } from "../../stores/shortcuts";
 import type { DesktopShortcut, ShortcutType } from "../../lib/shortcuts";
 import AppIcon from "../../components/AppIcon.vue";
@@ -12,6 +13,7 @@ import SettingsPopover from "../../components/SettingsPopover.vue";
 
 const agent = useAgentStore();
 const ui = useUiStore();
+const settings = useSettingsStore();
 const shortcuts = useShortcutStore();
 
 const wallpaperUrl = ref("");
@@ -34,23 +36,47 @@ function fmtClock(totalSec: number) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
+function fmtShort(totalSec: number) {
+  const s = Math.max(0, Math.floor(totalSec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}h${m}m` : `${m} 分钟`;
+}
+
 const timerText = computed(() =>
-  ui.focusState === "rest" ? fmtClock(ui.restRemainingSec) : fmtClock(ui.focusElapsedSec),
+  ui.focusState === "rest" ? fmtClock(ui.restRemainingSec) : fmtClock(ui.focusRemainingSec),
 );
 const timerLabel = computed(() =>
   ui.focusState === "focus" ? "专注中" : ui.focusState === "rest" ? "休息中" : "未开始",
 );
 const modeChip = computed(() => {
-  if (ui.focusState === "focus") return `专注中 · ${fmtClock(ui.focusElapsedSec)}`;
+  if (ui.focusState === "focus") return `专注中 · ${fmtClock(ui.focusRemainingSec)}`;
   if (ui.focusState === "rest") return `休息中 · ${fmtClock(ui.restRemainingSec)}`;
   return "未开始";
 });
-const focusBtnText = computed(() =>
-  ui.focusState === "idle" ? "开始专注" : ui.focusState === "focus" ? "休息" : "继续专注",
+const focusBtnText = computed(() => {
+  if (ui.focusState === "idle") return "开始专注";
+  if (ui.focusState === "focus") return ui.timerPaused ? "继续" : "暂停";
+  return "开始专注";
+});
+const focusIcon = computed(() => {
+  if (ui.focusState === "focus") return ui.timerPaused ? "play" : "pause";
+  return "leaf";
+});
+const supLabel = computed(() => (ui.supervisionStatus === "drift" ? "走神中" : "监督暂停"));
+const topbarVisible = computed(
+  () => ui.showTopbar === "on" || (ui.showTopbar === "auto" && ui.focusState !== "idle"),
 );
-const focusIcon = computed(() =>
-  ui.focusState === "idle" ? "leaf" : ui.focusState === "focus" ? "pause" : "play",
-);
+const ringCirc = 2 * Math.PI * 54;
+const ringProgress = computed(() => {
+  if (ui.focusState === "idle") return 1;
+  if (ui.focusState === "rest" && ui.phaseDone) return 0;
+  const total = ui.focusState === "focus" ? ui.focusMinutes * 60 : ui.restMinutes * 60;
+  const remain = ui.focusState === "focus" ? ui.focusRemainingSec : ui.restRemainingSec;
+  return total > 0 ? Math.max(0, Math.min(1, remain / total)) : 0;
+});
+const ringOffset = computed(() => ringCirc * (1 - ringProgress.value));
+const todayText = computed(() => `今日专注 ${fmtShort(ui.todayFocusSec)} · 完成 ${ui.todayRounds} 轮`);
 
 function glyphFor(type: ShortcutType): string {
   return type === "folder" ? "folder" : type === "application" ? "app" : "file";
@@ -155,14 +181,22 @@ function quit() {
 }
 
 onMounted(async () => {
-  await loadWallpaper();
-  await shortcuts.load();
+  await settings.load();
   try {
     const b = await invoke<{ focusSubtitle?: string }>("get_bootstrap");
     if (b.focusSubtitle) ui.focusSubtitle = b.focusSubtitle;
   } catch {
     /* ignore */
   }
+  ui.applyConfig({
+    focusMinutes: settings.focusMinutes,
+    restMinutes: settings.restMinutes,
+    soundEnabled: settings.soundEnabled,
+    showTopbar: settings.showTopbar,
+  });
+  await loadWallpaper();
+  await shortcuts.load();
+  await ui.loadTodaySummary();
   const win = getCurrentWebviewWindow();
   await win.onDragDropEvent((e) => {
     const type = e.payload.type;
@@ -199,19 +233,50 @@ onMounted(async () => {
 
     <div v-if="dropActive" class="drop-hint">松开以设置为壁纸</div>
 
-    <header class="topbar">
-      <span class="task">当前任务：实现统计模块</span>
+    <header v-if="topbarVisible" class="topbar">
+      <span class="task">当前任务：{{ settings.currentTask?.name ?? "未设置" }}</span>
       <span class="agent-status">
         Agent
         <span class="dot" :class="`st-${agent.state}`"></span>
       </span>
       <span class="mode-chip" :class="ui.focusState">{{ modeChip }}</span>
+      <span v-if="ui.supervisionStatus !== 'ok'" class="sup-status" :class="ui.supervisionStatus">
+        {{ supLabel }}
+      </span>
     </header>
 
     <section class="hero">
-      <div class="timer num">{{ timerText }}</div>
+      <div class="timer-wrap" :class="ui.focusState">
+        <svg class="ring" viewBox="0 0 120 120">
+          <circle class="ring-bg" cx="60" cy="60" r="54" />
+          <circle
+            class="ring-fg"
+            cx="60"
+            cy="60"
+            r="54"
+            :stroke-dasharray="ringCirc"
+            :stroke-dashoffset="ringOffset"
+          />
+        </svg>
+        <div class="timer num">{{ timerText }}</div>
+      </div>
       <div class="timer-label">{{ timerLabel }}</div>
       <div class="task-line">{{ ui.focusSubtitle }}</div>
+      <div v-if="ui.focusState !== 'idle' && !ui.phaseDone" class="timer-controls">
+        <button class="ctl glass" @click="ui.pause()">
+          <AppIcon :name="ui.timerPaused ? 'play' : 'pause'" />
+          <span>{{ ui.timerPaused ? "继续" : "暂停" }}</span>
+        </button>
+        <button class="ctl glass" @click="ui.skip()">
+          <AppIcon name="next" />
+          <span>跳过</span>
+        </button>
+      </div>
+      <button v-if="ui.focusState === 'rest' && ui.phaseDone" class="ctl glass next" @click="ui.startFocus()">
+        <AppIcon name="play" />
+        <span>开始下一轮</span>
+      </button>
+      <div class="today-line num">{{ todayText }}</div>
     </section>
 
     <section class="icon-zone">
@@ -229,7 +294,13 @@ onMounted(async () => {
           <button class="rm" title="移除" @pointerdown.stop @click.stop="remove(sc.id)">
             <AppIcon name="close" />
           </button>
-          <span class="glyph" :class="sc.type"><AppIcon :name="glyphFor(sc.type)" /></span>
+          <img
+            v-if="sc.type === 'application' && shortcuts.icons[sc.target]"
+            class="sc-icon"
+            :src="shortcuts.icons[sc.target]"
+            alt=""
+          />
+          <span v-else class="glyph" :class="sc.type"><AppIcon :name="glyphFor(sc.type)" /></span>
           <span class="name">{{ sc.name }}</span>
         </div>
         <div class="sc-card add glass" @click="addMenuOpen = !addMenuOpen">
@@ -343,27 +414,49 @@ onMounted(async () => {
 }
 .mode-chip.focus { color: var(--accent-bright); border-color: rgba(163, 230, 53, 0.4); }
 .mode-chip.rest { color: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
+.sup-status {
+  font-size: 12px; border-radius: var(--r-pill); padding: 2px 10px;
+  border: 1px solid;
+}
+.sup-status.drift { color: var(--warn); border-color: rgba(251, 191, 36, 0.5); }
+.sup-status.paused { color: var(--text-mid); border-color: var(--glass-border); }
 
 .hero {
   position: relative; z-index: 5;
   display: flex; flex-direction: column; align-items: center;
-  padding-top: 6vh;
+  padding-top: 4vh;
 }
+.timer-wrap { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+.ring { width: 300px; height: 300px; transform: rotate(-90deg); }
+.ring-bg { fill: none; stroke: rgba(163, 230, 53, 0.1); stroke-width: 3; }
+.ring-fg { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transition: stroke-dashoffset 0.6s linear, stroke 0.3s; }
+.timer-wrap.rest .ring-fg { stroke: var(--warn); }
 .timer {
-  font-size: clamp(3rem, 9vw, 6rem);
+  position: absolute;
+  font-size: clamp(2.4rem, 7vw, 4.6rem);
   font-weight: 300;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   color: var(--accent-bright);
   animation: breathe 2.4s ease-in-out infinite;
 }
-.timer-label { font-size: 14px; color: var(--text-mid); margin-top: 4px; }
-.task-line { font-size: 13px; color: var(--text-low); margin-top: 8px; }
+.timer-label { font-size: 14px; color: var(--text-mid); margin-top: 6px; }
+.task-line { font-size: 13px; color: var(--text-low); margin-top: 6px; }
+.timer-controls { display: flex; gap: 10px; margin-top: 12px; }
+.ctl {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--glass-border); color: var(--text-hi);
+  border-radius: var(--r-pill); padding: 6px 14px; font-size: 13px; cursor: pointer;
+  transition: border-color var(--t-fast), color var(--t-fast), background var(--t-fast);
+}
+.ctl:hover { border-color: var(--accent); color: var(--accent-bright); background: var(--accent-wash); }
+.ctl.next { border-color: var(--accent); color: var(--accent-bright); }
+.today-line { font-size: 12px; color: var(--text-mid); margin-top: 12px; }
 
 /* file-shortcut zone */
 .icon-zone {
   position: relative; z-index: 5;
   display: flex; justify-content: center; align-items: flex-start;
-  margin-top: 5vh;
+  margin-top: 4vh;
 }
 .sc-grid {
   display: grid;
@@ -399,6 +492,7 @@ onMounted(async () => {
 .glyph.file { color: var(--text-mid); }
 .glyph.folder { color: var(--accent); }
 .glyph.application { color: var(--accent-bright); }
+.sc-icon { width: 32px; height: 32px; border-radius: 6px; object-fit: contain; }
 .name {
   font-size: 12px; color: var(--text-mid);
   max-width: 96px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

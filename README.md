@@ -2,7 +2,7 @@
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**v1.3（当前）**：专注桌面视觉精修——玻璃胶囊顶条、中央呼吸计时 + 可配置副题、单区**文件快捷区**（全局「+」添加文件/夹/应用、拖拽换序、悬停 ✕ 删除、点击真实打开）、三键 Dock（专注/设置/退出）、设置弹层（壁纸 + 毛玻璃开关）、专注/休息 1s 假心跳与"春天注入"提亮氛围。v1.2.1 基础：Rust 光标轮询拖拽（防卡死）、自实现 SWCA Acrylic 毛玻璃去灰、桌宠身体可拖、拖拽回归探针 `scripts/drag-probe.ps1`。
+**v1.4（当前）**：完整番茄钟计时（双向下倒计时、暂停/继续、跳过、进度环、到点提示音+气泡、时长预设 25/5·50/10·90/15+自定义、今日汇总、`focus_sessions` 写库）+ **监督 V1 软限制**（分心超时/空闲/任务超时三条规则、升级提醒、暂停 30 分钟、`supervision_events` 入库、顶条状态点）+ 应用快捷方式真实 exe 图标 + 顶条胶囊默认隐藏/专注时自动显示。v1.3 基础：专注桌面视觉精修（玻璃胶囊顶条、文件快捷区、三键 Dock、设置弹层）。v1.2.1 基础：Rust 光标轮询拖拽（防卡死）、自实现 SWCA Acrylic 毛玻璃去灰、桌宠身体可拖、拖拽回归探针 `scripts/drag-probe.ps1`。
 
 - **权威设计文档**：[local-focus-desktop-agent-design-v0.2.md](./local-focus-desktop-agent-design-v0.2.md)
 - **技术路线**：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite
@@ -28,7 +28,7 @@
 apps/desktop/          Tauri 2 + Vue 3 应用（Desktop / Chat / Stats / Music / Pet / Logos / Grid-Overlay 七窗口）
 packages/event-schema/ AgentEvent 协议 v1（JSON Schema + TS 类型 + fixtures，npm test 校验）
 docs/                  审计、可行性、调查、ADR、风险与下一阶段
-docs/architecture/evidence/visual-v1/   v1.2 / v1.2.1 视觉截图（毛玻璃去灰、浮窗透明）
+docs/architecture/evidence/visual-v1/   v1.2~v1.4 视觉截图（毛玻璃去灰、浮窗透明、v1.4 计时/监督态）
 ```
 
 ## 一键启动

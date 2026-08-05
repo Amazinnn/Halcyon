@@ -66,3 +66,35 @@
 - ui store 增 `focusState: "idle"|"focus"|"rest"` 与 1s 心跳：专注向上计时、休息从 10:00 倒数到 0 自动回专注；顶条倒计时联动。
 - 桌面根 `.focus-active`（专注态）：整体提亮（brightness/saturate 微升）+ 亮叶绿遮罩与光晕增强（"被注入春天的灵魂"），休息态恢复平静深绿；`prefers-reduced-motion` 下计时照走但无动画。
 - 未改动：AgentEvent 协议、事件名、DB 表；浮窗拖拽/毛玻璃/气泡互斥/壁纸边缘虚化保持。
+
+
+## v1.4 增补（番茄钟计时 · 监督 V1 软限制 · 应用图标 · 顶条开关）
+
+2026-08-05，把计时从假心跳升级为完整番茄钟功能集，叠加 V1 软限制监督，并修复应用图标与顶条开关。
+
+### 计时系统
+- 状态机 `idle → focus(向下倒计时) → rest(向下倒计时)`：可暂停/继续（暂停冻结计时、氛围回平静）、跳过当前阶段、休息中可提前切回专注；无轮次（不计数、无长休息）；休息到 0 停在等待，显示「开始下一轮」按钮。
+- 时长默认 25/5 分钟，设置内预设 25/5·50/10·90/15 + 自定义，切换下一轮生效。
+- 计时区：大号呼吸计时 + 外圈细进度环（专注亮叶绿 / 休息琥珀，按剩余占比）；专注/休息中进度环下方出现「暂停/继续」「跳过」小玻璃按钮。
+- 到点反馈：Web Audio 短音 + 宠物气泡（“专注完成/休息结束”），共用提示音开关（`soundEnabled`）。
+- 数据：每完成一轮专注写 `focus_sessions`（开始/结束/时长/任务 id）；启动时 `get_today_focus_summary()` 读今日汇总；计时区底部「今日专注 X · 完成 N 轮」。
+- 专注静音：专注中低优先级普通宠物气泡静音（监督提醒不受影响），休息恢复。
+- 顶条：默认隐藏；`focusState !== idle` 自动显示；设置三态（自动/常显/隐藏）。
+
+### 轻量任务（settings.json）
+- `tasks[]`（id/名称/可选预计分钟/可选绑定应用）+ `currentTaskId`；设置弹层内编辑当前任务（名称+预计分钟）与切换；任务累计专注时长用于「任务超时」规则，切任务重置。任务累计专注存内存（重启清零），完整任务专注历史留给统计轮。
+
+### 监督 V1（src-tauri/src/supervision.rs，2s 心跳，复用 activity 探针）
+- 规则：①分心超时——黑名单进程名（不区分大小写、支持 `*通配*`），前台命中且不在白名单，持续 2 分钟首提；期间短暂切走 <30 秒不算打断，≥30 秒重置；同段内冷却逐级 5→3→1→0.5 分钟且语气加重。②空闲——前台非黑名单且无输入（`GetLastInputInfo`）≥3 分钟提醒一次，有输入即重置；分心优先。③任务超时——当前任务有预计分钟且本任务累计专注超预计提醒一次（切任务重置）。
+- 节流：按规则冷却 5 分钟；滑动 60 分钟窗口 ≤4 次；设置「暂停监督 30 分钟」（`supervisionPauseUntil` 持久化，到期自动恢复）；休息中与暂停期间不提醒。
+- 载体：`supervision:alert`（rule/app/level/text）→ 宠物气泡 + 提示音；`supervision:status`（正常/走神中/暂停）→ 顶条状态点。
+- 入库：`supervision_events` 表（时间/规则/应用/级别）随迁移追加，每次提醒写一行。
+
+### 应用图标（修复）
+- 新命令 `get_shortcut_icon(path)`：`ExtractIconExW` + `DrawIconEx` + `CreateDIBSection` → 32×32 RGBA；前端 canvas → dataURL，按 target 缓存于 shortcuts store；`application` 卡片显示真实图标，提取失败/无图标回退 `app` 字形。
+
+### 命令与事件
+- 新命令：`save_task`/`set_current_task`/`set_focus_durations`/`set_distraction_lists`/`set_supervision_paused`/`resume_supervision`/`set_supervision_enabled`/`set_sound_enabled`/`set_show_topbar`/`record_focus_session`/`get_today_focus_summary`/`get_shortcut_icon`。
+- 新事件：`focus:state_changed`（前端→Rust）、`supervision:alert`、`supervision:status`（Rust→前端，冒号命名）。
+- DB 迁移：`focus_sessions`、`supervision_events` 两表（沿用 `schema_migrations` 机制）。
+- Cargo features 追加：`Win32_UI_Shell`、`Win32_System_SystemInformation`（windows crate 既有依赖，无新增第三方依赖）。

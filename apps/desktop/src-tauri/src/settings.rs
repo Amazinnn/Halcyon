@@ -8,6 +8,17 @@ use std::path::Path;
 
 pub const SETTINGS_FILE: &str = "settings.json";
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Task {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub estimated_minutes: Option<u32>,
+    #[serde(default)]
+    pub bound_app: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ShortcutType {
@@ -50,6 +61,38 @@ pub struct Settings {
     pub acrylic_enabled: bool,
     #[serde(default = "default_subtitle")]
     pub focus_subtitle: String,
+    #[serde(default)]
+    pub tasks: Vec<Task>,
+    #[serde(default)]
+    pub current_task_id: Option<String>,
+    #[serde(default = "default_25")]
+    pub focus_minutes: u32,
+    #[serde(default = "default_5")]
+    pub rest_minutes: u32,
+    #[serde(default)]
+    pub distraction_apps: Vec<String>,
+    #[serde(default)]
+    pub allowed_apps: Vec<String>,
+    #[serde(default = "default_true")]
+    pub supervision_enabled: bool,
+    #[serde(default)]
+    pub supervision_pause_until: Option<i64>,
+    #[serde(default = "default_true")]
+    pub sound_enabled: bool,
+    #[serde(default = "default_show_topbar")]
+    pub show_topbar: String,
+}
+
+fn default_25() -> u32 {
+    25
+}
+
+fn default_5() -> u32 {
+    5
+}
+
+fn default_show_topbar() -> String {
+    "auto".into()
 }
 
 fn default_true() -> bool {
@@ -80,6 +123,16 @@ impl Default for Settings {
             shortcuts: Vec::new(),
             acrylic_enabled: true,
             focus_subtitle: "保持节奏，阳光会照到每一片叶子".into(),
+            tasks: Vec::new(),
+            current_task_id: None,
+            focus_minutes: 25,
+            rest_minutes: 5,
+            distraction_apps: Vec::new(),
+            allowed_apps: Vec::new(),
+            supervision_enabled: true,
+            supervision_pause_until: None,
+            sound_enabled: true,
+            show_topbar: "auto".into(),
         }
     }
 }

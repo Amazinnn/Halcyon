@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import DesktopView from "./views/desktop/DesktopView.vue";
 import ChatView from "./views/chat/ChatView.vue";
@@ -10,6 +11,7 @@ import LogosView from "./views/logos/LogosView.vue";
 import GridOverlayView from "./views/overlay/GridOverlayView.vue";
 import { useUiStore } from "./stores/ui";
 import { useAgentStore } from "./stores/agent";
+import { playChime } from "./lib/sound";
 
 const label = getCurrentWebviewWindow().label;
 
@@ -33,6 +35,11 @@ onMounted(() => {
   }
   void useUiStore().init();
   void useAgentStore().init();
+  void listen("supervision:alert", (e) => {
+    const p = (e.payload ?? {}) as { text?: string };
+    useAgentStore().showBubble(p.text ?? "注意保持专注", "high");
+    if (useUiStore().soundEnabled) playChime();
+  });
 });
 </script>
 

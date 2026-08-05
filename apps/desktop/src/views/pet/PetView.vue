@@ -12,6 +12,9 @@ const { onPointerDown, onPointerMove, onPointerUp } = useGridDrag("pet");
 const bubbleVisible = computed(() => {
   if (!agent.bubble) return false;
   if (ui.chatOpen) return false;
+  if (ui.focusState === "focus" && (agent.bubble.priority === "low" || agent.bubble.priority === "normal")) {
+    return false;
+  }
   return Date.now() < agent.bubble.expiresAt;
 });
 
