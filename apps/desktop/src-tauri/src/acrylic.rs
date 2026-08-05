@@ -71,3 +71,24 @@ pub fn apply(hwnd: *mut c_void, tint: (u8, u8, u8, u8)) {
         let _ = f(hwnd, &mut data);
     }
 }
+
+/// Disable acrylic (ACCENT_DISABLED) — used by the settings toggle so the
+/// floats fall back to plain transparency + CSS content.
+pub fn clear(hwnd: *mut c_void) {
+    let Some(f) = resolve() else { return };
+    let hwnd = HWND(hwnd);
+    let mut policy = AccentPolicy {
+        accent_state: 0, // ACCENT_DISABLED
+        accent_flags: 0,
+        gradient_color: 0,
+        animation_id: 0,
+    };
+    let mut data = WindowCompositionAttribData {
+        attrib: WCA_ACCENT_POLICY,
+        pv_data: &mut policy as *mut _ as *mut c_void,
+        cb_data: std::mem::size_of::<AccentPolicy>(),
+    };
+    unsafe {
+        let _ = f(hwnd, &mut data);
+    }
+}

@@ -11,6 +11,7 @@ mod drag;
 mod event_bus;
 mod grid;
 mod settings;
+mod shortcuts;
 mod storage;
 mod wallpaper;
 
@@ -24,8 +25,7 @@ use tauri::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 
 use event_bus::CoreEvent;
 use grid::GridManager;
-use settings::GridRect;
-use settings::Settings;
+use settings::{GridRect, Settings, Shortcut};
 
 pub struct AppState {
     pub settings: Mutex<Settings>,
@@ -38,7 +38,7 @@ pub struct AppState {
 // window helpers
 // ---------------------------------------------------------------------------
 
-fn apply_acrylic(w: &tauri::WebviewWindow) {
+fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
     // Frosted glass via the SWCA acrylic API with our own low-alpha deep-green
     // tint. (window-vibrancy 0.8's apply_acrylic ignores the tint on Win11,
     // leaving the system's default light-gray backdrop.) Failure is
@@ -46,7 +46,10 @@ fn apply_acrylic(w: &tauri::WebviewWindow) {
     // acrylic misbehaves.
     #[cfg(target_os = "windows")]
     {
-        if std::env::var_os("FOCUS_NO_ACRYLIC").is_some() {
+        if !enabled || std::env::var_os("FOCUS_NO_ACRYLIC").is_some() {
+            if let Ok(hwnd) = w.hwnd() {
+                acrylic::clear(hwnd.0);
+            }
             return;
         }
         if let Ok(hwnd) = w.hwnd() {
@@ -54,8 +57,9 @@ fn apply_acrylic(w: &tauri::WebviewWindow) {
         }
     }
     #[cfg(not(target_os = "windows"))]
-    let _ = w;
+    let _ = (w, enabled);
 }
+
 
 fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &GridManager) {
     if let Some(w) = app.get_webview_window(label) {
@@ -120,6 +124,9 @@ struct Bootstrap {
     topmost: HashMap<String, bool>,
     collapsed: Vec<String>,
     wallpaper_path: Option<String>,
+    shortcuts: Vec<Shortcut>,
+    acrylic_enabled: bool,
+    focus_subtitle: String,
 }
 
 #[tauri::command]
@@ -130,6 +137,9 @@ fn get_bootstrap(state: tauri::State<'_, AppState>) -> Bootstrap {
         topmost: s.topmost.clone(),
         collapsed: s.collapsed.clone(),
         wallpaper_path: s.wallpaper_path.clone(),
+        shortcuts: s.shortcuts.clone(),
+        acrylic_enabled: s.acrylic_enabled,
+        focus_subtitle: s.focus_subtitle.clone(),
     }
 }
 
@@ -258,6 +268,73 @@ fn persist_wallpaper(state: tauri::State<'_, AppState>, src: String) -> Result<S
 fn reset_wallpaper(state: tauri::State<'_, AppState>) -> Result<(), String> {
     state.settings.lock().unwrap().wallpaper_path = None;
     let _ = state.settings.lock().unwrap().save(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn add_shortcut(state: tauri::State<'_, AppState>, path: String) -> Result<Shortcut, String> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("path not found: {path}"));
+    }
+    let mut settings = state.settings.lock().unwrap();
+    let sc = Shortcut {
+        id: shortcuts::new_id(&settings.shortcuts),
+        name: shortcuts::display_name(&p),
+        kind: shortcuts::infer_type(&p),
+        target: path,
+        order: settings.shortcuts.len(),
+    };
+    settings.shortcuts.push(sc.clone());
+    let _ = settings.save(&state.data_dir);
+    Ok(sc)
+}
+
+#[tauri::command]
+fn remove_shortcut(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap();
+    settings.shortcuts.retain(|s| s.id != id);
+    shortcuts::renumber(&mut settings.shortcuts);
+    let _ = settings.save(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn reorder_shortcuts(state: tauri::State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap();
+    let mut by_id: HashMap<String, Shortcut> = settings
+        .shortcuts
+        .iter()
+        .cloned()
+        .map(|s| (s.id.clone(), s))
+        .collect();
+    let mut next: Vec<Shortcut> = Vec::with_capacity(ids.len());
+    for id in &ids {
+        if let Some(s) = by_id.remove(id) {
+            next.push(s);
+        }
+    }
+    let mut leftovers: Vec<Shortcut> = by_id.into_values().collect();
+    leftovers.sort_by_key(|s| s.order);
+    next.extend(leftovers);
+    shortcuts::renumber(&mut next);
+    settings.shortcuts = next;
+    let _ = settings.save(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_acrylic(app: tauri::AppHandle, state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.acrylic_enabled = enabled;
+        let _ = s.save(&state.data_dir);
+    }
+    for label in ["chat", "stats", "music", "pet", "logos"] {
+        if let Some(w) = app.get_webview_window(label) {
+            apply_acrylic_opt(&w, enabled);
+        }
+    }
     Ok(())
 }
 
@@ -392,10 +469,11 @@ pub fn run() {
 
             create_windows(app)?;
 
-            // frosted glass on floating windows
+            // frosted glass on floating windows (respects settings toggle)
+            let acrylic_enabled = app.state::<AppState>().settings.lock().unwrap().acrylic_enabled;
             for label in ["chat", "stats", "music", "pet", "logos"] {
                 if let Some(w) = app.get_webview_window(label) {
-                    apply_acrylic(&w);
+                    apply_acrylic_opt(&w, acrylic_enabled);
                 }
             }
 
@@ -469,6 +547,10 @@ pub fn run() {
             collapse,
             restore,
             dock_logos,
+            add_shortcut,
+            remove_shortcut,
+            reorder_shortcuts,
+            set_acrylic,
             get_wallpaper,
             persist_wallpaper,
             reset_wallpaper,

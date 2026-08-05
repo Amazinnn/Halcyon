@@ -1,11 +1,31 @@
 //! settings.json: wallpaper path, per-window grid layout, topmost flags,
-//! collapsed set and logos docking edge. Written atomically (tmp + rename).
+//! collapsed set, logos docking edge, file-shortcut zone and acrylic toggle.
+//! Written atomically (tmp + rename).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
 pub const SETTINGS_FILE: &str = "settings.json";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ShortcutType {
+    File,
+    Folder,
+    Application,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Shortcut {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: ShortcutType,
+    pub target: String,
+    pub order: usize,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +44,20 @@ pub struct Settings {
     pub topmost: HashMap<String, bool>,
     pub collapsed: Vec<String>,
     pub logos_edge: String,
+    #[serde(default)]
+    pub shortcuts: Vec<Shortcut>,
+    #[serde(default = "default_true")]
+    pub acrylic_enabled: bool,
+    #[serde(default = "default_subtitle")]
+    pub focus_subtitle: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_subtitle() -> String {
+    "保持节奏，阳光会照到每一片叶子".into()
 }
 
 impl Default for Settings {
@@ -43,6 +77,9 @@ impl Default for Settings {
             topmost,
             collapsed: Vec::new(),
             logos_edge: "top".into(),
+            shortcuts: Vec::new(),
+            acrylic_enabled: true,
+            focus_subtitle: "保持节奏，阳光会照到每一片叶子".into(),
         }
     }
 }

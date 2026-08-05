@@ -45,3 +45,24 @@
 ### 桌宠与探针
 - 桌宠身体（叶芽 SVG）可拖：去掉 `data-no-drag`（气泡/按钮仍不可拖）。
 - 新增回归探针 `scripts/drag-probe.ps1`：合成"按住→分步移动→松开"，读目标窗口 `GetWindowRect` 轨迹，验证 1:1 跟随（≤8px）、无振荡、落点非 (0,0) 且在屏内、网格吸附、随后拖回原位；修复前复现振荡/落 (0,0)，修复后 PASS。
+
+
+## v1.3 增补（专注桌面视觉精修 · 文件快捷区 · 专注/休息假心跳）
+
+2026-08-05，把专注桌面从静态展示推进为可布置、有生命感的一版。
+
+### 桌面三段式精修
+- 顶条改为悬浮玻璃胶囊（当前任务 + Agent 状态点 + 专注/休息倒计时）；中央大计时保留（呼吸光晕）+ 可配置副题（默认"保持节奏，阳光会照到每一片叶子"，存 `settings.json.focusSubtitle`）；底部 Dock 精简为 **专注 / 设置 / 退出** 三键，"运行中应用"指示移除；Dock 为居中胶囊（`align-self: center`）。
+
+### 文件快捷区（图标区）
+- 合并为单一自适应网格（去应用/快捷页语义），初始为空、末尾固定全局「+」玻璃卡；点「+」弹迷你菜单（文件/应用 / 文件夹）→ 系统对话框（可多选）→ 卡片（玻璃卡 + 悬停上浮辉光 + 自绘类型字形 file/folder/app + 文件名）。
+- 卡片指针拖拽换序（+ 固定末尾，pointer capture + 实时 splice），悬停右上角 ✕ 删除，点击用 `@tauri-apps/plugin-opener` 的 `openPath` 真实打开（capabilities 新增 `opener:allow-open-path`）。
+- 持久化：`settings.json` 新增 `shortcuts: [{ id, name, type: "file"|"folder"|"application", target, order }]`；Rust 新增 `add_shortcut(path)`（按目录/扩展名推断类型、生成 id）、`remove_shortcut(id)`、`reorder_shortcuts(ids)`（`src-tauri/src/shortcuts.rs`，含推断与 renumber 单测）；`get_bootstrap` 返回 shortcuts。
+
+### 设置弹层
+- Dock「设置」打开小玻璃弹层：壁纸导入/重置（复用现有命令）+ 毛玻璃开关 + 版本/关于；新增 `set_acrylic(enabled)` 命令（`acrylic::clear` = ACCENT_DISABLED，实时 apply/clear）；`settings.json` 新增 `acrylicEnabled`，启动时按此应用，老配置文件经 serde default 兼容。
+
+### 专注/休息假心跳
+- ui store 增 `focusState: "idle"|"focus"|"rest"` 与 1s 心跳：专注向上计时、休息从 10:00 倒数到 0 自动回专注；顶条倒计时联动。
+- 桌面根 `.focus-active`（专注态）：整体提亮（brightness/saturate 微升）+ 亮叶绿遮罩与光晕增强（"被注入春天的灵魂"），休息态恢复平静深绿；`prefers-reduced-motion` 下计时照走但无动画。
+- 未改动：AgentEvent 协议、事件名、DB 表；浮窗拖拽/毛玻璃/气泡互斥/壁纸边缘虚化保持。

@@ -2,7 +2,7 @@
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**v1.2.1（当前）**：Rust 光标轮询拖拽（物理坐标、越界钳制、防 (0,0)/卡死，含合成回归探针 `scripts/drag-probe.ps1`）+ 毛玻璃去灰（透明窗 + 不透明"墨水"内容，自实现 SWCA Acrylic，Win11 下不再叠系统浅灰）+ 桌宠身体可拖。v1.2 基础：统一设计语言（深墨绿 × 亮叶绿 `#a3e635`）+ 12×8 网格浮窗 + 壁纸导入（边缘虚化衔接主题）。
+**v1.3（当前）**：专注桌面视觉精修——玻璃胶囊顶条、中央呼吸计时 + 可配置副题、单区**文件快捷区**（全局「+」添加文件/夹/应用、拖拽换序、悬停 ✕ 删除、点击真实打开）、三键 Dock（专注/设置/退出）、设置弹层（壁纸 + 毛玻璃开关）、专注/休息 1s 假心跳与"春天注入"提亮氛围。v1.2.1 基础：Rust 光标轮询拖拽（防卡死）、自实现 SWCA Acrylic 毛玻璃去灰、桌宠身体可拖、拖拽回归探针 `scripts/drag-probe.ps1`。
 
 - **权威设计文档**：[local-focus-desktop-agent-design-v0.2.md](./local-focus-desktop-agent-design-v0.2.md)
 - **技术路线**：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite
