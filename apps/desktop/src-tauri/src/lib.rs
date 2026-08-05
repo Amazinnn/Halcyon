@@ -4,8 +4,10 @@
 //! logos (collapsed capsule strip). No AgentEvent protocol / event-name /
 //! DB changes from the spike.
 
+mod acrylic;
 mod activity;
 mod agents;
+mod drag;
 mod event_bus;
 mod grid;
 mod settings;
@@ -29,6 +31,7 @@ pub struct AppState {
     pub settings: Mutex<Settings>,
     pub data_dir: PathBuf,
     pub screen: Mutex<(f64, f64)>, // logical width/height
+    pub active_drag: Mutex<Option<drag::ActiveDrag>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -36,13 +39,18 @@ pub struct AppState {
 // ---------------------------------------------------------------------------
 
 fn apply_acrylic(w: &tauri::WebviewWindow) {
-    // True frosted glass (Win10 1809+ / Win11). Failure is non-fatal:
-    // windows fall back to translucent fake-glass content styling.
+    // Frosted glass via the SWCA acrylic API with our own low-alpha deep-green
+    // tint. (window-vibrancy 0.8's apply_acrylic ignores the tint on Win11,
+    // leaving the system's default light-gray backdrop.) Failure is
+    // non-fatal; FOCUS_NO_ACRYLIC=1 skips it (CSS fallback) if WebView2 +
+    // acrylic misbehaves.
     #[cfg(target_os = "windows")]
     {
-        let tint: window_vibrancy::Color = (14, 24, 18, 150);
-        if let Err(e) = window_vibrancy::apply_acrylic(w, Some(tint)) {
-            eprintln!("[acrylic] {label} failed: {e}", label = w.label());
+        if std::env::var_os("FOCUS_NO_ACRYLIC").is_some() {
+            return;
+        }
+        if let Ok(hwnd) = w.hwnd() {
+            acrylic::apply(hwnd.0, (14, 24, 18, 56));
         }
     }
     #[cfg(not(target_os = "windows"))]
@@ -57,7 +65,7 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
     }
 }
 
-fn position_logos(app: &tauri::AppHandle, state: &AppState) {
+pub(crate) fn position_logos(app: &tauri::AppHandle, state: &AppState) {
     let Some(w) = app.get_webview_window("logos") else { return };
     let scale = w.scale_factor().unwrap_or(1.0);
     let pos = w.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
@@ -92,7 +100,7 @@ fn update_logos(app: &tauri::AppHandle, state: &AppState) {
     }
 }
 
-fn occupied_rects(settings: &Settings, except: Option<&str>) -> Vec<GridRect> {
+pub(crate) fn occupied_rects(settings: &Settings, except: Option<&str>) -> Vec<GridRect> {
     settings
         .grid
         .iter()
@@ -131,6 +139,33 @@ fn get_grid_metrics(state: tauri::State<'_, AppState>) -> grid::GridMetrics {
     GridManager { screen_w: w, screen_h: h }.metrics()
 }
 
+pub(crate) fn place_window_inner(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    label: &str,
+    col: usize,
+    row: usize,
+) -> Result<GridRect, String> {
+    let (w, h) = *state.screen.lock().unwrap();
+    let gm = GridManager { screen_w: w, screen_h: h };
+    let mut settings = state.settings.lock().unwrap();
+    let current = settings.grid.get(label).copied().unwrap_or(GridRect { col: 0, row: 0, cols: 2, rows: 2 });
+    let occupied = occupied_rects(&settings, Some(label));
+    match gm.place(label, &current, col, row, &occupied) {
+        Ok(new_rect) => {
+            settings.grid.insert(label.to_string(), new_rect);
+            let _ = settings.save(&state.data_dir);
+            position_window(app, label, &new_rect, &gm);
+            Ok(new_rect)
+        }
+        Err(()) => {
+            // occupied: snap back to the current cell
+            position_window(app, label, &current, &gm);
+            Ok(current)
+        }
+    }
+}
+
 #[tauri::command]
 fn place_window(
     app: tauri::AppHandle,
@@ -139,24 +174,7 @@ fn place_window(
     col: usize,
     row: usize,
 ) -> Result<GridRect, String> {
-    let (w, h) = *state.screen.lock().unwrap();
-    let gm = GridManager { screen_w: w, screen_h: h };
-    let mut settings = state.settings.lock().unwrap();
-    let current = settings.grid.get(&label).copied().unwrap_or(GridRect { col: 0, row: 0, cols: 2, rows: 2 });
-    let occupied = occupied_rects(&settings, Some(&label));
-    match gm.place(&label, &current, col, row, &occupied) {
-        Ok(new_rect) => {
-            settings.grid.insert(label.clone(), new_rect);
-            let _ = settings.save(&state.data_dir);
-            position_window(&app, &label, &new_rect, &gm);
-            Ok(new_rect)
-        }
-        Err(()) => {
-            // occupied: snap back to the current cell
-            position_window(&app, &label, &current, &gm);
-            Ok(current)
-        }
-    }
+    place_window_inner(&app, &state, &label, col, row)
 }
 
 #[tauri::command]
@@ -211,12 +229,16 @@ fn restore(app: tauri::AppHandle, state: tauri::State<'_, AppState>, label: Stri
     Ok(())
 }
 
-#[tauri::command]
-fn dock_logos(app: tauri::AppHandle, state: tauri::State<'_, AppState>, edge: String) -> Result<(), String> {
+pub(crate) fn dock_logos_inner(app: &tauri::AppHandle, state: &AppState, edge: String) -> Result<(), String> {
     state.settings.lock().unwrap().logos_edge = edge;
     let _ = state.settings.lock().unwrap().save(&state.data_dir);
-    position_logos(&app, &state);
+    position_logos(app, state);
     Ok(())
+}
+
+#[tauri::command]
+fn dock_logos(app: tauri::AppHandle, state: tauri::State<'_, AppState>, edge: String) -> Result<(), String> {
+    dock_logos_inner(&app, &state, edge)
 }
 
 #[tauri::command]
@@ -364,6 +386,7 @@ pub fn run() {
                 settings: Mutex::new(settings),
                 data_dir,
                 screen: Mutex::new((sw, sh)),
+                active_drag: Mutex::new(None),
             };
             app.manage(state);
 
@@ -396,69 +419,6 @@ pub fn run() {
             // ---- frontend -> core listeners ----
             let h = app.handle().clone();
 
-            let h2 = h.clone();
-            h2.clone().listen("grid:drag_start", move |event| {
-                let v: serde_json::Value =
-                    serde_json::from_str(event.payload()).unwrap_or_default();
-                let label = v.get("label").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                if let Some(overlay) = h2.get_webview_window("grid-overlay") {
-                    // ensure the preview layer never intercepts mouse input
-                    let _ = overlay.set_ignore_cursor_events(true);
-                    let _ = overlay.show();
-                }
-                let state = h2.state::<AppState>();
-                let settings = state.settings.lock().unwrap();
-                let occupied = occupied_rects(&settings, None);
-                let current = settings.grid.get(&label).copied();
-                let _ = h2.emit(
-                    "grid:preview",
-                    serde_json::json!({
-                        "visible": true,
-                        "label": label,
-                        "rect": current,
-                        "occupiedCells": occupied,
-                        "conflict": false,
-                    }),
-                );
-            });
-
-            let h3 = h.clone();
-            h3.clone().listen("grid:drag_move", move |event| {
-                let v: serde_json::Value =
-                    serde_json::from_str(event.payload()).unwrap_or_default();
-                let label = v.get("label").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                let col = v.get("col").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
-                let row = v.get("row").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
-                let state = h3.state::<AppState>();
-                let (wpx, hpx) = *state.screen.lock().unwrap();
-                let gm = GridManager { screen_w: wpx, screen_h: hpx };
-                let settings = state.settings.lock().unwrap();
-                let current = settings.grid.get(&label).copied().unwrap_or(GridRect { col: 0, row: 0, cols: 2, rows: 2 });
-                let occupied = occupied_rects(&settings, Some(&label));
-                let (rect, conflict) = match gm.place(&label, &current, col, row, &occupied) {
-                    Ok(r) => (r, false),
-                    Err(()) => (current, true),
-                };
-                let _ = h3.emit(
-                    "grid:preview",
-                    serde_json::json!({
-                        "visible": true,
-                        "label": label,
-                        "rect": rect,
-                        "occupiedCells": occupied,
-                        "conflict": conflict,
-                    }),
-                );
-            });
-
-            let h4 = h.clone();
-            h4.clone().listen("grid:drag_end", move |_event| {
-                if let Some(overlay) = h4.get_webview_window("grid-overlay") {
-                    let _ = overlay.hide();
-                }
-                let _ = h4.emit("grid:preview", serde_json::json!({ "visible": false }));
-            });
-
             let h5 = h.clone();
             h5.clone().listen("ui:toggle_chat", move |_event| {
                 let state = h5.state::<AppState>();
@@ -485,12 +445,26 @@ pub fn run() {
                 let _ = tx.send(CoreEvent::MusicTick { position_ms, duration_ms });
             });
 
+            // natural-release signal from the drag poller: finalize on the main
+            // thread (window getters are main-thread-only)
+            let hd = h.clone();
+            hd.clone().listen("drag:released", move |event| {
+                let v: serde_json::Value =
+                    serde_json::from_str(event.payload()).unwrap_or_default();
+                let label = v.get("label").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                if !label.is_empty() {
+                    drag::finalize(&hd, &label);
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_bootstrap,
             get_grid_metrics,
             place_window,
+            drag::drag_start,
+            drag::drag_end,
             set_topmost,
             collapse,
             restore,

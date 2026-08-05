@@ -2,18 +2,11 @@
 import { onMounted, ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { PhysicalPosition } from "@tauri-apps/api/dpi";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import AppIcon from "../../components/AppIcon.vue";
-import type { GridMetrics } from "../../lib/grid";
+import { useGridDrag } from "../../composables/useGridDrag";
 
 const collapsed = ref<string[]>([]);
-const win = getCurrentWebviewWindow();
-
-let dragging = false;
-let scale = 1;
-let startScreen = { x: 0, y: 0 };
-let startPos = { x: 0, y: 0 };
+const { onPointerDown, onPointerMove, onPointerUp } = useGridDrag("logos");
 
 const meta: Record<string, { label: string; icon: string }> = {
   chat: { label: "对话", icon: "chat" },
@@ -26,37 +19,6 @@ onMounted(() => {
     collapsed.value = (e.payload as { collapsed: string[] }).collapsed ?? [];
   });
 });
-
-async function onPointerDown(e: PointerEvent) {
-  if ((e.target as HTMLElement).closest("button")) return;
-  dragging = true;
-  startScreen = { x: e.screenX, y: e.screenY };
-  scale = await win.scaleFactor();
-  const p = await win.outerPosition();
-  startPos = { x: p.x, y: p.y };
-  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-}
-
-async function onPointerMove(e: PointerEvent) {
-  if (!dragging) return;
-  const dx = (e.screenX - startScreen.x) * scale;
-  const dy = (e.screenY - startScreen.y) * scale;
-  await win.setPosition(new PhysicalPosition(startPos.x + dx, startPos.y + dy));
-}
-
-async function onPointerUp() {
-  if (!dragging) return;
-  dragging = false;
-  const p = await win.outerPosition();
-  const s = await win.outerSize();
-  scale = await win.scaleFactor();
-  const cx = (p.x + s.width / 2) / scale;
-  const cy = (p.y + s.height / 2) / scale;
-  const m = await invoke<GridMetrics>("get_grid_metrics");
-  const d = { top: cy, bottom: m.screenH - cy, left: cx, right: m.screenW - cx };
-  const edge = Object.keys(d).reduce((a, b) => (d[a as keyof typeof d] < d[b as keyof typeof d] ? a : b));
-  await invoke("dock_logos", { edge });
-}
 
 function restore(label: string) {
   void invoke("restore", { label });
@@ -79,7 +41,7 @@ function restore(label: string) {
   flex-direction: column;
   gap: 6px;
   padding: 8px;
-  background: rgba(10, 16, 13, 0.6);
+  background: transparent;
   border: 1px solid var(--glass-border);
   border-radius: var(--r-md);
   box-sizing: border-box;

@@ -21,3 +21,27 @@
 
 - 新依赖：`window-vibrancy`、`tauri-plugin-dialog`、`@tauri-apps/plugin-dialog`（均 MIT/Apache，记入 THIRD_PARTY_NOTICES）。
 - 网格坐标为逻辑像素（DPI 无关），多屏基于窗口当前所在屏（本机单屏验证，多屏后置）。
+
+## v1.2.1 增补（拖拽修复 · 毛玻璃去灰 · 卡死修复）
+
+2026-08-05，修复浮窗拖拽与毛玻璃视觉，并修复一次应用卡死（AppHangB1）。
+
+### 拖拽改为 Rust 光标轮询
+- 根因：原"webview 指针事件 + 每帧 IPC setPosition + 坐标换算 + 全屏 Overlay"架构不稳——轨迹振荡、窗口残留非网格位、释放落 (0,0)、实时位置与 settings.json 分叉。
+- 实现：新增 `drag_start(label)`/`drag_end(label)` 命令与 `src-tauri/src/drag.rs`。`drag_start` 在主线程记录抓取偏移（`GetCursorPos − 窗口物理原点`），显示输入穿透的 Overlay，并启动 ~15ms 轮询线程：`GetCursorPos`（物理坐标）→ 光标未变则跳过 → `set_position`（异步投递，安全）→ 格变化 `emit grid:preview`；`GetAsyncKeyState(VK_LBUTTON)` 检测松开。
+- 定位一律按屏幕边界钳制（物理级保险），杜绝 (0,0)/屏外落点；释放后复用 `place_window` 的占用回弹/越界钳制并持久化到 `settings.json`。
+- 前端 `useGridDrag.ts` 瘦身为仅"按下/抬起"两个信号（`drag_start`/`drag_end`），删除全部 setPosition/rAF/坐标换算逻辑。
+
+### 卡死（AppHangB1）根因与修复
+- 根因：`drag_end`（主线程）`join()` 轮询线程；轮询线程在 `finalize` 中调用 `outer_position`/`outer_size`/`scale_factor`——这些是 `window_getter!` 同步请求，需回主线程等待响应 → 主线程等轮询、轮询等主线程，互锁死（Tauri 事件日志：Application Hang 1002）。
+- 修复：主线程**永不 join** 轮询线程；`finalize` 只在主线程执行（经 `drag:released` 事件监听或 `drag_end` 命令）；轮询线程只做 `set_position`（异步）、`app.emit`、锁内读 settings/screen；停止改用 `finished: AtomicBool` + 有界等待（≤250ms）。
+- 验证：合成拖拽探针（拖出 + 恢复）后应用存活，无 AppHang；手动多轮拖拽正常。
+
+### 毛玻璃去灰（透明窗 + 不透明"墨水"内容）
+- 根因：window-vibrancy 0.8 在 Win11（build ≥22523）走 `DWMSBT_TRANSIENTWINDOW` 分支并**忽略 tint**，浮窗变成系统默认浅灰磨砂（用户反馈"纯浅灰色、更不透明"）。
+- 实现：删除 window-vibrancy 依赖，新增 `src-tauri/src/acrylic.rs` 自行动态调用未公开 `SetWindowCompositionAttribute`（SWCA），恒走 `ACCENT_ENABLE_ACRYLICBLURBEHIND` 并带低 alpha 深绿 tint `(14,24,18,56)` → 玻璃=仅模糊背景、不叠灰；`FOCUS_NO_ACRYLIC=1` 可整体跳过（CSS 回退）。
+- 浮窗根（chat/stats/music）、WindowHeader、Logos 灰绿 tint 改 `transparent`；`--glass/--glass-strong` 改为不透明深绿 `#0e1612/#101a15`（"墨水"卡片/按钮）；气泡改不透明白；Desktop 壁纸融合 tint 保留。
+
+### 桌宠与探针
+- 桌宠身体（叶芽 SVG）可拖：去掉 `data-no-drag`（气泡/按钮仍不可拖）。
+- 新增回归探针 `scripts/drag-probe.ps1`：合成"按住→分步移动→松开"，读目标窗口 `GetWindowRect` 轨迹，验证 1:1 跟随（≤8px）、无振荡、落点非 (0,0) 且在屏内、网格吸附、随后拖回原位；修复前复现振荡/落 (0,0)，修复后 PASS。

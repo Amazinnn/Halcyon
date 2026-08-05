@@ -25,7 +25,7 @@ function toggleChat() {
     <div v-if="bubbleVisible" class="bubble" :class="`prio-${agent.bubble?.priority}`" data-no-drag>
       {{ agent.bubble?.text }}
     </div>
-    <div class="sprout" :class="`anim-${agent.animation}`" data-no-drag>
+    <div class="sprout" :class="`anim-${agent.animation}`">
       <svg viewBox="0 0 64 64" width="72" height="72">
         <path d="M32 58 C32 42 32 30 32 22" stroke="#a3e635" stroke-width="3" fill="none" stroke-linecap="round" />
         <path d="M32 34 C20 30 15 20 19 11 C28 11 34 21 32 34Z" fill="#4ade80" />
@@ -72,7 +72,7 @@ function toggleChat() {
 @keyframes bloom { 0% { transform: scale(0.8); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
 .bubble {
   position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
-  max-width: 150px; background: rgba(238, 247, 230, 0.95); color: #12211a;
+  max-width: 150px; background: #eef7e6; color: #12211a;
   border-radius: 10px; padding: 5px 10px; font-size: 12px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 5;

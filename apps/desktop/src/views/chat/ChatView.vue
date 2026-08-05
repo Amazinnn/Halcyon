@@ -51,7 +51,7 @@ function send() {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: rgba(8, 13, 10, 0.35);
+  background: transparent;
   border: 1px solid var(--glass-border);
   border-radius: var(--r-lg);
   overflow: hidden;
@@ -60,16 +60,16 @@ function send() {
 .msg-list { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .empty { color: var(--text-low); font-size: 12px; text-align: center; margin-top: 40px; }
 .msg { max-width: 85%; padding: 6px 10px; font-size: 13px; line-height: 1.5; }
-.msg.user { align-self: flex-end; background: rgba(163, 230, 53, 0.16); border-color: rgba(163, 230, 53, 0.35); }
+.msg.user { align-self: flex-end; background: #263718; border-color: rgba(163, 230, 53, 0.35); }
 .who { display: block; font-size: 11px; opacity: 0.7; margin-bottom: 2px; }
 .tool-strip { display: flex; gap: 6px; padding: 6px 12px; flex-wrap: wrap; border-top: 1px solid var(--glass-border); }
 .tool-chip { font-size: 11px; border-radius: var(--r-pill); padding: 2px 8px; background: var(--glass); color: var(--text-mid); }
-.tool-chip.completed { background: rgba(74, 222, 128, 0.16); color: var(--accent-bright); }
+.tool-chip.completed { background: #183624; color: var(--accent-bright); }
 .tool-chip.muted { color: var(--text-low); }
 .composer { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--glass-border); }
 .composer input {
   flex: 1; border: 1px solid var(--glass-border); border-radius: var(--r-sm);
-  padding: 6px 10px; font-size: 13px; background: rgba(10, 16, 13, 0.5); color: var(--text-hi);
+  padding: 6px 10px; font-size: 13px; background: #101a15; color: var(--text-hi);
 }
 .composer input:focus { outline: none; border-color: var(--accent); }
 .composer button {

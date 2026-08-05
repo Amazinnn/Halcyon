@@ -6,9 +6,9 @@
   --bg-1: #0b120f;
   --bg-2: #101a15;
   --bg-3: #16231c;
-  /* glass */
-  --glass: rgba(20, 34, 26, 0.55);
-  --glass-strong: rgba(12, 20, 16, 0.78);
+  /* glass = opaque "ink" surfaces (v1.2.1: window transparent, content opaque) */
+  --glass: #0e1612;
+  --glass-strong: #101a15;
   --glass-border: rgba(163, 230, 53, 0.14);
   /* accent / sunlight */
   --accent: #a3e635;

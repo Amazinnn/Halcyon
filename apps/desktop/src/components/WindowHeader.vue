@@ -43,7 +43,7 @@ async function collapseWin() {
   justify-content: space-between;
   padding: 6px 10px;
   cursor: grab;
-  background: rgba(10, 16, 13, 0.4);
+  background: transparent;
   border-bottom: 1px solid var(--glass-border);
   flex-shrink: 0;
 }

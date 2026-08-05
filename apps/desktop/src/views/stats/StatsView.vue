@@ -72,7 +72,7 @@ onMounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: rgba(8, 13, 10, 0.35);
+  background: transparent;
   border: 1px solid var(--glass-border);
   border-radius: var(--r-lg);
   overflow: hidden;

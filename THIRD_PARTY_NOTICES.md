@@ -31,9 +31,9 @@
 | tokio | MIT |
 | rusqlite（bundled） | MIT |
 | windows | MIT 或 Apache-2.0 |
-| window-vibrancy | 0.8.0 | MIT 或 Apache-2.0 | 浮窗 Acrylic 真毛玻璃（v1.2） |
 | tauri-plugin-dialog | 2 | MIT 或 Apache-2.0 | 壁纸选择对话框（v1.2） |
 
+> 注：v1.2.1 起浮窗 Acrylic 由 `src-tauri/src/acrylic.rs` 自行调用 Win32 `SetWindowCompositionAttribute` 实现（未新增第三方依赖），window-vibrancy 已移除。
 ## 参考项目（首轮未复制代码，仅作设计参考）
 
 详见 `docs/licenses/audit-v0.md`。8 个参考仓库均为 MIT（tauri 为 MIT/Apache 双许可）：

@@ -2,7 +2,7 @@
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**v1.2（当前）**：统一设计语言（深墨绿 × 亮叶绿阳光高光）+ 12×8 网格浮窗管理（默认居右、可拖、可折叠为置顶 logo）+ Acrylic 毛玻璃浮窗 + 壁纸导入（按钮/拖拽，边缘虚化衔接主题）。
+**v1.2.1（当前）**：Rust 光标轮询拖拽（物理坐标、越界钳制、防 (0,0)/卡死，含合成回归探针 `scripts/drag-probe.ps1`）+ 毛玻璃去灰（透明窗 + 不透明"墨水"内容，自实现 SWCA Acrylic，Win11 下不再叠系统浅灰）+ 桌宠身体可拖。v1.2 基础：统一设计语言（深墨绿 × 亮叶绿 `#a3e635`）+ 12×8 网格浮窗 + 壁纸导入（边缘虚化衔接主题）。
 
 - **权威设计文档**：[local-focus-desktop-agent-design-v0.2.md](./local-focus-desktop-agent-design-v0.2.md)
 - **技术路线**：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite
@@ -28,7 +28,7 @@
 apps/desktop/          Tauri 2 + Vue 3 应用（Desktop / Chat / Stats / Music / Pet / Logos / Grid-Overlay 七窗口）
 packages/event-schema/ AgentEvent 协议 v1（JSON Schema + TS 类型 + fixtures，npm test 校验）
 docs/                  审计、可行性、调查、ADR、风险与下一阶段
-docs/architecture/evidence/visual-v1/   v1.2 视觉截图
+docs/architecture/evidence/visual-v1/   v1.2 / v1.2.1 视觉截图（毛玻璃去灰、浮窗透明）
 ```
 
 ## 一键启动
@@ -53,7 +53,8 @@ npm test                 # Ajv 校验 11 合法 + 4 非法 fixture；tsc 类型�
 
 ```powershell
 cd apps/desktop/src-tauri
-cargo test --lib         # Mock Agent 事件 schema 校验单测
+cargo test --lib         # Mock Agent 事件 schema 校验单测 + drag 钳制单测
+powershell -File scripts/drag-probe.ps1   # 拖拽回归探针（需先启动 release/desktop）
 cargo run --bin workerw_probe   # WorkerW 桌面层探针（手动）
 ```
 

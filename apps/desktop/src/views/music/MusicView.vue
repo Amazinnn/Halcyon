@@ -47,7 +47,7 @@ onMounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: rgba(8, 13, 10, 0.4);
+  background: transparent;
   border: 1px solid var(--glass-border);
   border-radius: var(--r-lg);
   overflow: hidden;
@@ -65,7 +65,7 @@ onMounted(() => {
 .times { font-size: 11px; color: var(--text-mid); }
 .controls { display: flex; gap: 8px; margin-top: 4px; }
 .controls button {
-  border: none; background: rgba(255, 255, 255, 0.08); color: var(--text-hi);
+  border: none; background: #16231c; color: var(--text-hi);
   border-radius: var(--r-sm); padding: 3px 10px; cursor: pointer; display: inline-flex;
 }
 .controls button:hover { background: var(--accent-wash); color: var(--accent-bright); }
