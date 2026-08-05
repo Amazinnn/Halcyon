@@ -17,6 +17,8 @@ const taskName = ref("");
 const taskMinutes = ref<number | null>(null);
 const blackText = ref("");
 const whiteText = ref("");
+const runningApps = ref<string[]>([]);
+const appsOpen = ref(false);
 
 const PRESETS = [
   { label: "25/5", focus: 25, rest: 5 },
@@ -81,6 +83,30 @@ async function saveTask() {
   });
   await settings.setCurrentTask(saved.id);
   taskName.value = saved.name;
+}
+
+async function toggleApps() {
+  appsOpen.value = !appsOpen.value;
+  if (appsOpen.value && runningApps.value.length === 0) {
+    try {
+      runningApps.value = await invoke<string[]>("list_running_apps");
+    } catch (e) {
+      console.error("[settings] list_running_apps failed", e);
+    }
+  }
+}
+
+async function addToList(list: "black" | "white", name: string) {
+  const current = list === "black" ? blackText.value : whiteText.value;
+  const lines = current
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (lines.includes(name)) return;
+  lines.push(name);
+  if (list === "black") blackText.value = lines.join("\n");
+  else whiteText.value = lines.join("\n");
+  await saveLists();
 }
 
 async function saveLists() {
@@ -204,6 +230,20 @@ onMounted(load);
         <span class="label">豁免应用（每行一个）</span>
         <textarea v-model="whiteText" rows="2" class="ta"></textarea>
       </div>
+      <div class="row col">
+        <button class="btn" @click="toggleApps">
+          {{ appsOpen ? "收起运行中的应用" : "从运行中的应用选择（点此展开）" }}
+        </button>
+        <div v-if="appsOpen" class="app-list">
+          <div v-for="name in runningApps" :key="name" class="app-row">
+            <span class="app-name" :title="name">{{ name }}</span>
+            <span class="app-actions">
+              <button class="mini" title="加入分心（黑名单）" @click="addToList('black', name)">黑</button>
+              <button class="mini" title="加入豁免（白名单）" @click="addToList('white', name)">白</button>
+            </span>
+          </div>
+        </div>
+      </div>
       <div class="row">
         <button class="btn" @click="saveLists">保存清单</button>
       </div>
@@ -280,5 +320,41 @@ onMounted(load);
 .text-input { flex: 1; min-width: 0; }
 .ta { width: 100%; resize: vertical; }
 .unit { font-size: 11px; color: var(--text-low); }
+.app-list {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px;
+}
+.app-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: var(--r-sm);
+}
+.app-row:hover { background: var(--accent-wash); }
+.app-name {
+  font-size: 11px;
+  color: var(--text-mid);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.app-actions { display: inline-flex; gap: 4px; flex-shrink: 0; }
+.mini {
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-mid);
+  border-radius: var(--r-sm);
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.mini:hover { border-color: var(--accent); color: var(--accent-bright); }
 .about { font-size: 11px; color: var(--text-low); border-top: 1px solid var(--glass-border); padding-top: 8px; }
 </style>

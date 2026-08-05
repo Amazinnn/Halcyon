@@ -8,8 +8,10 @@ import StatsView from "./views/stats/StatsView.vue";
 import MusicView from "./views/music/MusicView.vue";
 import PetView from "./views/pet/PetView.vue";
 import LogosView from "./views/logos/LogosView.vue";
+import TopbarView from "./views/topbar/TopbarView.vue";
 import GridOverlayView from "./views/overlay/GridOverlayView.vue";
 import { useUiStore } from "./stores/ui";
+import { useSettingsStore } from "./stores/settings";
 import { useAgentStore } from "./stores/agent";
 import { playChime } from "./lib/sound";
 
@@ -23,13 +25,14 @@ const view = computed(() => {
     case "music": return MusicView;
     case "pet": return PetView;
     case "logos": return LogosView;
+    case "topbar": return TopbarView;
     case "grid-overlay": return GridOverlayView;
     default: return DesktopView;
   }
 });
 
 onMounted(() => {
-  if (["pet", "music", "logos", "chat", "stats", "grid-overlay"].includes(label)) {
+  if (["pet", "music", "logos", "topbar", "chat", "stats", "grid-overlay"].includes(label)) {
     document.documentElement.classList.add("transparent-window");
     document.body.classList.add("transparent-window");
   }
@@ -38,7 +41,7 @@ onMounted(() => {
   void listen("supervision:alert", (e) => {
     const p = (e.payload ?? {}) as { text?: string };
     useAgentStore().showBubble(p.text ?? "注意保持专注", "high");
-    if (useUiStore().soundEnabled) playChime();
+    if (useSettingsStore().soundEnabled) playChime();
   });
 });
 </script>

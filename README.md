@@ -2,7 +2,7 @@
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**v1.4（当前）**：完整番茄钟计时（双向下倒计时、暂停/继续、跳过、进度环、到点提示音+气泡、时长预设 25/5·50/10·90/15+自定义、今日汇总、`focus_sessions` 写库）+ **监督 V1 软限制**（分心超时/空闲/任务超时三条规则、升级提醒、暂停 30 分钟、`supervision_events` 入库、顶条状态点）+ 应用快捷方式真实 exe 图标 + 顶条胶囊默认隐藏/专注时自动显示。v1.3 基础：专注桌面视觉精修（玻璃胶囊顶条、文件快捷区、三键 Dock、设置弹层）。v1.2.1 基础：Rust 光标轮询拖拽（防卡死）、自实现 SWCA Acrylic 毛玻璃去灰、桌宠身体可拖、拖拽回归探针 `scripts/drag-probe.ps1`。
+**v1.4.1（当前）**：配置单一事实源修复（设置改时长/顶条三态/提示音立即生效，不再各存一份）、顶条改为**独立置顶状态胶囊**（always-on-top 浮在所有应用之上、点击穿透、auto/on/off 显隐，专注/休息时自动出现）、黑/白名单新增**「运行中的应用」选择器**（保留 *通配* 文本域）、计时进度环扩大防重叠、全窗**主题化滚动条**。v1.4 基础：完整番茄钟计时（双向下倒计时、暂停/继续、跳过、进度环、到点提示音+气泡、时长预设、今日汇总、`focus_sessions` 写库）+ **监督 V1 软限制**（分心/空闲/任务超时、升级提醒、暂停 30 分钟、`supervision_events` 入库）+ 应用快捷方式真实 exe 图标。v1.3 基础：专注桌面视觉精修（玻璃胶囊顶条、文件快捷区、三键 Dock、设置弹层）。v1.2.1 基础：Rust 光标轮询拖拽（防卡死）、自实现 SWCA Acrylic 毛玻璃去灰、桌宠身体可拖、拖拽回归探针 `scripts/drag-probe.ps1`。
 
 - **权威设计文档**：[local-focus-desktop-agent-design-v0.2.md](./local-focus-desktop-agent-design-v0.2.md)
 - **技术路线**：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite
@@ -28,7 +28,7 @@
 apps/desktop/          Tauri 2 + Vue 3 应用（Desktop / Chat / Stats / Music / Pet / Logos / Grid-Overlay 七窗口）
 packages/event-schema/ AgentEvent 协议 v1（JSON Schema + TS 类型 + fixtures，npm test 校验）
 docs/                  审计、可行性、调查、ADR、风险与下一阶段
-docs/architecture/evidence/visual-v1/   v1.2~v1.4 视觉截图（毛玻璃去灰、浮窗透明、v1.4 计时/监督态）
+docs/architecture/evidence/visual-v1/   v1.2~v1.4.1 视觉截图（毛玻璃去灰、浮窗透明、v1.4 计时/监督、v1.4.1 置顶胶囊/新环/滚动条）
 ```
 
 ## 一键启动

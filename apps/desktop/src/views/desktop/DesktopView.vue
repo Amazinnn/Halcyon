@@ -3,7 +3,6 @@ import { computed, onMounted, ref } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { useAgentStore } from "../../stores/agent";
 import { useUiStore } from "../../stores/ui";
 import { useSettingsStore } from "../../stores/settings";
 import { useShortcutStore } from "../../stores/shortcuts";
@@ -11,7 +10,6 @@ import type { DesktopShortcut, ShortcutType } from "../../lib/shortcuts";
 import AppIcon from "../../components/AppIcon.vue";
 import SettingsPopover from "../../components/SettingsPopover.vue";
 
-const agent = useAgentStore();
 const ui = useUiStore();
 const settings = useSettingsStore();
 const shortcuts = useShortcutStore();
@@ -49,11 +47,6 @@ const timerText = computed(() =>
 const timerLabel = computed(() =>
   ui.focusState === "focus" ? "专注中" : ui.focusState === "rest" ? "休息中" : "未开始",
 );
-const modeChip = computed(() => {
-  if (ui.focusState === "focus") return `专注中 · ${fmtClock(ui.focusRemainingSec)}`;
-  if (ui.focusState === "rest") return `休息中 · ${fmtClock(ui.restRemainingSec)}`;
-  return "未开始";
-});
 const focusBtnText = computed(() => {
   if (ui.focusState === "idle") return "开始专注";
   if (ui.focusState === "focus") return ui.timerPaused ? "继续" : "暂停";
@@ -63,11 +56,7 @@ const focusIcon = computed(() => {
   if (ui.focusState === "focus") return ui.timerPaused ? "play" : "pause";
   return "leaf";
 });
-const supLabel = computed(() => (ui.supervisionStatus === "drift" ? "走神中" : "监督暂停"));
-const topbarVisible = computed(
-  () => ui.showTopbar === "on" || (ui.showTopbar === "auto" && ui.focusState !== "idle"),
-);
-const ringCirc = 2 * Math.PI * 54;
+const ringCirc = 2 * Math.PI * 150;
 const ringProgress = computed(() => {
   if (ui.focusState === "idle") return 1;
   if (ui.focusState === "rest" && ui.phaseDone) return 0;
@@ -188,12 +177,6 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
-  ui.applyConfig({
-    focusMinutes: settings.focusMinutes,
-    restMinutes: settings.restMinutes,
-    soundEnabled: settings.soundEnabled,
-    showTopbar: settings.showTopbar,
-  });
   await loadWallpaper();
   await shortcuts.load();
   await ui.loadTodaySummary();
@@ -233,27 +216,15 @@ onMounted(async () => {
 
     <div v-if="dropActive" class="drop-hint">松开以设置为壁纸</div>
 
-    <header v-if="topbarVisible" class="topbar">
-      <span class="task">当前任务：{{ settings.currentTask?.name ?? "未设置" }}</span>
-      <span class="agent-status">
-        Agent
-        <span class="dot" :class="`st-${agent.state}`"></span>
-      </span>
-      <span class="mode-chip" :class="ui.focusState">{{ modeChip }}</span>
-      <span v-if="ui.supervisionStatus !== 'ok'" class="sup-status" :class="ui.supervisionStatus">
-        {{ supLabel }}
-      </span>
-    </header>
-
     <section class="hero">
       <div class="timer-wrap" :class="ui.focusState">
-        <svg class="ring" viewBox="0 0 120 120">
-          <circle class="ring-bg" cx="60" cy="60" r="54" />
+        <svg class="ring" viewBox="0 0 360 360">
+          <circle class="ring-bg" cx="180" cy="180" r="150" />
           <circle
             class="ring-fg"
-            cx="60"
-            cy="60"
-            r="54"
+            cx="180"
+            cy="180"
+            r="150"
             :stroke-dasharray="ringCirc"
             :stroke-dashoffset="ringOffset"
           />
@@ -389,47 +360,15 @@ onMounted(async () => {
 }
 
 /* floating glass-capsule top bar */
-.topbar {
-  position: relative; z-index: 5;
-  align-self: center; margin-top: 14px;
-  display: inline-flex; align-items: center; gap: 20px;
-  padding: 9px 20px;
-  border-radius: var(--r-pill);
-  background: var(--glass);
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
-}
-.task { font-size: 13px; font-weight: 600; }
-.agent-status { font-size: 12px; color: var(--text-mid); display: flex; align-items: center; gap: 6px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-low); }
-.dot.st-thinking, .dot.st-reading, .dot.st-searching { background: var(--accent); }
-.dot.st-editing, .dot.st-running, .dot.st-testing { background: var(--accent-bright); }
-.dot.st-waiting_permission { background: var(--warn); }
-.dot.st-success { background: var(--accent); }
-.dot.st-error { background: var(--err); }
-.mode-chip {
-  font-size: 12px; color: var(--text-mid);
-  border: 1px solid var(--glass-border); border-radius: var(--r-pill);
-  padding: 2px 10px;
-}
-.mode-chip.focus { color: var(--accent-bright); border-color: rgba(163, 230, 53, 0.4); }
-.mode-chip.rest { color: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
-.sup-status {
-  font-size: 12px; border-radius: var(--r-pill); padding: 2px 10px;
-  border: 1px solid;
-}
-.sup-status.drift { color: var(--warn); border-color: rgba(251, 191, 36, 0.5); }
-.sup-status.paused { color: var(--text-mid); border-color: var(--glass-border); }
-
 .hero {
   position: relative; z-index: 5;
   display: flex; flex-direction: column; align-items: center;
   padding-top: 4vh;
 }
 .timer-wrap { position: relative; display: inline-flex; align-items: center; justify-content: center; }
-.ring { width: 300px; height: 300px; transform: rotate(-90deg); }
-.ring-bg { fill: none; stroke: rgba(163, 230, 53, 0.1); stroke-width: 3; }
-.ring-fg { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transition: stroke-dashoffset 0.6s linear, stroke 0.3s; }
+.ring { width: 360px; height: 360px; transform: rotate(-90deg); }
+.ring-bg { fill: none; stroke: rgba(163, 230, 53, 0.1); stroke-width: 4; }
+.ring-fg { fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round; transition: stroke-dashoffset 0.6s linear, stroke 0.3s; }
 .timer-wrap.rest .ring-fg { stroke: var(--warn); }
 .timer {
   position: absolute;

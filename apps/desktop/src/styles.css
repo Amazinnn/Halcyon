@@ -66,3 +66,15 @@ html.transparent-window #app {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+/* v1.4.1: themed scrollbars (dark track + lime capsule thumb) - replaces the
+   default white-track/gray-thumb look in chat / stats / settings popover. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(163, 230, 53, 0.18);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgba(163, 230, 53, 0.35); }
+::-webkit-scrollbar-corner { background: transparent; }

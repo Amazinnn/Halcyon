@@ -98,3 +98,31 @@
 - 新事件：`focus:state_changed`（前端→Rust）、`supervision:alert`、`supervision:status`（Rust→前端，冒号命名）。
 - DB 迁移：`focus_sessions`、`supervision_events` 两表（沿用 `schema_migrations` 机制）。
 - Cargo features 追加：`Win32_UI_Shell`、`Win32_System_SystemInformation`（windows crate 既有依赖，无新增第三方依赖）。
+
+
+## v1.4.1 增补（配置单一事实源 · 独立置顶状态胶囊 · 应用列表选单 · 进度环/滚动条）
+
+2026-08-05，修复 v1.4「修改不生效」类问题并落地顶条置顶、应用选择器与视觉细节。
+
+### 配置单一事实源（修 bug）
+- 根因：`focusMinutes/restMinutes/soundEnabled/showTopbar` 在 settings store（持久化）与 ui store（渲染）各存一份且从不互相同步——设置改时长/顶条三态/提示音不生效。
+- 修复：ui store 删除这四个重复 state，改为 getter 实时委托 `useSettingsStore()`；`startFocus/startRest` 经 getter 读最新时长（"下一轮生效"真实落地）；`onPhaseChime` 与 `App.vue` 的 `supervision:alert` 提示音 gate 只读 settings store。`applyConfig` 仅保留 `focusSubtitle`。
+
+### 独立置顶状态胶囊（新窗口 `topbar`）
+- 新增 `topbar` 窗口（约 500×44，主屏顶部居中）：`transparent + always_on_top + skip_taskbar + decorations(false)` + `set_ignore_cursor_events(true)`（纯展示、点击穿透，绝不挡应用操作）。不参与 12×8 网格、不参与折叠。
+- 新视图 `views/topbar/TopbarView.vue`：任务名 + Agent 状态点 + 「专注/休息 · mm:ss」+ 监督状态点；监听新事件 `focus:tick`（桌面 ui store 每秒广播 `{state, focusRemainingSec, restRemainingSec, paused, phaseDone}`）、`supervision:status`、`agent:event`（全局）。
+- Rust 控制显隐：`apply_topbar_visibility`（`visible = mode=="on" || (mode=="auto" && state!="idle")`）在 `focus:state_changed` 监听与 `set_show_topbar` 命令内调用；启动时应用一次 + 1.2s 防御性复应用（防窗口注册竞态）。
+- 桌面内联胶囊删除（DesktopView 不再渲染顶条）；capsule 信息由悬浮窗口独占。
+- capabilities：windows 列表加 `"topbar"`，新增 `core:window:allow-set-ignore-cursor-events`。
+
+### 黑/白名单应用选择器
+- 新命令 `list_running_apps() -> Vec<String>`（`src-tauri/src/apps.rs`）：`EnumWindows` 收集可见顶层窗口 → 跳过本进程 pid → `QueryFullProcessImageNameW` 取 exe 名 → 去重（大小写不敏感）、排序、上限 100；复用既有 Cargo features，无新依赖。
+- SettingsPopover 监督分区新增「运行中的应用」折叠列表：每行 = 进程名 + [黑] [白] 按钮，点击追加并立即持久化；*通配* 文本域保留。
+
+### 进度环与滚动条
+- 计时环：viewBox 120→360、`cx=cy=180, r=150`、stroke-width 4、`.ring` 300→360px、`ringCirc = 2π×150`——内径 ~295px 足够容纳 8 字符倒计时，数字不再与环重叠（截图验证：环心=屏心，文字在环内）。
+- 全局 `::-webkit-scrollbar`：10px、透明轨道、`rgba(163,230,53,.18)` 圆角滑块（hover 提亮），替换默认白底灰条。
+
+### 验证
+- `cargo test --lib` 32 项全绿（新增 `list_running_apps` 冒烟/去重排序、`topbar_visible` 模式矩阵）；`npm run build` 与 `packages/event-schema npm test` 绿。
+- 实机：idle 顶条隐藏、点「开始专注」后顶条出现且胶囊显示「专注中 · 0:39」实时倒计时；PrintWindow 捕获桌面窗口 hero 环居中；`v1.4.1-*` 截图存 `docs/architecture/evidence/visual-v1/`。

@@ -8,10 +8,16 @@ export type FocusState = "idle" | "focus" | "rest";
 export type SupervisionStatus = "ok" | "drift" | "paused";
 
 /**
- * UI coordinator + pomodoro timer (v1.4): focus/rest both count down; focus
- * reaching 0 auto-enters rest, rest reaching 0 stops and waits for the user;
- * pause freezes the timer, skip advances the phase. Phase transitions are
- * reported to the Rust supervision engine via `focus:state_changed`.
+ * UI coordinator + pomodoro timer (v1.4 / v1.4.1): focus/rest both count down;
+ * focus reaching 0 auto-enters rest, rest reaching 0 stops and waits for the
+ * user; pause freezes the timer, skip advances the phase. Phase transitions
+ * are reported to the Rust supervision engine via `focus:state_changed`.
+ *
+ * v1.4.1: durations/sound/topbar config are NOT duplicated here - they are
+ * getters delegating to the settings store (single source of truth), so
+ * changes made in the settings popover take effect immediately. A `focus:tick`
+ * event is broadcast every second so the always-on-top status capsule
+ * (topbar window) can mirror the live countdown.
  */
 export const useUiStore = defineStore("ui", {
   state: () => ({
@@ -23,16 +29,26 @@ export const useUiStore = defineStore("ui", {
     restRemainingSec: 0,
     timerPaused: false,
     phaseDone: false,
-    focusMinutes: 25,
-    restMinutes: 5,
-    soundEnabled: true,
-    showTopbar: "auto" as "auto" | "on" | "off",
     todayFocusSec: 0,
     todayRounds: 0,
     supervisionStatus: "ok" as SupervisionStatus,
     focusSubtitle: "保持节奏，阳光会照到每一片叶子",
     _ticker: null as number | null,
   }),
+  getters: {
+    focusMinutes(): number {
+      return useSettingsStore().focusMinutes;
+    },
+    restMinutes(): number {
+      return useSettingsStore().restMinutes;
+    },
+    soundEnabled(): boolean {
+      return useSettingsStore().soundEnabled;
+    },
+    showTopbar(): "auto" | "on" | "off" {
+      return useSettingsStore().showTopbar;
+    },
+  },
   actions: {
     async init() {
       await listen("window:visibility", (e) => {
@@ -44,20 +60,17 @@ export const useUiStore = defineStore("ui", {
         if (st === "drift" || st === "paused" || st === "ok") this.supervisionStatus = st;
       });
     },
-    applyConfig(cfg: {
-      focusMinutes?: number;
-      restMinutes?: number;
-      soundEnabled?: boolean;
-      showTopbar?: string;
-      focusSubtitle?: string;
-    }) {
-      if (typeof cfg.focusMinutes === "number") this.focusMinutes = cfg.focusMinutes;
-      if (typeof cfg.restMinutes === "number") this.restMinutes = cfg.restMinutes;
-      if (typeof cfg.soundEnabled === "boolean") this.soundEnabled = cfg.soundEnabled;
-      if (cfg.showTopbar === "auto" || cfg.showTopbar === "on" || cfg.showTopbar === "off") {
-        this.showTopbar = cfg.showTopbar;
-      }
+    applyConfig(cfg: { focusSubtitle?: string }) {
       if (cfg.focusSubtitle) this.focusSubtitle = cfg.focusSubtitle;
+    },
+    emitTick() {
+      void emit("focus:tick", {
+        state: this.focusState,
+        focusRemainingSec: this.focusRemainingSec,
+        restRemainingSec: this.restRemainingSec,
+        paused: this.timerPaused,
+        phaseDone: this.phaseDone,
+      });
     },
     startFocus() {
       this.stopTicker();
@@ -66,6 +79,7 @@ export const useUiStore = defineStore("ui", {
       this.phaseDone = false;
       this.focusRemainingSec = this.focusMinutes * 60;
       void emit("focus:state_changed", { state: "focus" });
+      this.emitTick();
       this._ticker = window.setInterval(() => this.tick(), 1000);
     },
     startRest(completed: boolean) {
@@ -75,6 +89,7 @@ export const useUiStore = defineStore("ui", {
       this.phaseDone = false;
       this.restRemainingSec = this.restMinutes * 60;
       void emit("focus:state_changed", { state: "rest", completed });
+      this.emitTick();
       this._ticker = window.setInterval(() => this.tick(), 1000);
     },
     tick() {
@@ -85,7 +100,9 @@ export const useUiStore = defineStore("ui", {
           this.onPhaseChime();
           window.setTimeout(() => void this.loadTodaySummary(), 600);
           this.startRest(true);
+          return;
         }
+        this.emitTick();
       } else if (this.focusState === "rest") {
         this.restRemainingSec--;
         if (this.restRemainingSec <= 0) {
@@ -94,16 +111,17 @@ export const useUiStore = defineStore("ui", {
           this.phaseDone = true;
           this.onPhaseChime();
         }
+        this.emitTick();
       }
     },
     onPhaseChime() {
-      const settings = useSettingsStore();
-      if (settings.soundEnabled || this.soundEnabled) playChime();
+      if (this.soundEnabled) playChime();
     },
     pause() {
       if (this.focusState === "idle" || this.phaseDone) return;
       this.timerPaused = !this.timerPaused;
       void emit("focus:state_changed", { state: this.focusState, paused: this.timerPaused });
+      this.emitTick();
     },
     skip() {
       if (this.focusState === "focus") {

@@ -7,6 +7,7 @@
 mod acrylic;
 mod activity;
 mod agents;
+mod apps;
 mod drag;
 mod event_bus;
 mod grid;
@@ -35,6 +36,7 @@ pub struct AppState {
     pub screen: Mutex<(f64, f64)>, // logical width/height
     pub active_drag: Mutex<Option<drag::ActiveDrag>>,
     pub focus_track: Mutex<supervision::FocusTrack>,
+    pub focus_state: Mutex<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -433,13 +435,16 @@ fn set_sound_enabled(state: tauri::State<'_, AppState>, enabled: bool) -> Result
 }
 
 #[tauri::command]
-fn set_show_topbar(state: tauri::State<'_, AppState>, mode: String) -> Result<(), String> {
+fn set_show_topbar(app: tauri::AppHandle, mode: String) -> Result<(), String> {
     if !matches!(mode.as_str(), "auto" | "on" | "off") {
         return Err("showTopbar must be auto|on|off".into());
     }
-    let mut settings = state.settings.lock().unwrap();
+    let app_state = app.state::<AppState>();
+    let mut settings = app_state.settings.lock().unwrap();
     settings.show_topbar = mode;
-    let _ = settings.save(&state.data_dir);
+    let _ = settings.save(&app_state.data_dir);
+    drop(settings);
+    apply_topbar_visibility(&app);
     Ok(())
 }
 
@@ -480,6 +485,11 @@ fn get_shortcut_icon(path: String) -> Result<serde_json::Value, String> {
         })),
         None => Err("no icon".into()),
     }
+}
+
+#[tauri::command]
+fn list_running_apps() -> Vec<String> {
+    apps::list_running_apps()
 }
 
 #[tauri::command]
@@ -553,7 +563,38 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .visible(false)
         .build()?;
 
+    let topbar = tauri::WebviewWindowBuilder::new(app, "topbar", url.clone())
+        .title("状态")
+        .inner_size(500.0, 44.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .build()?;
+    // informational only: never intercept mouse clicks on apps underneath
+    topbar.set_ignore_cursor_events(true)?;
+
     Ok(())
+}
+
+/// Whether the floating status capsule (topbar window) should be visible.
+pub fn topbar_visible(mode: &str, focus_state: &str) -> bool {
+    mode == "on" || (mode == "auto" && focus_state != "idle")
+}
+
+fn apply_topbar_visibility(app: &tauri::AppHandle) {
+    let app_state = app.state::<AppState>();
+    let mode = app_state.settings.lock().unwrap().show_topbar.clone();
+    let state = app_state.focus_state.lock().unwrap().clone();
+    let visible = topbar_visible(&mode, &state);
+    if let Some(w) = app.get_webview_window("topbar") {
+        if visible {
+            let _ = w.show();
+        } else {
+            let _ = w.hide();
+        }
+    }
 }
 
 fn apply_initial_layout(app: &tauri::App, state: &AppState) {
@@ -609,6 +650,7 @@ pub fn run() {
                 screen: Mutex::new((sw, sh)),
                 active_drag: Mutex::new(None),
                 focus_track: Mutex::new(supervision::FocusTrack::default()),
+                focus_state: Mutex::new("idle".to_string()),
             };
             app.manage(state);
 
@@ -616,7 +658,7 @@ pub fn run() {
 
             // frosted glass on floating windows (respects settings toggle)
             let acrylic_enabled = app.state::<AppState>().settings.lock().unwrap().acrylic_enabled;
-            for label in ["chat", "stats", "music", "pet", "logos"] {
+            for label in ["chat", "stats", "music", "pet", "logos", "topbar"] {
                 if let Some(w) = app.get_webview_window(label) {
                     apply_acrylic_opt(&w, acrylic_enabled);
                 }
@@ -624,6 +666,23 @@ pub fn run() {
 
             let app_state = app.state::<AppState>();
             apply_initial_layout(app, &app_state);
+
+            // always-on-top status capsule: top-center of the primary screen
+            if let Some(tb) = app.get_webview_window("topbar") {
+                let _ = tb.set_position(LogicalPosition::new(((sw - 500.0) / 2.0).max(0.0), 8.0));
+            }
+            apply_topbar_visibility(&app.handle());
+            // defensive re-apply shortly after the event loop starts: the
+            // first apply can race with window registration (observed once as
+            // the capsule briefly showing in idle), this guarantees the
+            // configured visibility wins.
+            {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+                    apply_topbar_visibility(&h);
+                });
+            }
 
             // core event bus + relay
             let (tx, rx) = tokio::sync::broadcast::channel::<CoreEvent>(256);
@@ -690,6 +749,7 @@ pub fn run() {
                 let paused = v.get("paused").and_then(|x| x.as_bool()).unwrap_or(false);
                 let completed = v.get("completed").and_then(|x| x.as_bool()).unwrap_or(false);
                 let app_state = hf.state::<AppState>();
+                *app_state.focus_state.lock().unwrap() = state.clone();
                 let mut ft = app_state.focus_track.lock().unwrap();
                 match state.as_str() {
                     "focus" => {
@@ -724,6 +784,8 @@ pub fn run() {
                         ft.paused = false;
                     }
                 }
+                drop(ft);
+                apply_topbar_visibility(&hf);
             });
 
             Ok(())
@@ -751,6 +813,7 @@ pub fn run() {
             set_supervision_enabled,
             set_sound_enabled,
             set_show_topbar,
+            list_running_apps,
             record_focus_session,
             get_today_focus_summary,
             get_shortcut_icon,
@@ -761,4 +824,21 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+#[cfg(test)]
+mod tests {
+    use super::topbar_visible;
+
+    #[test]
+    fn topbar_visibility_modes() {
+        assert!(topbar_visible("on", "idle"));
+        assert!(topbar_visible("on", "focus"));
+        assert!(topbar_visible("on", "rest"));
+        assert!(topbar_visible("auto", "focus"));
+        assert!(topbar_visible("auto", "rest"));
+        assert!(!topbar_visible("auto", "idle"));
+        assert!(!topbar_visible("off", "focus"));
+        assert!(!topbar_visible("off", "rest"));
+        assert!(!topbar_visible("off", "idle"));
+    }
 }
