@@ -8,10 +8,12 @@ mod acrylic;
 mod activity;
 mod agents;
 mod apps;
+mod cli;
 mod drag;
 mod event_bus;
 mod grid;
 mod icons;
+mod launch;
 mod settings;
 mod shortcuts;
 mod storage;
@@ -20,6 +22,7 @@ mod wallpaper;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -28,7 +31,7 @@ use tauri::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 
 use event_bus::CoreEvent;
 use grid::GridManager;
-use settings::{GridRect, Settings, Shortcut, Task};
+use settings::{GridRect, Settings, ShortcutType, Task};
 
 pub struct AppState {
     pub settings: Mutex<Settings>,
@@ -37,6 +40,9 @@ pub struct AppState {
     pub active_drag: Mutex<Option<drag::ActiveDrag>>,
     pub focus_track: Mutex<supervision::FocusTrack>,
     pub focus_state: Mutex<String>,
+    pub cli_pending: Mutex<HashMap<u64, std::sync::mpsc::Sender<serde_json::Value>>>,
+    pub cli_next_id: AtomicU64,
+    pub cli_token: Mutex<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -129,7 +135,7 @@ struct Bootstrap {
     topmost: HashMap<String, bool>,
     collapsed: Vec<String>,
     wallpaper_path: Option<String>,
-    shortcuts: Vec<Shortcut>,
+    shortcuts: Vec<storage::ShortcutRow>,
     acrylic_enabled: bool,
     focus_subtitle: String,
     tasks: Vec<Task>,
@@ -145,14 +151,21 @@ struct Bootstrap {
 }
 
 #[tauri::command]
-fn get_bootstrap(state: tauri::State<'_, AppState>) -> Bootstrap {
+fn get_bootstrap(
+    state: tauri::State<'_, AppState>,
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+) -> Bootstrap {
     let s = state.settings.lock().unwrap();
+    let shortcuts = store
+        .lock()
+        .map(|st| st.list_shortcuts().unwrap_or_default())
+        .unwrap_or_default();
     Bootstrap {
         grid: s.grid.clone(),
         topmost: s.topmost.clone(),
         collapsed: s.collapsed.clone(),
         wallpaper_path: s.wallpaper_path.clone(),
-        shortcuts: s.shortcuts.clone(),
+        shortcuts,
         acrylic_enabled: s.acrylic_enabled,
         focus_subtitle: s.focus_subtitle.clone(),
         tasks: s.tasks.clone(),
@@ -296,56 +309,171 @@ fn reset_wallpaper(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// First free icon cell (row-major from the top) that is not forbidden
+/// (hero cols 3-9 x rows 0-3, dock row 7) and not already occupied.
+fn free_cell_for(existing: &[storage::ShortcutRow]) -> (i64, i64) {
+    let forbidden = |c: i64, r: i64| (c >= 3 && c <= 9 && r >= 0 && r <= 3) || r == 7;
+    for row in 0i64..grid::GRID_ROWS as i64 {
+        for col in 0i64..grid::GRID_COLS as i64 {
+            if forbidden(col, row) {
+                continue;
+            }
+            if !existing.iter().any(|e| e.col == col && e.row == row) {
+                return (col, row);
+            }
+        }
+    }
+    (0, 4)
+}
+
+fn gen_shortcut_id(existing: &[storage::ShortcutRow]) -> String {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let mut i = 0u64;
+    loop {
+        let id = format!("sc-{ts}-{i}");
+        if !existing.iter().any(|e| e.id == id) {
+            return id;
+        }
+        i += 1;
+    }
+}
+
+fn insert_new_shortcut(
+    store: &std::sync::Arc<Mutex<storage::Store>>,
+    name: String,
+    kind: ShortcutType,
+    target: String,
+) -> Result<storage::ShortcutRow, String> {
+    let st = store.lock().map_err(|e| e.to_string())?;
+    let existing = st.list_shortcuts().map_err(|e| e.to_string())?;
+    let (col, row) = free_cell_for(&existing);
+    let row_ = storage::ShortcutRow {
+        id: gen_shortcut_id(&existing),
+        name,
+        kind: kind.as_str().to_string(),
+        target,
+        col,
+        row,
+        fit_col: None,
+        fit_row: None,
+        fit_cols: None,
+        fit_rows: None,
+    };
+    st.insert_shortcut(&row_).map_err(|e| e.to_string())?;
+    Ok(row_)
+}
+
 #[tauri::command]
-fn add_shortcut(state: tauri::State<'_, AppState>, path: String) -> Result<Shortcut, String> {
+fn add_shortcut(
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+    path: String,
+) -> Result<storage::ShortcutRow, String> {
     let p = std::path::PathBuf::from(&path);
     if !p.exists() {
         return Err(format!("path not found: {path}"));
     }
-    let mut settings = state.settings.lock().unwrap();
-    let sc = Shortcut {
-        id: shortcuts::new_id(&settings.shortcuts),
-        name: shortcuts::display_name(&p),
-        kind: shortcuts::infer_type(&p),
-        target: path,
-        order: settings.shortcuts.len(),
-    };
-    settings.shortcuts.push(sc.clone());
-    let _ = settings.save(&state.data_dir);
-    Ok(sc)
+    let name = shortcuts::display_name(&p);
+    let kind = shortcuts::infer_type(&p);
+    insert_new_shortcut(&store, name, kind, path)
 }
 
 #[tauri::command]
-fn remove_shortcut(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
-    let mut settings = state.settings.lock().unwrap();
-    settings.shortcuts.retain(|s| s.id != id);
-    shortcuts::renumber(&mut settings.shortcuts);
-    let _ = settings.save(&state.data_dir);
-    Ok(())
-}
-
-#[tauri::command]
-fn reorder_shortcuts(state: tauri::State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
-    let mut settings = state.settings.lock().unwrap();
-    let mut by_id: HashMap<String, Shortcut> = settings
-        .shortcuts
-        .iter()
-        .cloned()
-        .map(|s| (s.id.clone(), s))
-        .collect();
-    let mut next: Vec<Shortcut> = Vec::with_capacity(ids.len());
-    for id in &ids {
-        if let Some(s) = by_id.remove(id) {
-            next.push(s);
-        }
+fn add_url_shortcut(
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+    name: String,
+    url: String,
+) -> Result<storage::ShortcutRow, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("URL 需以 http:// 或 https:// 开头".into());
     }
-    let mut leftovers: Vec<Shortcut> = by_id.into_values().collect();
-    leftovers.sort_by_key(|s| s.order);
-    next.extend(leftovers);
-    shortcuts::renumber(&mut next);
-    settings.shortcuts = next;
-    let _ = settings.save(&state.data_dir);
-    Ok(())
+    let display = if name.trim().is_empty() { url.clone() } else { name.trim().to_string() };
+    insert_new_shortcut(&store, display, ShortcutType::Url, url)
+}
+
+#[tauri::command]
+fn add_internal_shortcut(
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+    name: String,
+    target: String,
+) -> Result<storage::ShortcutRow, String> {
+    if !matches!(target.as_str(), "chat" | "stats" | "music") {
+        return Err("内部页 target 需为 chat|stats|music".into());
+    }
+    let display = if name.trim().is_empty() {
+        match target.as_str() {
+            "chat" => "对话",
+            "stats" => "统计",
+            _ => "音乐",
+        }
+        .to_string()
+    } else {
+        name.trim().to_string()
+    };
+    insert_new_shortcut(&store, display, ShortcutType::Internal, target)
+}
+
+#[tauri::command]
+fn remove_shortcut(
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+    id: String,
+) -> Result<(), String> {
+    store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .delete_shortcut(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn move_shortcut(
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+    id: String,
+    col: i64,
+    row: i64,
+) -> Result<(), String> {
+    let col = col.clamp(0, (grid::GRID_COLS - 1) as i64);
+    let row = row.clamp(0, (grid::GRID_ROWS - 1) as i64);
+    store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .move_shortcut(&id, col, row)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_shortcut_fit(
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+    id: String,
+    col: i64,
+    row: i64,
+    cols: i64,
+    rows: i64,
+) -> Result<(), String> {
+    let col = col.clamp(0, (grid::GRID_COLS - 1) as i64);
+    let row = row.clamp(0, (grid::GRID_ROWS - 1) as i64);
+    let cols = cols.clamp(1, grid::GRID_COLS as i64 - col);
+    let rows = rows.clamp(1, grid::GRID_ROWS as i64 - row);
+    store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .set_shortcut_fit(&id, col, row, cols, rows)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn launch_shortcut(
+    app: tauri::AppHandle,
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+    id: String,
+) -> Result<(), String> {
+    let st = store.lock().map_err(|e| e.to_string())?;
+    let rows = st.list_shortcuts().map_err(|e| e.to_string())?;
+    let row = rows.iter().find(|r| r.id == id).cloned().ok_or("shortcut not found")?;
+    drop(st);
+    crate::launch::launch_shortcut(&app, &row)
 }
 
 #[tauri::command]
@@ -644,6 +772,8 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let settings = Settings::load(&data_dir);
+            let legacy_shortcuts = settings.shortcuts.clone();
+            let data_dir_clone = data_dir.clone();
             let state = AppState {
                 settings: Mutex::new(settings),
                 data_dir,
@@ -651,8 +781,23 @@ pub fn run() {
                 active_drag: Mutex::new(None),
                 focus_track: Mutex::new(supervision::FocusTrack::default()),
                 focus_state: Mutex::new("idle".to_string()),
+                cli_pending: Mutex::new(HashMap::new()),
+                cli_next_id: AtomicU64::new(0),
+                cli_token: Mutex::new(String::new()),
             };
             app.manage(state);
+
+            // v1.5: DB store must be managed before the desktop webview calls
+            // get_bootstrap on mount (otherwise: state not managed for field
+            // `store`, observed as the v1.5 empty-shortcut regression).
+            let store = storage::Store::open(&app.state::<AppState>().data_dir.join("spike.db"))?;
+            store.migrate()?;
+            let store = std::sync::Arc::new(Mutex::new(store));
+            app.manage(store.clone());
+            {
+                let store_guard = store.lock().unwrap();
+                let _ = store_guard.migrate_shortcuts_from_settings(&legacy_shortcuts);
+            }
 
             create_windows(app)?;
 
@@ -691,10 +836,8 @@ pub fn run() {
 
             agents::mock::spawn(tx.clone());
 
-            let store = storage::Store::open(&app_state.data_dir.join("spike.db"))?;
-            store.migrate()?;
-            let store = std::sync::Arc::new(Mutex::new(store));
-            app.manage(store.clone());
+            // v1.5: local CLI control plane (focus-cli)
+            cli::spawn(app_handle.clone(), store.clone(), data_dir_clone);
             let tx_probe = tx.clone();
             activity::spawn_probe(tx_probe, store.clone());
             supervision::spawn(app_handle.clone(), store);
@@ -788,6 +931,16 @@ pub fn run() {
                 apply_topbar_visibility(&hf);
             });
 
+            // CLI timer round-trip: desktop webview replies with live state
+            let hc = h.clone();
+            hc.clone().listen("cli:timer-done", move |event| {
+                let v: serde_json::Value = serde_json::from_str(event.payload()).unwrap_or_default();
+                let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(u64::MAX);
+                if let Some(tx) = hc.state::<AppState>().cli_pending.lock().unwrap().remove(&id) {
+                    let _ = tx.send(v);
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -801,8 +954,12 @@ pub fn run() {
             restore,
             dock_logos,
             add_shortcut,
+            add_url_shortcut,
+            add_internal_shortcut,
             remove_shortcut,
-            reorder_shortcuts,
+            move_shortcut,
+            set_shortcut_fit,
+            launch_shortcut,
             set_acrylic,
             save_task,
             set_current_task,
@@ -840,5 +997,26 @@ mod tests {
         assert!(!topbar_visible("off", "focus"));
         assert!(!topbar_visible("off", "rest"));
         assert!(!topbar_visible("off", "idle"));
+    }
+
+    #[test]
+    fn free_cell_skips_forbidden_zones() {
+        use super::free_cell_for;
+        let (c0, r0) = free_cell_for(&[]);
+        assert_eq!((c0, r0), (0, 0), "top-left is free (hero only blocks cols 3-9 rows 0-3)");
+        let occupied = vec![crate::storage::ShortcutRow {
+            id: "x".into(),
+            name: "x".into(),
+            kind: "file".into(),
+            target: "x".into(),
+            col: 0,
+            row: 4,
+            fit_col: None,
+            fit_row: None,
+            fit_cols: None,
+            fit_rows: None,
+        }];
+        let (c1, r1) = free_cell_for(&occupied);
+        assert_eq!((c1, r1), (0, 0), "occupied (0,4) does not block the top-left");
     }
 }

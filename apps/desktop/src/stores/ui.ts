@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useSettingsStore } from "./settings";
 import { playChime } from "../lib/sound";
 
@@ -58,6 +59,23 @@ export const useUiStore = defineStore("ui", {
       await listen("supervision:status", (e) => {
         const st = (e.payload as { status?: string })?.status;
         if (st === "drift" || st === "paused" || st === "ok") this.supervisionStatus = st;
+      });
+      // Agent CLI control plane (v1.5): `focus-cli timer ...` routes through
+      // the desktop webview, which runs the action and replies with live state.
+      await listen<{ id: number; action: string }>("cli:timer", (e) => {
+        if (getCurrentWebviewWindow().label !== "desktop") return;
+        const { id, action } = e.payload;
+        if (action === "start") this.startFocus();
+        else if (action === "pause") this.pause();
+        else if (action === "skip") this.skip();
+        void emit("cli:timer-done", {
+          id,
+          state: this.focusState,
+          focusRemainingSec: this.focusRemainingSec,
+          restRemainingSec: this.restRemainingSec,
+          paused: this.timerPaused,
+          phaseDone: this.phaseDone,
+        });
       });
     },
     applyConfig(cfg: { focusSubtitle?: string }) {

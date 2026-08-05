@@ -24,6 +24,8 @@ const paths = computed<{ d: string; filled?: boolean }[]>(() => {
     case "plus": return [{ d: "M12 5v14M5 12h14" }];
     case "settings": return [{ d: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" }, { d: "M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1" }];
     case "power": return [{ d: "M12 3v9" }, { d: "M6.3 6.3a8 8 0 1 0 11.4 0" }];
+    case "url": return [{ d: "M9 15l6-6" }, { d: "M7.3 12.7l-2 2a3.5 3.5 0 0 0 5 5l2-2M16.7 11.3l2-2a3.5 3.5 0 0 0-5-5l-2 2" }];
+    case "panel": return [{ d: "M4 5h16v14H4z" }, { d: "M4 9h16" }];
     default: return [{ d: "" }];
   }
 });

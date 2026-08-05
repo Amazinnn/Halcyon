@@ -25,6 +25,32 @@ pub enum ShortcutType {
     File,
     Folder,
     Application,
+    Url,
+    Internal,
+}
+
+impl ShortcutType {
+    /// Stable lowercase string used as the DB `type` column.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ShortcutType::File => "file",
+            ShortcutType::Folder => "folder",
+            ShortcutType::Application => "application",
+            ShortcutType::Url => "url",
+            ShortcutType::Internal => "internal",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ShortcutType> {
+        match s {
+            "file" => Some(ShortcutType::File),
+            "folder" => Some(ShortcutType::Folder),
+            "application" => Some(ShortcutType::Application),
+            "url" => Some(ShortcutType::Url),
+            "internal" => Some(ShortcutType::Internal),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

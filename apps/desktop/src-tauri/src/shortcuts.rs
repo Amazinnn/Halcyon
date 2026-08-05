@@ -32,6 +32,7 @@ pub fn display_name(path: &Path) -> String {
 }
 
 /// Best-effort unique id: timestamp + current list length.
+#[allow(dead_code)] // legacy settings.json path; DB ids are generated in lib.rs
 pub fn new_id(existing: &[Shortcut]) -> String {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -41,6 +42,7 @@ pub fn new_id(existing: &[Shortcut]) -> String {
 }
 
 /// Renumber `order` fields to match vector position.
+#[allow(dead_code)] // legacy settings.json path; free placement replaces ordering
 pub fn renumber(list: &mut [Shortcut]) {
     for (i, s) in list.iter_mut().enumerate() {
         s.order = i;

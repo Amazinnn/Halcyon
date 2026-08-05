@@ -1952,3 +1952,45 @@ V1 的关键不在于功能数量，而在于先证明以下闭环：
 8. 通过设置界面配置日记路径、任务路径和预设提示词。
 9. 明确“提示词负责告诉 Agent 如何理解文件，宿主权限系统负责限制它可以访问什么”。
 10. 更新 V1 范围、里程碑、数据库、目录结构和 Codex 技术原型任务。
+
+---
+
+# 28. Agent 本地控制面（focus-cli，v1.5 增补）
+
+> 用户 2026-08-05 提出的方向：把应用能力以 CLI 暴露给 Agent 调用。本节为既有文档的**追加章节**，不改动任何既有章节编号与内容。
+
+## 28.1 动机
+
+Agent（M3 接入后）需要"字面意义上监督用户在干什么"并驱动应用状态。与其让 Agent 直接读 DB 或猜 UI，不如由宿主暴露一个**本机控制面**：
+
+- 计时动作（开始/暂停/跳过）——Agent 可替用户开启/调整专注。
+- 统计与数据库查询（今日/本周/最近会话）——Agent 读取授权数据。
+- 桌面布局与可见应用——Agent 了解"用户现在在哪个应用/窗口上"。
+
+## 28.2 载体与传输
+
+- 新二进制 `focus-cli`（与主程序同 crate 的第二个 bin）。
+- 主程序启动一个 **localhost TCP 服务**（127.0.0.1，临时端口），并把 `{port, token}` 写入 `app_data_dir/cli.json`。
+- 每次请求为 JSON，4 字节小端长度前缀成帧；响应为 JSON。
+- 说明：原计划为 named pipe，但当前工具链 std `named_pipe` 不可用；TCP + token 是纯 std、零新依赖、同用户安全的等价方案（见 ADR-0006）。
+
+## 28.3 命令契约
+
+| 命令 | 输出 |
+|---|---|
+| `timer start|pause|skip|status` | 经 `cli:timer` 事件驱动桌面 webview 的番茄钟状态机，回执 `cli:timer-done {state, focusRemainingSec, restRemainingSec, paused, phaseDone}` |
+| `stats today|week|sessions` | `focus_sessions` 汇总（今日秒数/轮数、近 7 天按日、最近 20 条会话） |
+| `desktop layout` | 窗口 12×8 网格 + 折叠集 + 桌面快捷方式（含位置与嵌入格位） |
+| `apps now|visible` | 前台进程+窗口标题 / 可见窗口进程名列表 |
+| `ping` | 连通性检查 |
+
+## 28.4 安全边界
+
+- 仅绑定 127.0.0.1，仅同用户可连；token 存于用户级 `app_data_dir`。
+- 当前为完整读写控制面；M3 接 Agent 时由宿主侧再加"授权动作白名单 + 审计"（沿用 §17 权限模型）。
+- 鉴权 token 记为可选强化项（后续可轮换/加密）。
+
+## 28.5 与既有设计的关系
+
+- 落地 §9 AgentHost「Agent 对全部授权专注、应用和音乐数据的查询能力」与 §10 受控工具思想。
+- 与 M3（OpenCode Adapter）解耦：CLI 契约先稳定，Adapter 按契约接入。

@@ -2,7 +2,7 @@
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**v1.4.1（当前）**：配置单一事实源修复（设置改时长/顶条三态/提示音立即生效，不再各存一份）、顶条改为**独立置顶状态胶囊**（always-on-top 浮在所有应用之上、点击穿透、auto/on/off 显隐，专注/休息时自动出现）、黑/白名单新增**「运行中的应用」选择器**（保留 *通配* 文本域）、计时进度环扩大防重叠、全窗**主题化滚动条**。v1.4 基础：完整番茄钟计时（双向下倒计时、暂停/继续、跳过、进度环、到点提示音+气泡、时长预设、今日汇总、`focus_sessions` 写库）+ **监督 V1 软限制**（分心/空闲/任务超时、升级提醒、暂停 30 分钟、`supervision_events` 入库）+ 应用快捷方式真实 exe 图标。v1.3 基础：专注桌面视觉精修（玻璃胶囊顶条、文件快捷区、三键 Dock、设置弹层）。v1.2.1 基础：Rust 光标轮询拖拽（防卡死）、自实现 SWCA Acrylic 毛玻璃去灰、桌宠身体可拖、拖拽回归探针 `scripts/drag-probe.ps1`。
+**v1.5（当前）**：桌面图标**自由摆放**（12×8 网格吸附、拖拽网格线近亮远暗、禁区保护、DB 持久化）、快捷方式 v2（新增 `url` 与 `internal` 类型，`.exe` 真实图标）、**打开窗口自动嵌入网格**（记住上次格位、冲突找最近空闲、豁免全屏/自有窗口）、新增 **`focus-cli` 本地控制面**（`timer/stats/desktop/apps` 四组命令，经 localhost TCP + token 供 M3 Agent 调用；契约见设计稿 §28 与 ADR-0006）、Dock「开始专注」改为纯触发器（点击即消失，idle/休息期再现）。v1.4.1 基础：配置单一事实源、置顶状态胶囊、黑/白名单应用选择器、进度环/滚动条。v1.4 基础：完整番茄钟 + 监督 V1 + 应用图标。v1.3 基础：专注桌面视觉精修（文件快捷区、三键 Dock、设置弹层）。v1.2.1 基础：Rust 光标轮询拖拽、SWCA Acrylic 毛玻璃去灰、桌宠身体可拖、`scripts/drag-probe.ps1`。
 
 - **权威设计文档**：[local-focus-desktop-agent-design-v0.2.md](./local-focus-desktop-agent-design-v0.2.md)
 - **技术路线**：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite
@@ -28,7 +28,7 @@
 apps/desktop/          Tauri 2 + Vue 3 应用（Desktop / Chat / Stats / Music / Pet / Logos / Grid-Overlay 七窗口）
 packages/event-schema/ AgentEvent 协议 v1（JSON Schema + TS 类型 + fixtures，npm test 校验）
 docs/                  审计、可行性、调查、ADR、风险与下一阶段
-docs/architecture/evidence/visual-v1/   v1.2~v1.4.1 视觉截图（毛玻璃去灰、浮窗透明、v1.4 计时/监督、v1.4.1 置顶胶囊/新环/滚动条）
+docs/architecture/evidence/visual-v1/   v1.2~v1.5 视觉截图（毛玻璃去灰、浮窗透明、计时/监督、置顶胶囊、v1.5 自由布局/渐变网格线/窗口嵌入）
 ```
 
 ## 一键启动
@@ -53,9 +53,10 @@ npm test                 # Ajv 校验 11 合法 + 4 非法 fixture；tsc 类型�
 
 ```powershell
 cd apps/desktop/src-tauri
-cargo test --lib         # Mock Agent 事件 schema 校验单测 + drag 钳制单测
+cargo test --lib         # Mock Agent schema + drag + 布局/DB/CLI 单测
 powershell -File scripts/drag-probe.ps1   # 拖拽回归探针（需先启动 release/desktop）
 cargo run --bin workerw_probe   # WorkerW 桌面层探针（手动）
+src-tauri\target\debug\focus-cli.exe timer status   # 本地控制面（需应用运行）
 ```
 
 ## 首轮硬性边界（未做）

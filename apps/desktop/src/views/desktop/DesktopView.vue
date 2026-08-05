@@ -6,7 +6,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useUiStore } from "../../stores/ui";
 import { useSettingsStore } from "../../stores/settings";
 import { useShortcutStore } from "../../stores/shortcuts";
-import type { DesktopShortcut, ShortcutType } from "../../lib/shortcuts";
+import type { ShortcutType } from "../../lib/shortcuts";
 import AppIcon from "../../components/AppIcon.vue";
 import SettingsPopover from "../../components/SettingsPopover.vue";
 
@@ -17,15 +17,14 @@ const shortcuts = useShortcutStore();
 const wallpaperUrl = ref("");
 const dropActive = ref(false);
 const addMenuOpen = ref(false);
+const menuMode = ref<"" | "url" | "internal">("");
+const urlName = ref("");
+const urlValue = ref("");
 const settingsOpen = ref(false);
 
-// pointer-based reorder within the shortcut grid
-const dragId = ref<string | null>(null);
-const dragOverId = ref<string | null>(null);
-const dragMoved = ref(false);
-const dragStart = { x: 0, y: 0 };
-const cardRefs = ref<Record<string, HTMLElement | null>>({});
-
+// centered shortcut grid: up to 2 rows x 5 cols, centered (never touches the screen
+// edges); the + flows at the end of the last row (max 9 shortcuts).
+// ---- timer ----
 function fmtClock(totalSec: number) {
   const s = Math.max(0, Math.floor(totalSec));
   const h = Math.floor(s / 3600);
@@ -33,7 +32,6 @@ function fmtClock(totalSec: number) {
   const sec = s % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
-
 function fmtShort(totalSec: number) {
   const s = Math.max(0, Math.floor(totalSec));
   const h = Math.floor(s / 3600);
@@ -47,15 +45,6 @@ const timerText = computed(() =>
 const timerLabel = computed(() =>
   ui.focusState === "focus" ? "专注中" : ui.focusState === "rest" ? "休息中" : "未开始",
 );
-const focusBtnText = computed(() => {
-  if (ui.focusState === "idle") return "开始专注";
-  if (ui.focusState === "focus") return ui.timerPaused ? "继续" : "暂停";
-  return "开始专注";
-});
-const focusIcon = computed(() => {
-  if (ui.focusState === "focus") return ui.timerPaused ? "play" : "pause";
-  return "leaf";
-});
 const ringCirc = 2 * Math.PI * 150;
 const ringProgress = computed(() => {
   if (ui.focusState === "idle") return 1;
@@ -68,9 +57,29 @@ const ringOffset = computed(() => ringCirc * (1 - ringProgress.value));
 const todayText = computed(() => `今日专注 ${fmtShort(ui.todayFocusSec)} · 完成 ${ui.todayRounds} 轮`);
 
 function glyphFor(type: ShortcutType): string {
-  return type === "folder" ? "folder" : type === "application" ? "app" : "file";
+  switch (type) {
+    case "folder": return "folder";
+    case "application": return "app";
+    case "url": return "url";
+    case "internal": return "panel";
+    default: return "file";
+  }
 }
 
+// ---- views tray: temporary panel for the three float views ----
+const viewsTrayOpen = ref(false);
+const MAX_SHORTCUTS = 9;
+const canAdd = computed(() => shortcuts.items.length < MAX_SHORTCUTS);
+
+async function openView(label: string) {
+  viewsTrayOpen.value = false;
+  try {
+    await invoke("restore", { label });
+  } catch (e) {
+    console.error("open view failed", label, e);
+  }
+}
+// ---- add menu ----
 async function loadWallpaper() {
   const p = await invoke<string | null>("get_wallpaper");
   wallpaperUrl.value = p ? convertFileSrc(p) : "";
@@ -78,6 +87,7 @@ async function loadWallpaper() {
 
 async function pickFiles() {
   addMenuOpen.value = false;
+  menuMode.value = "";
   const sel = await open({ multiple: true });
   if (Array.isArray(sel)) for (const p of sel) await shortcuts.addPath(p);
   else if (typeof sel === "string") await shortcuts.addPath(sel);
@@ -85,80 +95,26 @@ async function pickFiles() {
 
 async function pickFolders() {
   addMenuOpen.value = false;
+  menuMode.value = "";
   const sel = await open({ directory: true, multiple: true });
   if (Array.isArray(sel)) for (const p of sel) await shortcuts.addPath(p);
   else if (typeof sel === "string") await shortcuts.addPath(sel);
 }
 
-function setCardRef(id: string, el: unknown) {
-  cardRefs.value[id] = el as HTMLElement | null;
+async function submitUrl() {
+  const url = urlValue.value.trim();
+  if (!(url.startsWith("http://") || url.startsWith("https://"))) return;
+  await shortcuts.addUrl(urlName.value.trim(), url);
+  urlName.value = "";
+  urlValue.value = "";
+  addMenuOpen.value = false;
+  menuMode.value = "";
 }
 
-function onCardDown(e: PointerEvent, sc: DesktopShortcut) {
-  if (e.button !== 0) return;
-  const t = e.target as HTMLElement;
-  if (t.closest("button")) return;
-  dragId.value = sc.id;
-  dragMoved.value = false;
-  dragStart.x = e.clientX;
-  dragStart.y = e.clientY;
-  try {
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  } catch {
-    /* ignore */
-  }
-}
-
-function onCardMove(e: PointerEvent, sc: DesktopShortcut) {
-  if (dragId.value !== sc.id) return;
-  if (!dragMoved.value) {
-    const dx = e.clientX - dragStart.x;
-    const dy = e.clientY - dragStart.y;
-    if (dx * dx + dy * dy < 36) return;
-    dragMoved.value = true;
-  }
-  let best: string | null = null;
-  let bestDist = Infinity;
-  for (const [id, el] of Object.entries(cardRefs.value)) {
-    if (id === sc.id || !el) continue;
-    const r = el.getBoundingClientRect();
-    const cx = r.left + r.width / 2;
-    const cy = r.top + r.height / 2;
-    const d = (e.clientX - cx) ** 2 + (e.clientY - cy) ** 2;
-    if (d < bestDist) {
-      bestDist = d;
-      best = id;
-    }
-  }
-  if (best && best !== dragOverId.value) {
-    dragOverId.value = best;
-    const from = shortcuts.items.findIndex((s) => s.id === sc.id);
-    const to = shortcuts.items.findIndex((s) => s.id === best);
-    if (from !== -1 && to !== -1 && from !== to) {
-      const arr = [...shortcuts.items];
-      const [moved] = arr.splice(from, 1);
-      arr.splice(to, 0, moved);
-      shortcuts.items = arr.map((s, i) => ({ ...s, order: i }));
-    }
-  }
-}
-
-async function onCardUp(e: PointerEvent, sc: DesktopShortcut) {
-  if (dragId.value !== sc.id) return;
-  const wasDrag = dragMoved.value;
-  dragId.value = null;
-  dragOverId.value = null;
-  dragMoved.value = false;
-  try {
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-  } catch {
-    /* ignore */
-  }
-  if (wasDrag) {
-    await shortcuts.reorder(shortcuts.items.map((s) => s.id));
-  } else {
-    await shortcuts.open(sc);
-  }
+async function submitInternal(name: string, target: string) {
+  await shortcuts.addInternal(name, target);
+  addMenuOpen.value = false;
+  menuMode.value = "";
 }
 
 function remove(id: string) {
@@ -243,26 +199,36 @@ onMounted(async () => {
           <span>跳过</span>
         </button>
       </div>
-      <button v-if="ui.focusState === 'rest' && ui.phaseDone" class="ctl glass next" @click="ui.startFocus()">
-        <AppIcon name="play" />
-        <span>开始下一轮</span>
-      </button>
       <div class="today-line num">{{ todayText }}</div>
     </section>
 
-    <section class="icon-zone">
-      <div class="sc-grid">
+    <!-- centered shortcut grid (2 rows x 5 cols) + views tray -->
+    <section class="icon-area">
+      <div class="views-wrap" @mouseleave="viewsTrayOpen = false">
+        <button class="views-btn glass" title="视图" @click="viewsTrayOpen = !viewsTrayOpen">
+          <AppIcon name="panel" />
+        </button>
+        <div v-if="viewsTrayOpen" class="views-tray glass">
+          <button class="view-item" @click="openView('chat')">
+            <AppIcon name="chat" /><span>对话</span>
+          </button>
+          <button class="view-item" @click="openView('stats')">
+            <AppIcon name="stats" /><span>统计</span>
+          </button>
+          <button class="view-item" @click="openView('music')">
+            <AppIcon name="music" /><span>音乐</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="shortcut-grid">
         <div
           v-for="sc in shortcuts.items"
           :key="sc.id"
           class="sc-card glass"
-          :class="{ dragging: dragId === sc.id, over: dragOverId === sc.id }"
-          :ref="(el) => setCardRef(sc.id, el)"
-          @pointerdown="onCardDown($event, sc)"
-          @pointermove="onCardMove($event, sc)"
-          @pointerup="onCardUp($event, sc)"
+          @click="shortcuts.open(sc)"
         >
-          <button class="rm" title="移除" @pointerdown.stop @click.stop="remove(sc.id)">
+          <button class="rm" title="移除" @click.stop="remove(sc.id)">
             <AppIcon name="close" />
           </button>
           <img
@@ -274,21 +240,35 @@ onMounted(async () => {
           <span v-else class="glyph" :class="sc.type"><AppIcon :name="glyphFor(sc.type)" /></span>
           <span class="name">{{ sc.name }}</span>
         </div>
-        <div class="sc-card add glass" @click="addMenuOpen = !addMenuOpen">
-          <span class="glyph"><AppIcon name="plus" /></span>
-          <span class="name">添加</span>
+
+        <div v-if="canAdd" class="add-slot">
+          <button class="add-fab glass" title="添加快捷方式" @click="addMenuOpen = !addMenuOpen">
+            <AppIcon name="plus" />
+          </button>
+          <div v-if="addMenuOpen" class="menu-backdrop" @click="addMenuOpen = false"></div>
+          <div v-if="addMenuOpen" class="add-menu glass">
+            <button @click="pickFiles">文件 / 应用</button>
+            <button @click="pickFolders">文件夹</button>
+            <button @click="menuMode = menuMode === 'url' ? '' : 'url'">URL 链接</button>
+            <button @click="menuMode = menuMode === 'internal' ? '' : 'internal'">内部页</button>
+            <div v-if="menuMode === 'url'" class="menu-inline">
+              <input v-model="urlName" class="text-input" placeholder="名称（可选）" @keydown.enter="submitUrl" />
+              <input v-model="urlValue" class="text-input" placeholder="https://…" @keydown.enter="submitUrl" />
+              <button class="btn" @click="submitUrl">添加</button>
+            </div>
+            <div v-if="menuMode === 'internal'" class="menu-inline">
+              <button class="btn" @click="submitInternal('对话', 'chat')">对话</button>
+              <button class="btn" @click="submitInternal('统计', 'stats')">统计</button>
+              <button class="btn" @click="submitInternal('音乐', 'music')">音乐</button>
+            </div>
+          </div>
         </div>
-      </div>
-      <div v-if="addMenuOpen" class="menu-backdrop" @click="addMenuOpen = false"></div>
-      <div v-if="addMenuOpen" class="add-menu glass">
-        <button @click="pickFiles">文件 / 应用</button>
-        <button @click="pickFolders">文件夹</button>
       </div>
     </section>
 
     <footer class="dock glass">
-      <button class="dock-btn" @click="ui.toggleFocus()">
-        <AppIcon :name="focusIcon" /><span>{{ focusBtnText }}</span>
+      <button v-if="ui.focusState !== 'focus'" class="dock-btn" @click="ui.startFocus()">
+        <AppIcon name="leaf" /><span>开始专注</span>
       </button>
       <button class="dock-btn" @click="settingsOpen = !settingsOpen">
         <AppIcon name="settings" /><span>设置</span>
@@ -330,7 +310,6 @@ onMounted(async () => {
   opacity: 0.05;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-/* wallpaper layers */
 .wallpaper-img { position: absolute; inset: 0; background-size: cover; background-position: center; transition: filter var(--t-slow) var(--ease-out); }
 .wallpaper-blur {
   position: absolute; inset: -48px;
@@ -345,7 +324,6 @@ onMounted(async () => {
   position: absolute; inset: 0;
   background: radial-gradient(ellipse at center, transparent 52%, var(--bg-0) 100%);
 }
-/* focus "spring" ambient: brighter, more lime sunlight */
 .desktop-view.focus-active .wallpaper-img { filter: brightness(1.08) saturate(1.14); }
 .desktop-view.focus-active .wallpaper-blur { filter: blur(30px) brightness(1.1) saturate(1.16); }
 .desktop-view.focus-active .wallpaper-tint { background: rgba(163, 230, 53, 0.1); }
@@ -359,12 +337,14 @@ onMounted(async () => {
   color: var(--accent-bright); font-size: 18px;
 }
 
-/* floating glass-capsule top bar */
+/* hero */
 .hero {
   position: relative; z-index: 5;
   display: flex; flex-direction: column; align-items: center;
   padding-top: 4vh;
+  pointer-events: none;
 }
+.hero > * { pointer-events: auto; }
 .timer-wrap { position: relative; display: inline-flex; align-items: center; justify-content: center; }
 .ring { width: 360px; height: 360px; transform: rotate(-90deg); }
 .ring-bg { fill: none; stroke: rgba(163, 230, 53, 0.1); stroke-width: 4; }
@@ -388,36 +368,41 @@ onMounted(async () => {
   transition: border-color var(--t-fast), color var(--t-fast), background var(--t-fast);
 }
 .ctl:hover { border-color: var(--accent); color: var(--accent-bright); background: var(--accent-wash); }
-.ctl.next { border-color: var(--accent); color: var(--accent-bright); }
 .today-line { font-size: 12px; color: var(--text-mid); margin-top: 12px; }
 
-/* file-shortcut zone */
-.icon-zone {
-  position: relative; z-index: 5;
-  display: flex; justify-content: center; align-items: flex-start;
-  margin-top: 4vh;
+/* centered shortcut grid: up to 2 rows x 5 cols, centered, never touches the
+   screen edges; the + flows at the end of the last row (max 9 shortcuts). */
+.icon-area {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 150px);
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  pointer-events: none;
 }
-.sc-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, 104px);
-  gap: 14px;
+.shortcut-grid {
+  width: calc(5 * 104px + 4 * 8px);
+  display: flex;
+  flex-wrap: wrap;
   justify-content: center;
-  width: min(880px, 84vw);
+  gap: 8px;
+  pointer-events: none;
 }
 .sc-card {
+  pointer-events: auto;
+  position: relative;
+  box-sizing: border-box;
   width: 104px; height: 92px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 6px;
   border-radius: var(--r-md);
   cursor: pointer;
-  position: relative;
   transition: transform var(--t-base) var(--ease-out), box-shadow var(--t-base) var(--ease-out), border-color var(--t-base) var(--ease-out);
 }
 .sc-card:hover { transform: translateY(-3px); border-color: var(--accent); box-shadow: 0 8px 24px rgba(163, 230, 53, 0.18); }
-.sc-card.dragging { opacity: 0.7; transform: scale(0.96); }
-.sc-card.over { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-wash); }
-.sc-card.add { border: 1px dashed var(--glass-border); color: var(--text-low); }
-.sc-card.add:hover { color: var(--accent-bright); border-color: var(--accent); }
 .rm {
   position: absolute; top: 4px; right: 4px;
   border: none; background: rgba(0, 0, 0, 0.35); color: var(--text-mid);
@@ -431,17 +416,41 @@ onMounted(async () => {
 .glyph.file { color: var(--text-mid); }
 .glyph.folder { color: var(--accent); }
 .glyph.application { color: var(--accent-bright); }
+.glyph.url { color: var(--accent); }
+.glyph.internal { color: var(--accent-bright); }
 .sc-icon { width: 32px; height: 32px; border-radius: 6px; object-fit: contain; }
 .name {
   font-size: 12px; color: var(--text-mid);
   max-width: 96px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* + flows at the end of the grid rows */
+.add-slot {
+  pointer-events: auto;
+  position: relative;
+  box-sizing: border-box;
+  width: 104px; height: 92px;
+  display: flex; align-items: center; justify-content: center;
+}
+.add-fab {
+  box-sizing: border-box;
+  width: 52px; height: 52px;
+  border-radius: var(--r-pill);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent-bright);
+  cursor: pointer;
+  transition: transform var(--t-base) var(--ease-out), border-color var(--t-base), box-shadow var(--t-base);
+}
+.add-fab:hover { transform: translateY(-2px); border-color: var(--accent); box-shadow: 0 8px 24px rgba(163, 230, 53, 0.25); }
 .menu-backdrop { position: fixed; inset: 0; z-index: 10; }
 .add-menu {
-  position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%);
   z-index: 12;
   display: flex; flex-direction: column; gap: 4px;
-  padding: 6px; border-radius: var(--r-md);
+  padding: 6px;
+  border-radius: var(--r-md);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
 }
 .add-menu button {
@@ -449,7 +458,54 @@ onMounted(async () => {
   border-radius: var(--r-sm); padding: 8px 22px; font-size: 13px; cursor: pointer; text-align: left;
 }
 .add-menu button:hover { background: var(--accent-wash); color: var(--accent-bright); }
-
+.menu-inline {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 8px 8px;
+}
+.text-input {
+  border: 1px solid var(--glass-border); background: var(--glass-strong);
+  color: var(--text-hi); border-radius: var(--r-sm); padding: 4px 8px; font-size: 12px;
+  font-family: inherit; min-width: 180px;
+}
+.menu-inline .btn {
+  border: 1px solid var(--glass-border); background: var(--glass-strong);
+  color: var(--text-hi); border-radius: var(--r-sm); padding: 5px 10px;
+  font-size: 12px; cursor: pointer; text-align: center;
+}
+.menu-inline .btn:hover { border-color: var(--accent); color: var(--accent-bright); }
+/* views icon + temporary tray (mouse leaves -> tray hides) */
+.views-wrap {
+  pointer-events: auto;
+  position: relative;
+  margin-top: 22px;
+}
+.views-btn {
+  box-sizing: border-box;
+  width: 48px; height: 48px;
+  border-radius: var(--r-pill);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent-bright);
+  cursor: pointer;
+  transition: transform var(--t-base) var(--ease-out), border-color var(--t-base), box-shadow var(--t-base);
+}
+.views-btn:hover { transform: translateY(-2px); border-color: var(--accent); box-shadow: 0 8px 24px rgba(163, 230, 53, 0.25); }
+.views-tray {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 12;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px;
+  border-radius: var(--r-md);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+.view-item {
+  border: none; background: transparent; color: var(--text-hi);
+  display: flex; align-items: center; gap: 8px;
+  border-radius: var(--r-sm); padding: 8px 16px; font-size: 13px; cursor: pointer; text-align: left;
+  white-space: nowrap;
+}
+.view-item:hover { background: var(--accent-wash); color: var(--accent-bright); }
 /* dock */
 .dock {
   position: relative; z-index: 5;

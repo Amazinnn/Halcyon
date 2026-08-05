@@ -1,6 +1,5 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
-import { openPath } from "@tauri-apps/plugin-opener";
 import type { DesktopShortcut } from "../lib/shortcuts";
 
 function rgbaToDataUrl(width: number, height: number, data: number[]): string {
@@ -19,7 +18,7 @@ function rgbaToDataUrl(width: number, height: number, data: number[]): string {
   }
 }
 
-/** v1.3 file-shortcut zone store: load / add / remove / reorder / open. */
+/** v1.5 free-placement shortcut store: DB-backed (app_shortcuts + ui_layouts). */
 export const useShortcutStore = defineStore("shortcuts", {
   state: () => ({
     items: [] as DesktopShortcut[],
@@ -27,10 +26,16 @@ export const useShortcutStore = defineStore("shortcuts", {
   }),
   actions: {
     async load() {
-      const b = await invoke<{ shortcuts?: DesktopShortcut[] }>("get_bootstrap");
-      this.items = (b.shortcuts ?? []).map((s, i) => ({ ...s, order: i }));
-      for (const s of this.items) {
-        if (s.type === "application") void this.loadIcon(s.target);
+      try {
+        const b = await invoke<{ shortcuts?: DesktopShortcut[] }>("get_bootstrap");
+        this.items = b.shortcuts ?? [];
+        for (const s of this.items) {
+          if (s.type === "application") void this.loadIcon(s.target);
+        }
+      } catch (e) {
+        // Never silently blank the desktop: log so bootstrap regressions stay visible.
+        console.error('[shortcuts] load failed', e);
+        this.items = [];
       }
     },
     async loadIcon(target: string) {
@@ -49,23 +54,31 @@ export const useShortcutStore = defineStore("shortcuts", {
       const sc = await invoke<DesktopShortcut>("add_shortcut", { path });
       this.items.push(sc);
     },
+    async addUrl(name: string, url: string) {
+      const sc = await invoke<DesktopShortcut>("add_url_shortcut", { name, url });
+      this.items.push(sc);
+    },
+    async addInternal(name: string, target: string) {
+      const sc = await invoke<DesktopShortcut>("add_internal_shortcut", { name, target });
+      this.items.push(sc);
+    },
     async remove(id: string) {
       await invoke("remove_shortcut", { id });
-      this.items = this.items.filter((s) => s.id !== id).map((s, i) => ({ ...s, order: i }));
+      this.items = this.items.filter((s) => s.id !== id);
     },
-    async reorder(ids: string[]) {
-      await invoke("reorder_shortcuts", { ids });
-      const byId = new Map(this.items.map((s) => [s.id, s]));
-      this.items = ids
-        .map((id) => byId.get(id))
-        .filter((s): s is DesktopShortcut => !!s)
-        .map((s, i) => ({ ...s, order: i }));
+    async move(id: string, col: number, row: number) {
+      await invoke("move_shortcut", { id, col, row });
+      const sc = this.items.find((s) => s.id === id);
+      if (sc) {
+        sc.col = col;
+        sc.row = row;
+      }
     },
     async open(sc: DesktopShortcut) {
       try {
-        await openPath(sc.target);
+        await invoke("launch_shortcut", { id: sc.id });
       } catch (e) {
-        console.error("[shortcuts] open failed", sc.target, e);
+        console.error("[shortcuts] launch failed", sc.id, e);
       }
     },
   },
