@@ -126,3 +126,9 @@
 ### 验证
 - `cargo test --lib` 32 项全绿（新增 `list_running_apps` 冒烟/去重排序、`topbar_visible` 模式矩阵）；`npm run build` 与 `packages/event-schema npm test` 绿。
 - 实机：idle 顶条隐藏、点「开始专注」后顶条出现且胶囊显示「专注中 · 0:39」实时倒计时；PrintWindow 捕获桌面窗口 hero 环居中；`v1.4.1-*` 截图存 `docs/architecture/evidence/visual-v1/`。
+
+### v1.4.1 增补二（Logos 折叠胶囊启动竞态修复）
+- 现象：用户截图中 Logos 窗口显示空态「—」，但 settings.json 已有 3 个折叠视图（对话/统计/音乐）。
+- 根因：`apply_initial_layout` → `update_logos` 在 setup 阶段 emit `logos:update`，此时 Logos webview 尚未挂载监听，事件丢失；窗口被显示但内容停留在默认空数组 → 空态「—」（与顶条同类"启动期事件竞态"）。
+- 修复：`LogosView.vue` 挂载时先经 `get_bootstrap` 读取持久化 `collapsed` 初始化胶囊列表，再监听 `logos:update` 处理运行时折叠/恢复。
+- 验证：重启后 Logos 显示 3 个胶囊（对话/音乐/统计，截图 `v1.4.1-logos.png`）。

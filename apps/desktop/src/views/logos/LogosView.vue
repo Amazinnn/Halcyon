@@ -14,7 +14,17 @@ const meta: Record<string, { label: string; icon: string }> = {
   music: { label: "音乐", icon: "music" },
 };
 
-onMounted(() => {
+onMounted(async () => {
+  // Initial state must come from bootstrap: the startup `logos:update` is
+  // emitted before this webview is mounted, so it would be missed and the
+  // strip would stay in its empty "—" state. Fetch the persisted collapsed
+  // list once here, then keep listening for live updates.
+  try {
+    const b = await invoke<{ collapsed?: string[] }>("get_bootstrap");
+    collapsed.value = b.collapsed ?? [];
+  } catch {
+    /* ignore */
+  }
   void listen("logos:update", (e) => {
     collapsed.value = (e.payload as { collapsed: string[] }).collapsed ?? [];
   });
