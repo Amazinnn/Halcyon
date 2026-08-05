@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://focus.desktop/schemas/agent-event.schema.json",
+  "title": "AgentEvent",
+  "description": "Envelope for Focus Desktop Agent events. The envelope carries identity (agentId/sessionId) and protocol version; the inner `event` is a discriminated union over the 11 event kinds defined in the design document (v0.2, section 8.2).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "agentId", "sessionId", "timestamp", "event"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "agentId": { "type": "string", "minLength": 1 },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "event": { "$ref": "#/$defs/event" }
+  },
+  "$defs": {
+    "agentState": {
+      "enum": ["offline", "idle", "thinking", "reading", "searching", "editing", "running", "testing", "waiting_permission", "waiting_user", "success", "warning", "error", "cancelled"]
+    },
+    "event": {
+      "oneOf": [
+        { "$ref": "#/$defs/sessionStarted" },
+        { "$ref": "#/$defs/messageDelta" },
+        { "$ref": "#/$defs/messageCompleted" },
+        { "$ref": "#/$defs/toolStarted" },
+        { "$ref": "#/$defs/toolCompleted" },
+        { "$ref": "#/$defs/fileRead" },
+        { "$ref": "#/$defs/fileChanged" },
+        { "$ref": "#/$defs/permissionRequested" },
+        { "$ref": "#/$defs/statusChanged" },
+        { "$ref": "#/$defs/sessionCompleted" },
+        { "$ref": "#/$defs/sessionError" }
+      ]
+    },
+    "sessionStarted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": { "type": { "const": "session.started" } }
+    },
+    "messageDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "text"],
+      "properties": { "type": { "const": "message.delta" }, "text": { "type": "string" } }
+    },
+    "messageCompleted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "text"],
+      "properties": { "type": { "const": "message.completed" }, "text": { "type": "string" } }
+    },
+    "toolStarted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "tool", "inputSummary"],
+      "properties": {
+        "type": { "const": "tool.started" },
+        "tool": { "type": "string", "minLength": 1 },
+        "inputSummary": { "type": "string" }
+      }
+    },
+    "toolCompleted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "tool", "resultSummary"],
+      "properties": {
+        "type": { "const": "tool.completed" },
+        "tool": { "type": "string", "minLength": 1 },
+        "resultSummary": { "type": "string" }
+      }
+    },
+    "fileRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": { "type": { "const": "file.read" }, "path": { "type": "string", "minLength": 1 } }
+    },
+    "fileChanged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path", "diffId"],
+      "properties": {
+        "type": { "const": "file.changed" },
+        "path": { "type": "string", "minLength": 1 },
+        "diffId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "permissionRequested": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "requestId", "risk"],
+      "properties": {
+        "type": { "const": "permission.requested" },
+        "requestId": { "type": "string", "minLength": 1 },
+        "risk": { "enum": ["low", "medium", "high", "critical"] }
+      }
+    },
+    "statusChanged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "state"],
+      "properties": { "type": { "const": "status.changed" }, "state": { "$ref": "#/$defs/agentState" } }
+    },
+    "sessionCompleted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "outcome"],
+      "properties": { "type": { "const": "session.completed" }, "outcome": { "type": "string" } }
+    },
+    "sessionError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "message"],
+      "properties": { "type": { "const": "session.error" }, "message": { "type": "string" } }
+    }
+  }
+}

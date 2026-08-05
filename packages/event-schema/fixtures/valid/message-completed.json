@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "agentId": "mock-opencode",
+  "sessionId": "sess-001",
+  "timestamp": "2026-08-05T08:00:00.000Z",
+  "event": 
+{ "type": "message.completed", "text": "已完成修改，等待确认。" }
+}

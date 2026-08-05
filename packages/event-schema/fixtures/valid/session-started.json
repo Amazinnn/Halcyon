@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "agentId": "mock-opencode",
+  "sessionId": "sess-001",
+  "timestamp": "2026-08-05T08:00:00.000Z",
+  "event": 
+{ "type": "session.started" }
+}

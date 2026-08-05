@@ -1,0 +1,19 @@
+{
+    "name":  "@focus/event-schema",
+    "version":  "0.1.0",
+    "private":  true,
+    "type":  "module",
+    "description":  "AgentEvent protocol v1: JSON Schema, TypeScript types, and fixtures for Focus Desktop.",
+    "scripts":  {
+                    "test":  "node validate.mjs \u0026\u0026 tsc --noEmit",
+                    "validate":  "node validate.mjs",
+                    "typecheck":  "tsc --noEmit"
+                },
+    "devDependencies":  {
+                            "ajv":  "^8.17.1",
+                            "ajv-formats":  "^3.0.1",
+                            "typescript":  "~5.6.2"
+                        },
+    "types":  "./agent-event.ts",
+    "main":  "./agent-event.ts"
+}
