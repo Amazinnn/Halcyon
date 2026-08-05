@@ -19,6 +19,7 @@
 | @vitejs/plugin-vue | 5.2.4 | MIT | Vite 插件（开发依赖） |
 | ajv | 8.20.0 | MIT | event-schema 校验 |
 | ajv-formats | 3.0.1 | MIT | event-schema 校验（date-time 格式） |
+| @tauri-apps/plugin-dialog | 2.7.2 | MIT 或 Apache-2.0 | 壁纸选择对话框（v1.2） |
 
 ### Rust 依赖（apps/desktop/src-tauri，以 Cargo.toml 为准）
 
@@ -30,6 +31,8 @@
 | tokio | MIT |
 | rusqlite（bundled） | MIT |
 | windows | MIT 或 Apache-2.0 |
+| window-vibrancy | 0.8.0 | MIT 或 Apache-2.0 | 浮窗 Acrylic 真毛玻璃（v1.2） |
+| tauri-plugin-dialog | 2 | MIT 或 Apache-2.0 | 壁纸选择对话框（v1.2） |
 
 ## 参考项目（首轮未复制代码，仅作设计参考）
 

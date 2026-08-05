@@ -2,6 +2,8 @@
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
+**v1.2（当前）**：统一设计语言（深墨绿 × 亮叶绿阳光高光）+ 12×8 网格浮窗管理（默认居右、可拖、可折叠为置顶 logo）+ Acrylic 毛玻璃浮窗 + 壁纸导入（按钮/拖拽，边缘虚化衔接主题）。
+
 - **权威设计文档**：[local-focus-desktop-agent-design-v0.2.md](./local-focus-desktop-agent-design-v0.2.md)
 - **技术路线**：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite
 
@@ -23,10 +25,10 @@
 ## 目录
 
 ```text
-apps/desktop/          Tauri 2 + Vue 3 技术 Spike（Desktop/Pet/Panel/Music 四窗口）
+apps/desktop/          Tauri 2 + Vue 3 应用（Desktop / Chat / Stats / Music / Pet / Logos / Grid-Overlay 七窗口）
 packages/event-schema/ AgentEvent 协议 v1（JSON Schema + TS 类型 + fixtures，npm test 校验）
 docs/                  审计、可行性、调查、ADR、风险与下一阶段
-docs/architecture/evidence/   Spike 运行截图
+docs/architecture/evidence/visual-v1/   v1.2 视觉截图
 ```
 
 ## 开发
