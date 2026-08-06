@@ -111,6 +111,8 @@ pub struct Settings {
     pub agent_provider: String,
     #[serde(default)]
     pub agent_workspace_dir: Option<String>,
+    #[serde(default)]
+    pub pet_pack_id: Option<String>,
 }
 
 fn default_25() -> u32 {
@@ -169,6 +171,7 @@ impl Default for Settings {
             show_topbar: "auto".into(),
             agent_provider: "codex".into(),
             agent_workspace_dir: None,
+        pet_pack_id: None,
         }
     }
 }

@@ -14,6 +14,7 @@ mod event_bus;
 mod grid;
 mod icons;
 mod launch;
+mod pets;
 mod settings;
 mod shortcuts;
 mod storage;
@@ -365,6 +366,41 @@ fn set_agent_workspace_dir(app: tauri::AppHandle, dir: String) -> Result<(), Str
     s.agent_workspace_dir = if dir.is_empty() { None } else { Some(dir) };
     let _ = s.save(&state.data_dir);
     Ok(())
+}
+#[tauri::command]
+fn pet_import_pack(state: tauri::State<'_, AppState>, dir: String) -> Result<pets::PetInfo, String> {
+    let info = pets::import(std::path::Path::new(&dir), &state.data_dir)?;
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.pet_pack_id = Some(info.id.clone());
+        let _ = s.save(&state.data_dir);
+    }
+    Ok(info)
+}
+
+#[tauri::command]
+fn pet_list_packs(state: tauri::State<'_, AppState>) -> Result<Vec<pets::PetInfo>, String> {
+    pets::list(&state.data_dir)
+}
+
+#[tauri::command]
+fn pet_activate(state: tauri::State<'_, AppState>, id: String) -> Result<pets::PetInfo, String> {
+    let info = pets::info_for(&state.data_dir, &id)?;
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.pet_pack_id = Some(id);
+        let _ = s.save(&state.data_dir);
+    }
+    Ok(info)
+}
+
+#[tauri::command]
+fn pet_active(state: tauri::State<'_, AppState>) -> Result<Option<pets::PetInfo>, String> {
+    let id = state.settings.lock().unwrap().pet_pack_id.clone();
+    match id {
+        Some(id) => pets::info_for(&state.data_dir, &id).map(Some),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
@@ -1243,6 +1279,10 @@ pub fn run() {
             agent_list_skills,
             set_agent_provider,
             set_agent_workspace_dir,
+            pet_import_pack,
+            pet_list_packs,
+            pet_activate,
+            pet_active,
             quit_app
         ])
         .run(tauri::generate_context!())
