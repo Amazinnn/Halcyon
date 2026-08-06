@@ -3,10 +3,13 @@ import { onMounted, ref } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore } from "../stores/settings";
+import { useAgentStore } from "../stores/agent";
 import AppIcon from "./AppIcon.vue";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const settings = useSettingsStore();
+const agent = useAgentStore();
+const agentWorkspace = ref("");
 
 const version = "v0.1.0";
 const wallpaperUrl = ref("");
@@ -36,6 +39,8 @@ async function load() {
   taskMinutes.value = settings.currentTask?.estimatedMinutes ?? null;
   blackText.value = settings.distractionApps.join("\n");
   whiteText.value = settings.allowedApps.join("\n");
+  await agent.refreshStatus();
+  agentWorkspace.value = agent.workspaceDir;
 }
 
 async function pickWallpaper() {
@@ -125,6 +130,18 @@ function onPauseSupervision() {
   void settings.pauseSupervision(30);
 }
 
+
+async function setAgentProvider(p: "codex" | "mock") {
+  await agent.setProvider(p);
+}
+
+async function applyAgentWorkspace() {
+  try {
+    await agent.setWorkspaceDir(agentWorkspace.value.trim());
+  } catch (e) {
+    console.error("[settings] set workspace failed", e);
+  }
+}
 function onResumeSupervision() {
   void settings.resumeSupervision();
 }
@@ -249,6 +266,28 @@ onMounted(load);
       </div>
     </section>
 
+
+    <section class="group">
+      <h4>Agent</h4>
+      <div class="row">
+        <span class="label">Provider</span>
+        <div class="seg">
+          <button :class="{ on: agent.provider === 'codex' }" @click="setAgentProvider('codex')">Codex</button>
+          <button :class="{ on: agent.provider === 'mock' }" @click="setAgentProvider('mock')">Mock</button>
+        </div>
+      </div>
+      <div class="row" v-if="agent.fallback">
+        <span class="label">状态</span>
+        <span class="ok">未找到 Codex，已回退 Mock</span>
+      </div>
+      <div class="row">
+        <span class="label">工作区</span>
+        <input v-model="agentWorkspace" type="text" class="text-input" placeholder="默认用户主目录" />
+      </div>
+      <div class="row">
+        <button class="btn" @click="applyAgentWorkspace">应用工作区</button>
+      </div>
+    </section>
     <div class="about">Focus Desktop {{ version }} · MIT</div>
   </div>
 </template>
@@ -357,4 +396,16 @@ onMounted(load);
 }
 .mini:hover { border-color: var(--accent); color: var(--accent-bright); }
 .about { font-size: 11px; color: var(--text-low); border-top: 1px solid var(--glass-border); padding-top: 8px; }
+.seg { display: flex; gap: 4px; }
+.seg button {
+  border: 1px solid var(--glass-border); background: var(--glass-strong);
+  color: var(--text-mid); border-radius: var(--r-sm); padding: 3px 10px;
+  font-size: 12px; cursor: pointer;
+}
+.seg button.on { background: var(--accent); color: #0a110e; border-color: var(--accent); }
+.text-input {
+  flex: 1; border: 1px solid var(--glass-border); background: #101a15;
+  color: var(--text-hi); border-radius: var(--r-sm); padding: 4px 8px; font-size: 12px;
+}
+
 </style>
