@@ -132,3 +132,18 @@
 - 根因：`apply_initial_layout` → `update_logos` 在 setup 阶段 emit `logos:update`，此时 Logos webview 尚未挂载监听，事件丢失；窗口被显示但内容停留在默认空数组 → 空态「—」（与顶条同类"启动期事件竞态"）。
 - 修复：`LogosView.vue` 挂载时先经 `get_bootstrap` 读取持久化 `collapsed` 初始化胶囊列表，再监听 `logos:update` 处理运行时折叠/恢复。
 - 验证：重启后 Logos 显示 3 个胶囊（对话/音乐/统计，截图 `v1.4.1-logos.png`）。
+
+## v1.5.x 增补（网格光晕：整线连续渐变 · 1.5 格衰减 · 以实际悬浮位置为中心）
+
+2026-08-06，按用户要求把浮窗拖拽时的网格预览从「每格一段统一颜色」改为「整条网格线沿长度方向的连续渐变」，并将渐变跨度从 2 格收窄为 1.5 格（需求原话见 `docs/requirements-verbatim.md` 第 9 条）。纯前端改动，无 Rust/协议/DB 变更。
+
+### 渲染方式（`GridOverlayView.vue` 重写线条层）
+- 删除 96 个 per-cell `.line`（每格一段统一颜色 + 相邻格双色边伪影）；改为 13 根整长竖线 + 9 根整长横线（1px，按 `i/12`、`j/8` 定位），每根线用 CSS `linear-gradient` 背景沿自身长度渐变（竖线 `to bottom`、横线 `to right`）。
+- 渐变 stops 每 0.25 格一个（竖线 33 / 横线 49）；每个 stop 的 alpha = `max(0, 1 − max(dx, dy)/1.5)`，dx/dy 为该点在网格单位下到窗口**实际悬浮矩形**（Rust `grid:preview` 载荷 `floatRect`，物理像素 → 逻辑像素 → 网格单位）的 x/y 边缘距离；距离 ≥1.5 格 alpha=0（完全透明）。衰减线性、距离用切比雪夫（与既有光晕形状一致）。
+- 每次 `grid:preview` 重算 22 根线的 gradient 字符串（~15ms 拖拽轮询自带平滑；渐变背景不可 CSS 插值，故不加 transition）。
+- 保留 `.grid-marks` 层：被占红格 `.occ` + 吸附目标高亮 `.tgt` 不变；无 `floatRect` 时整线透明。
+- 常量：`GRID_FALL_OFF = 1.5`、`GRID_STOP_STEP = 0.25`。
+
+### 验证
+- `npm run build`（vue-tsc）绿；`cargo test --lib` 无 Rust 改动保持绿；Node 逻辑单测：亮度随距离单调、1.5 格处=0、>1.5 全透明、0.25 格 stops 最大跳变 0.167（理论值）、随 floatRect 移动连续变化。
+- release 重建（`npm run tauri build -- --no-bundle`），`launch-focus.cmd` 实机验收：拖拽时整条线从窗口附近亮到 1.5 格外透明、无阶梯、无短线条双色伪影、被占格标红与吸附高亮正常、光晕实时跟随。
