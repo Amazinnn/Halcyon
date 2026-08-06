@@ -239,7 +239,18 @@ fn with_agent<R>(
     let state = app.state::<AppState>();
     let mut swapped = false;
     loop {
-        let r = f(&state.agent.lock().unwrap());
+        let r = {
+            let slot = state.agent.lock().unwrap();
+            match &*slot {
+                agents::AgentRuntime::Codex(p) => {
+                    let p2 = p.clone();
+                    drop(slot);
+                    let tmp = agents::AgentRuntime::Codex(p2);
+                    f(&tmp)
+                }
+                agents::AgentRuntime::Mock(_) => f(&slot),
+            }
+        };
         match r {
             Ok(v) => return Ok(v),
             Err(e) if !swapped => {
@@ -249,7 +260,9 @@ fn with_agent<R>(
                 {
                     let tx = state.events_tx.clone();
                     *state.agent.lock().unwrap() =
-                        agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx)));
+                        agents::AgentRuntime::Mock(std::sync::Mutex::new(
+                            agents::mock::MockProvider::new(tx),
+                        ));
                     state.agent_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
                     swapped = true;
                     emit_agent_status(app);
