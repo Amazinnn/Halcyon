@@ -25,5 +25,5 @@
 
 ## 后续里程碑（保持 M2→M7 顺序）
 
-- M2：时间统计 + System Media Adapter（音乐）；M3：OpenCode Adapter（Schema 已就绪）；M4：Markdown 日记/任务与审批；M5：监督与软限制；M6：实验性虚拟桌面（C# helper）；M7：多 Agent 生态。
+- M2：时间统计 + System Media Adapter（音乐）；M3：Codex CLI 嵌入（Claudian 式；2026-08-06 已实现垂直切片：对话 + focus-cli 白名单审计 + skills 透传，ADR-0007；plan mode/Diff/终端面板/Claude Code 为后续）；M4：Markdown 日记/任务与审批；M5：监督与软限制；M6：实验性虚拟桌面（C# helper）；M7：多 Agent 生态。
 - M1 与 M2 模块边界清晰，可部分并行；M3 依赖 M1 的对话面板可用性。

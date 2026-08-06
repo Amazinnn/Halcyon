@@ -2,7 +2,7 @@
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**v1.5（当前）**：桌面图标**自由摆放**（12×8 网格吸附、拖拽网格线=整线连续渐变光晕（1.5 格衰减）、禁区保护、DB 持久化）、快捷方式 v2（新增 `url` 与 `internal` 类型，`.exe` 真实图标）、**打开窗口自动嵌入网格**（记住上次格位、冲突找最近空闲、豁免全屏/自有窗口）、新增 **`focus-cli` 本地控制面**（`timer/stats/desktop/apps` 四组命令，经 localhost TCP + token 供 M3 Agent 调用；契约见设计稿 §28 与 ADR-0006）、Dock「开始专注」改为纯触发器（点击即消失，idle/休息期再现）。v1.4.1 基础：配置单一事实源、置顶状态胶囊、黑/白名单应用选择器、进度环/滚动条。v1.4 基础：完整番茄钟 + 监督 V1 + 应用图标。v1.3 基础：专注桌面视觉精修（文件快捷区、三键 Dock、设置弹层）。v1.2.1 基础：Rust 光标轮询拖拽、SWCA Acrylic 毛玻璃去灰、桌宠身体可拖、`scripts/drag-probe.ps1`。
+**v1.6（当前）**：M3 Agent 接入 = 嵌入真实 Codex CLI（Claudian 式：新建/恢复/流式/停止对话，focus-cli 白名单+审计 skill，skills 透传，UI 选项；ADR-0007）。v1.5 基础：桌面图标**自由摆放**（12×8 网格吸附、拖拽网格线=整线连续渐变光晕（1.5 格衰减）、禁区保护、DB 持久化）、快捷方式 v2（新增 `url` 与 `internal` 类型，`.exe` 真实图标）、**打开窗口自动嵌入网格**（记住上次格位、冲突找最近空闲、豁免全屏/自有窗口）、新增 **`focus-cli` 本地控制面**（`timer/stats/desktop/apps` 四组命令，经 localhost TCP + token 供 M3 Agent 调用；契约见设计稿 §28 与 ADR-0006）、Dock「开始专注」改为纯触发器（点击即消失，idle/休息期再现）。v1.4.1 基础：配置单一事实源、置顶状态胶囊、黑/白名单应用选择器、进度环/滚动条。v1.4 基础：完整番茄钟 + 监督 V1 + 应用图标。v1.3 基础：专注桌面视觉精修（文件快捷区、三键 Dock、设置弹层）。v1.2.1 基础：Rust 光标轮询拖拽、SWCA Acrylic 毛玻璃去灰、桌宠身体可拖、`scripts/drag-probe.ps1`。
 
 - **权威设计文档**：[local-focus-desktop-agent-design-v0.2.md](./local-focus-desktop-agent-design-v0.2.md)
 - **技术路线**：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite
@@ -61,7 +61,7 @@ src-tauri\target\debug\focus-cli.exe timer status   # 本地控制面（需应�
 
 ## 首轮硬性边界（未做）
 
-真实 Agent 接入、锁机、替换 Shell、私有虚拟桌面 API、真实音乐播放控制、浏览器追踪、云同步。
+内置独立 Agent（M3 改为嵌入真实 Codex CLI，见 ADR-0007）、plan mode/Diff/终端面板、Claude Code 接入（后续）、锁机、替换 Shell、私有虚拟桌面 API、真实音乐播放控制、浏览器追踪、云同步。
 
 ## 需求原话记录
 
