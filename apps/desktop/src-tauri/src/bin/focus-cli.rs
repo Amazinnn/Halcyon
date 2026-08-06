@@ -11,10 +11,25 @@ const APP_DIR: &str = "com.focusdesktop.app";
 const FRAME_MAX: usize = 1 << 20;
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
         print_help();
         return;
+    }
+    let mut agent_thread: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--agent-thread" {
+            if i + 1 < args.len() {
+                agent_thread = Some(args.remove(i + 1));
+                args.remove(i);
+            } else {
+                eprintln!("[focus-cli] --agent-thread 需要参数");
+                std::process::exit(2);
+            }
+        } else {
+            i += 1;
+        }
     }
     let cmd = args.join(" ");
 
@@ -55,7 +70,10 @@ fn main() {
         }
     };
 
-    let req = serde_json::json!({ "token": token, "cmd": cmd });
+    let mut req = serde_json::json!({ "token": token, "cmd": cmd });
+    if let Some(tid) = agent_thread {
+        req["agentThread"] = serde_json::json!(tid);
+    }
     let payload = serde_json::to_vec(&req).unwrap_or_default();
     if stream.write_all(&(payload.len() as u32).to_le_bytes()).is_err()
         || stream.write_all(&payload).is_err()
@@ -93,4 +111,5 @@ fn print_help() {
     println!("  focus-cli desktop layout");
     println!("  focus-cli apps now|visible");
     println!("  focus-cli ping");
+    println!("  focus-cli --agent-thread <thread_id> <command>  （Agent 专用：白名单+审计）");
 }

@@ -91,7 +91,13 @@ fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Va
     }
     let cmd = req.get("cmd").and_then(|c| c.as_str()).unwrap_or("").to_string();
     let parts: Vec<&str> = cmd.split_whitespace().collect();
-    match parts.as_slice() {
+    let agent_thread = req.get("agentThread").and_then(|v| v.as_str()).map(str::to_string);
+    if agent_thread.is_some() && !agent_whitelisted(&parts) {
+        let denied = json!({ "error": "agent CLI denied: command not in whitelist", "command": cmd });
+        audit_agent_call(store, agent_thread.as_deref().unwrap_or(""), &cmd, false, &denied);
+        return denied;
+    }
+    let resp = match parts.as_slice() {
         ["ping"] => json!({ "pong": true }),
         ["debug", "windows"] => {
             let app_state = app.state::<AppState>();
@@ -174,6 +180,36 @@ fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Va
         },
         ["apps", "visible"] => json!({ "apps": crate::apps::list_running_apps() }),
         _ => json!({ "error": format!("unknown command: {cmd}") }),
+    };
+    if let Some(tid) = agent_thread {
+        audit_agent_call(store, &tid, &cmd, true, &resp);
+    }
+    resp
+}
+
+
+/// Whitelist enforced only for agent-triggered calls (ADR-0007): exactly the
+/// ADR-0006 command set. `debug` and any future/unknown command are denied.
+fn agent_whitelisted(parts: &[&str]) -> bool {
+    match parts {
+        ["ping"] => true,
+        ["timer", a] if ["start", "pause", "skip", "status"].contains(a) => true,
+        ["stats", "today"] | ["stats", "week"] | ["stats", "sessions"] => true,
+        ["desktop", "layout"] => true,
+        ["apps", "now"] | ["apps", "visible"] => true,
+        _ => false,
+    }
+}
+
+fn audit_agent_call(
+    store: &Arc<Mutex<Store>>,
+    thread_id: &str,
+    command: &str,
+    allowed: bool,
+    result: &Value,
+) {
+    if let Ok(s) = store.lock() {
+        let _ = s.record_agent_cli_call(thread_id, command, allowed, &result.to_string());
     }
 }
 
@@ -240,4 +276,19 @@ mod tests {
         assert_eq!(buf, b"hello-frame");
         server.join().unwrap();
     }
+
+    #[test]
+    fn agent_whitelist_rules() {
+        assert!(agent_whitelisted(&["ping"]));
+        assert!(agent_whitelisted(&["timer", "status"]));
+        assert!(agent_whitelisted(&["timer", "start"]));
+        assert!(agent_whitelisted(&["stats", "today"]));
+        assert!(agent_whitelisted(&["desktop", "layout"]));
+        assert!(agent_whitelisted(&["apps", "visible"]));
+        assert!(!agent_whitelisted(&["debug", "windows"]));
+        assert!(!agent_whitelisted(&["timer", "reset"]));
+        assert!(!agent_whitelisted(&["stats", "month"]));
+        assert!(!agent_whitelisted(&["unknown"]));
+    }
+
 }

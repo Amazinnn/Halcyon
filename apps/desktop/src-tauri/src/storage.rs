@@ -101,7 +101,24 @@ impl Store {
             INSERT OR IGNORE INTO schema_migrations (name, applied_at)
                 VALUES ('0003_shortcuts_layouts', datetime('now'));
             ",
-        )
+        )?;
+
+        // 0004: agent CLI audit payload column (ADR-0007)
+        let cols: Vec<String> = self
+            .conn
+            .prepare("PRAGMA table_info(supervision_events)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<_, _>>()?;
+        if !cols.iter().any(|c| c == "payload") {
+            self.conn
+                .execute_batch("ALTER TABLE supervision_events ADD COLUMN payload TEXT;")?;
+        }
+        self.conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (name, applied_at)
+             VALUES ('0004_agent_cli_audit', datetime('now'))",
+            [],
+        )?;
+        Ok(())
     }
 
     /// Record a completed focus round (pomodoro) with local-time timestamps.
@@ -126,6 +143,29 @@ impl Store {
             "INSERT INTO supervision_events (occurred_at, rule, app, level)
              VALUES (datetime('now','localtime'), ?1, ?2, ?3)",
             params![rule, app, level],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Audit one agent-triggered focus-cli call (ADR-0007 whitelist+audit).
+    pub fn record_agent_cli_call(
+        &self,
+        thread_id: &str,
+        command: &str,
+        allowed: bool,
+        result: &str,
+    ) -> rusqlite::Result<i64> {
+        let payload = serde_json::json!({
+            "threadId": thread_id,
+            "command": command,
+            "allowed": allowed,
+            "result": result,
+        })
+        .to_string();
+        self.conn.execute(
+            "INSERT INTO supervision_events (occurred_at, rule, app, level, payload)
+             VALUES (datetime('now','localtime'), 'agent_cli_call', ?1, 0, ?2)",
+            params![thread_id, payload],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -403,5 +443,26 @@ mod tests {
         let sessions = s.recent_sessions(5).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].duration_sec, 1500);
+    }
+
+    #[test]
+    fn agent_cli_audit_row_written() {
+        let s = temp_store();
+        let id = s
+            .record_agent_cli_call("th-1", "timer status", true, "{\"pong\":true}")
+            .unwrap();
+        assert!(id > 0);
+        let row: (String, String, i64, Option<String>) = s
+            .conn
+            .query_row(
+                "SELECT rule, app, level, payload FROM supervision_events WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "agent_cli_call");
+        assert_eq!(row.1, "th-1");
+        assert_eq!(row.2, 0);
+        assert!(row.3.as_deref().unwrap_or("").contains("timer status"));
     }
 }

@@ -22,7 +22,7 @@ mod wallpaper;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -43,6 +43,9 @@ pub struct AppState {
     pub cli_pending: Mutex<HashMap<u64, std::sync::mpsc::Sender<serde_json::Value>>>,
     pub cli_next_id: AtomicU64,
     pub cli_token: Mutex<String>,
+    pub events_tx: tokio::sync::broadcast::Sender<CoreEvent>,
+    pub agent: Mutex<agents::AgentRuntime>,
+    pub agent_fallback: AtomicBool,
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +120,8 @@ struct Bootstrap {
     supervision_pause_until: Option<i64>,
     sound_enabled: bool,
     show_topbar: String,
+    agent_provider: String,
+    agent_workspace_dir: Option<String>,
 }
 
 #[tauri::command]
@@ -147,7 +152,204 @@ fn get_bootstrap(
         supervision_pause_until: s.supervision_pause_until,
         sound_enabled: s.sound_enabled,
         show_topbar: s.show_topbar.clone(),
+        agent_provider: s.agent_provider.clone(),
+        agent_workspace_dir: s.agent_workspace_dir.clone(),
     }
+}
+
+#[derive(Clone)]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentStatusView {
+    provider: String,
+    fallback: bool,
+    ready: bool,
+    exe_path: Option<String>,
+    workspace_dir: String,
+}
+
+fn user_home() -> String {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".into())
+}
+
+fn current_workspace_dir(state: &AppState) -> String {
+    let s = state.settings.lock().unwrap();
+    s.agent_workspace_dir.clone().unwrap_or_else(user_home)
+}
+
+fn agent_status_view(app: &tauri::AppHandle) -> AgentStatusView {
+    let state = app.state::<AppState>();
+    let fallback = state.agent_fallback.load(std::sync::atomic::Ordering::Relaxed);
+    let kind = state.agent.lock().unwrap().kind();
+    let ws = current_workspace_dir(&state);
+    let exe_path = if kind == agents::AgentProviderKind::Codex {
+        agents::codex::find_codex_exe().map(|p| p.to_string_lossy().to_string())
+    } else {
+        None
+    };
+    AgentStatusView {
+        provider: kind.as_str().to_string(),
+        fallback,
+        ready: !fallback,
+        exe_path,
+        workspace_dir: ws,
+    }
+}
+
+fn emit_agent_status(app: &tauri::AppHandle) {
+    let _ = app.emit("agent:status", agent_status_view(app));
+}
+
+fn rebuild_agent_runtime(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let provider = {
+        let s = state.settings.lock().unwrap();
+        s.agent_provider.clone()
+    };
+    let tx = state.events_tx.clone();
+    let mut slot = state.agent.lock().unwrap();
+    match provider.as_str() {
+        "mock" => {
+            *slot = agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx)));
+            state.agent_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        _ => match agents::codex::find_codex_exe() {
+            Some(exe) => {
+                *slot = agents::AgentRuntime::Codex(std::sync::Arc::new(std::sync::Mutex::new(
+                    agents::codex::CodexProvider::new(tx, exe),
+                )));
+                state.agent_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            None => {
+                *slot = agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx)));
+                state.agent_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        },
+    }
+}
+
+/// Runs a provider call; when the Codex binary is unavailable at runtime,
+/// swaps the slot to Mock (fallback badge) and retries once (ADR-0007).
+fn with_agent<R>(
+    app: &tauri::AppHandle,
+    mut f: impl FnMut(&agents::AgentRuntime) -> Result<R, String>,
+) -> Result<R, String> {
+    let state = app.state::<AppState>();
+    let mut swapped = false;
+    loop {
+        let r = f(&state.agent.lock().unwrap());
+        match r {
+            Ok(v) => return Ok(v),
+            Err(e) if !swapped => {
+                let kind = state.agent.lock().unwrap().kind();
+                if kind == agents::AgentProviderKind::Codex
+                    && agents::codex::is_unavailable_error(&e)
+                {
+                    let tx = state.events_tx.clone();
+                    *state.agent.lock().unwrap() =
+                        agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx)));
+                    state.agent_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
+                    swapped = true;
+                    emit_agent_status(app);
+                } else {
+                    return Err(e);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+#[tauri::command]
+fn agent_status(app: tauri::AppHandle) -> AgentStatusView {
+    agent_status_view(&app)
+}
+
+#[tauri::command]
+fn agent_start_thread(
+    app: tauri::AppHandle,
+    initial_message: String,
+) -> Result<agents::AgentThreadInfo, String> {
+    let state = app.state::<AppState>();
+    let ws = current_workspace_dir(&state);
+    with_agent(&app, |rt| rt.start_thread(&ws, &initial_message))
+}
+
+#[tauri::command]
+fn agent_resume_thread(
+    app: tauri::AppHandle,
+    thread_id: String,
+) -> Result<agents::AgentThreadInfo, String> {
+    with_agent(&app, |rt| rt.resume_thread(&thread_id))
+}
+
+#[tauri::command]
+fn agent_list_threads(app: tauri::AppHandle) -> Result<Vec<agents::AgentThreadInfo>, String> {
+    with_agent(&app, |rt| rt.list_threads())
+}
+
+#[tauri::command]
+fn agent_send(app: tauri::AppHandle, thread_id: String, text: String) -> Result<(), String> {
+    with_agent(&app, |rt| rt.send(&thread_id, &text))
+}
+
+#[tauri::command]
+fn agent_interrupt(app: tauri::AppHandle, thread_id: String) -> Result<(), String> {
+    with_agent(&app, |rt| rt.interrupt(&thread_id))
+}
+
+#[tauri::command]
+fn agent_list_skills() -> Result<Vec<String>, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE 未设置".to_string())?;
+    let dir = std::path::PathBuf::from(home).join(".codex").join("skills");
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        if entry.path().join("SKILL.md").is_file() {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[tauri::command]
+fn set_agent_provider(app: tauri::AppHandle, provider: String) -> Result<(), String> {
+    let kind = agents::AgentProviderKind::parse(&provider).ok_or("provider 需为 codex 或 mock")?;
+    {
+        let state = app.state::<AppState>();
+        let mut s = state.settings.lock().unwrap();
+        s.agent_provider = kind.as_str().to_string();
+        let _ = s.save(&state.data_dir);
+    }
+    rebuild_agent_runtime(&app);
+    emit_agent_status(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_agent_workspace_dir(app: tauri::AppHandle, dir: String) -> Result<(), String> {
+    let dir = dir.trim().to_string();
+    if !dir.is_empty() {
+        let p = std::path::PathBuf::from(&dir);
+        if !p.is_dir() {
+            return Err("目录不存在".into());
+        }
+    }
+    let state = app.state::<AppState>();
+    let mut s = state.settings.lock().unwrap();
+    s.agent_workspace_dir = if dir.is_empty() { None } else { Some(dir) };
+    let _ = s.save(&state.data_dir);
+    Ok(())
 }
 
 #[tauri::command]
@@ -773,6 +975,7 @@ pub fn run() {
             let settings = Settings::load(&data_dir);
             let legacy_shortcuts = settings.shortcuts.clone();
             let data_dir_clone = data_dir.clone();
+            let (events_tx, _boot_rx) = tokio::sync::broadcast::channel::<CoreEvent>(256);
             let state = AppState {
                 settings: Mutex::new(settings),
                 data_dir,
@@ -783,8 +986,14 @@ pub fn run() {
                 cli_pending: Mutex::new(HashMap::new()),
                 cli_next_id: AtomicU64::new(0),
                 cli_token: Mutex::new(String::new()),
+                events_tx: events_tx.clone(),
+                agent: Mutex::new(agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(
+                    events_tx.clone(),
+                )))),
+                agent_fallback: AtomicBool::new(false),
             };
             app.manage(state);
+            rebuild_agent_runtime(&app.handle());
 
             // v1.5: DB store must be managed before the desktop webview calls
             // get_bootstrap on mount (otherwise: state not managed for field
@@ -831,11 +1040,12 @@ pub fn run() {
             }
 
             // core event bus + relay
-            let (tx, rx) = tokio::sync::broadcast::channel::<CoreEvent>(256);
+            let rx = app.state::<AppState>().events_tx.subscribe();
+            let tx = app.state::<AppState>().events_tx.clone();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(event_bus::relay_task(app_handle.clone(), rx));
 
-            agents::mock::spawn(tx.clone());
+            emit_agent_status(&app_handle);
 
             // v1.5: local CLI control plane (focus-cli)
             cli::spawn(app_handle.clone(), store.clone(), data_dir_clone);
@@ -978,6 +1188,15 @@ pub fn run() {
             get_wallpaper,
             persist_wallpaper,
             reset_wallpaper,
+            agent_status,
+            agent_start_thread,
+            agent_resume_thread,
+            agent_list_threads,
+            agent_send,
+            agent_interrupt,
+            agent_list_skills,
+            set_agent_provider,
+            set_agent_workspace_dir,
             quit_app
         ])
         .run(tauri::generate_context!())

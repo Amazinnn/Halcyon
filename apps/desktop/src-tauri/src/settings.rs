@@ -107,6 +107,10 @@ pub struct Settings {
     pub sound_enabled: bool,
     #[serde(default = "default_show_topbar")]
     pub show_topbar: String,
+    #[serde(default = "default_agent_provider")]
+    pub agent_provider: String,
+    #[serde(default)]
+    pub agent_workspace_dir: Option<String>,
 }
 
 fn default_25() -> u32 {
@@ -123,6 +127,10 @@ fn default_show_topbar() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_agent_provider() -> String {
+    "codex".into()
 }
 
 fn default_subtitle() -> String {
@@ -159,6 +167,8 @@ impl Default for Settings {
             supervision_pause_until: None,
             sound_enabled: true,
             show_topbar: "auto".into(),
+            agent_provider: "codex".into(),
+            agent_workspace_dir: None,
         }
     }
 }

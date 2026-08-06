@@ -1,19 +1,17 @@
-//! MockAgentAdapter: a scripted agent that every 2s publishes schema-valid
-//! AgentEvent envelopes (packages/event-schema) plus derived pet/bubble events.
-//! Sequence: thinking -> reading -> editing -> waiting_permission -> success,
-//! with an error path every third cycle (per the v0.2 plan task B).
+//! MockProvider: a scripted agent that, on start_thread/send, publishes a
+//! schema-valid AgentEvent v1 sequence (thinking -> reading -> editing ->
+//! success, with an error path on a cadence) plus derived pet/bubble events.
+//! Used when `agentProvider=mock` or as fallback when Codex is unavailable
+//! (ADR-0007).
 
+use crate::agents::{AgentProvider, AgentThreadInfo};
 use crate::event_bus::CoreEvent;
 use serde_json::{json, Value};
+use std::sync::Mutex;
 use tokio::sync::broadcast::Sender;
 
 pub const AGENT_ID: &str = "mock-opencode";
 pub const SESSION_ID: &str = "sess-001";
-
-/// Embedded AgentEvent schema (v1) so emitted samples can be validated in tests.
-#[allow(dead_code)]
-pub const SCHEMA_JSON: &str =
-    include_str!("../../../../../packages/event-schema/agent-event.schema.json");
 
 pub fn state_to_animation(state: &str) -> &'static str {
     match state {
@@ -27,11 +25,16 @@ pub fn state_to_animation(state: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn envelope(event: Value) -> Value {
+    envelope_session(SESSION_ID, event)
+}
+
+fn envelope_session(session_id: &str, event: Value) -> Value {
     json!({
         "schemaVersion": 1,
         "agentId": AGENT_ID,
-        "sessionId": SESSION_ID,
+        "sessionId": session_id,
         "timestamp": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         "event": event,
     })
@@ -54,8 +57,6 @@ fn success_cycle() -> Vec<Step> {
         Step { event: json!({"type":"message.delta","text":"正在修改今天的任务文件…"}), state: None, bubble: None },
         Step { event: json!({"type":"message.delta","text":"还剩一个待办项。"}), state: None, bubble: None },
         Step { event: json!({"type":"message.completed","text":"已完成修改，等待确认。"}), state: None, bubble: None },
-        Step { event: json!({"type":"status.changed","state":"waiting_permission"}), state: Some("waiting_permission"), bubble: Some(("这里需要你确认。","high")) },
-        Step { event: json!({"type":"permission.requested","requestId":"req-0001","risk":"medium"}), state: None, bubble: None },
         Step { event: json!({"type":"status.changed","state":"success"}), state: Some("success"), bubble: Some(("修改完成，去看看 Diff 吧。","normal")) },
         Step { event: json!({"type":"message.completed","text":"修改完成，去看看 Diff 吧。"}), state: None, bubble: None },
         Step { event: json!({"type":"session.completed","outcome":"success"}), state: None, bubble: None },
@@ -63,6 +64,7 @@ fn success_cycle() -> Vec<Step> {
     ]
 }
 
+#[cfg(test)]
 fn error_cycle() -> Vec<Step> {
     vec![
         Step { event: json!({"type":"session.started"}), state: None, bubble: None },
@@ -74,13 +76,35 @@ fn error_cycle() -> Vec<Step> {
     ]
 }
 
-pub fn spawn(tx: Sender<CoreEvent>) {
-    tauri::async_runtime::spawn(async move {
-        let mut cycle: u32 = 0;
-        loop {
-            let steps = if cycle >= 2 { error_cycle() } else { success_cycle() };
+fn reply_cycle(text: &str) -> Vec<Step> {
+    vec![
+        Step { event: json!({"type":"status.changed","state":"thinking"}), state: Some("thinking"), bubble: None },
+        Step { event: json!({"type":"message.delta","text": format!("（Mock 回话）收到：{text}\n")}), state: None, bubble: None },
+        Step { event: json!({"type":"message.delta","text":"这是脚本化演示回复，不会真正执行任务。"}), state: None, bubble: None },
+        Step { event: json!({"type":"message.completed","text":"这是脚本化演示回复，不会真正执行任务。"}), state: None, bubble: None },
+        Step { event: json!({"type":"status.changed","state":"success"}), state: Some("success"), bubble: None },
+        Step { event: json!({"type":"session.completed","outcome":"success"}), state: None, bubble: None },
+        Step { event: json!({"type":"status.changed","state":"idle"}), state: Some("idle"), bubble: None },
+    ]
+}
+
+/// Scripted fallback provider implementing the AgentProvider contract.
+pub struct MockProvider {
+    tx: Sender<CoreEvent>,
+    session_id: Mutex<String>,
+}
+
+impl MockProvider {
+    pub fn new(tx: Sender<CoreEvent>) -> Self {
+        Self { tx, session_id: Mutex::new(SESSION_ID.to_string()) }
+    }
+
+    fn emit(&self, steps: Vec<Step>) {
+        let tx = self.tx.clone();
+        let session_id = self.session_id.lock().unwrap().clone();
+        tauri::async_runtime::spawn(async move {
             for step in steps {
-                let _ = tx.send(CoreEvent::AgentEvent(envelope(step.event)));
+                let _ = tx.send(CoreEvent::AgentEvent(envelope_session(&session_id, step.event)));
                 if let Some(state) = step.state {
                     let _ = tx.send(CoreEvent::PetStateChanged {
                         state: state.to_string(),
@@ -93,110 +117,69 @@ pub fn spawn(tx: Sender<CoreEvent>) {
                         priority: priority.to_string(),
                     });
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
             }
-            cycle = (cycle + 1) % 3;
-            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        });
+    }
+
+    fn current_info(&self, workspace_dir: &str) -> AgentThreadInfo {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        AgentThreadInfo {
+            id: self.session_id.lock().unwrap().clone(),
+            preview: "Mock 会话".to_string(),
+            cwd: workspace_dir.to_string(),
+            status: "idle".to_string(),
+            updated_at: now,
         }
-    });
+    }
+}
+
+impl AgentProvider for MockProvider {
+    fn start_thread(
+        &mut self,
+        workspace_dir: &str,
+        initial_message: &str,
+    ) -> Result<AgentThreadInfo, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        *self.session_id.lock().unwrap() = format!("mock-{now}");
+        self.emit(if initial_message.trim().is_empty() {
+            success_cycle()
+        } else {
+            reply_cycle(initial_message)
+        });
+        Ok(self.current_info(workspace_dir))
+    }
+
+    fn resume_thread(&mut self, thread_id: &str) -> Result<AgentThreadInfo, String> {
+        *self.session_id.lock().unwrap() = thread_id.to_string();
+        self.emit(success_cycle());
+        Ok(self.current_info(""))
+    }
+
+    fn list_threads(&mut self) -> Result<Vec<AgentThreadInfo>, String> {
+        Ok(Vec::new())
+    }
+
+    fn send(&mut self, _thread_id: &str, text: &str) -> Result<(), String> {
+        self.emit(reply_cycle(text));
+        Ok(())
+    }
+
+    fn interrupt(&mut self, _thread_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Lightweight, schema-driven structural validation (stand-in for a full
-    /// JSON Schema engine in Rust). Reads `$defs` enum + required fields from
-    /// the embedded `agent-event.schema.json` and checks each emitted envelope.
-    /// Full validation lives in packages/event-schema (Ajv).
-    fn validate_envelope(value: &Value) -> Result<(), String> {
-        let schema: Value = serde_json::from_str(SCHEMA_JSON).map_err(|e| e.to_string())?;
-        let defs = schema.get("$defs").ok_or("schema has no $defs")?;
-
-        if value.get("schemaVersion") != Some(&json!(1)) {
-            return Err("schemaVersion != 1".into());
-        }
-        for field in ["agentId", "sessionId", "timestamp"] {
-            let ok = value
-                .get(field)
-                .and_then(Value::as_str)
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
-            if !ok {
-                return Err(format!("envelope missing {field}"));
-            }
-        }
-        let event = value.get("event").ok_or("event missing")?;
-        let ev_type = event.get("type").and_then(Value::as_str).ok_or("event.type missing")?;
-
-        // Derive allowed states from the embedded schema.
-        let states: Vec<&str> = defs
-            .get("agentState")
-            .and_then(|s| s.get("enum"))
-            .and_then(Value::as_array)
-            .ok_or("agentState enum missing")?
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        if let Some(state) = event.get("state").and_then(Value::as_str) {
-            if !states.contains(&state) {
-                return Err(format!("invalid state {state}"));
-            }
-        }
-        if let Some(risk) = event.get("risk").and_then(Value::as_str) {
-            if !["low", "medium", "high", "critical"].contains(&risk) {
-                return Err(format!("invalid risk {risk}"));
-            }
-        }
-
-        // The event type must map to a $defs kind defined by the schema.
-        let kinds = defs
-            .get("event")
-            .and_then(|e| e.get("oneOf"))
-            .and_then(Value::as_array)
-            .ok_or("event oneOf missing")?;
-        let ref_names: Vec<&str> = kinds
-            .iter()
-            .filter_map(|k| k.get("$ref").and_then(|r| r.as_str()))
-            .filter_map(|r| r.rsplit('/').next())
-            .collect();
-        let kind = kind_name(ev_type);
-        if !ref_names.contains(&kind.as_str()) {
-            return Err(format!("event type {ev_type} not defined in schema"));
-        }
-
-        // Required fields per kind, read from the schema.
-        let required: Vec<&str> = defs
-            .get(&kind)
-            .and_then(|d| d.get("required"))
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-            .unwrap_or_default();
-        for field in required {
-            if event.get(field).is_none() {
-                return Err(format!("{ev_type} missing required field {field}"));
-            }
-        }
-        Ok(())
-    }
-
-    fn kind_name(ev_type: &str) -> String {
-        ev_type
-            .split('.')
-            .enumerate()
-            .map(|(i, part)| {
-                if i == 0 {
-                    part.to_string()
-                } else {
-                    let mut chars = part.chars();
-                    match chars.next() {
-                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                        None => String::new(),
-                    }
-                }
-            })
-            .collect()
-    }
+    use crate::agents::validate_envelope;
 
     #[test]
     fn emitted_samples_are_schema_valid() {
