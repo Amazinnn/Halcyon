@@ -34,7 +34,7 @@ use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-use crate::grid::GridManager;
+use crate::grid::{GridManager, GRID_COLS, GRID_ROWS};
 use crate::settings::GridRect;
 use crate::{occupied_rects, place_window_inner, AppState};
 
@@ -83,7 +83,16 @@ fn stop_drag(ad: ActiveDrag) {
     // handle is dropped (detached); the thread is short-lived
 }
 
-fn emit_preview(app: &AppHandle, label: &str, col: usize, row: usize) {
+fn emit_preview(
+    app: &AppHandle,
+    label: &str,
+    fx: f64,
+    fy: f64,
+    fw: f64,
+    fh: f64,
+    col: usize,
+    row: usize,
+) {
     let state = app.state::<AppState>();
     let (sw, sh) = *state.screen.lock().unwrap();
     let gm = GridManager { screen_w: sw, screen_h: sh };
@@ -104,6 +113,13 @@ fn emit_preview(app: &AppHandle, label: &str, col: usize, row: usize) {
             "visible": true,
             "label": label,
             "rect": rect,
+            // Actual floating rect of the dragged window in continuous grid
+            // units. The frontend uses this as the brightness-gradient
+            // center, NOT the snapped placement rect, so the glow follows
+            // the real position during the drag instead of jumping between
+            // cells. (fx, fy, fw, fh are precomputed by the caller: logical
+            // px / logical cell size.)
+            "floatRect": { "x": fx, "y": fy, "w": fw, "h": fh },
             "occupiedCells": occupied,
             "conflict": conflict,
         }),
@@ -180,9 +196,13 @@ fn poller(
         let _ = w.set_position(PhysicalPosition::new(x, y));
         if is_grid {
             let m = GridManager { screen_w: sw, screen_h: sh }.metrics();
-            let col = ((x as f64 / scale) / m.cell_w).round() as usize;
-            let row = ((y as f64 / scale) / m.cell_h).round() as usize;
-            emit_preview(&app, &label, col, row);
+            let fx = (x as f64 / scale) / m.cell_w;
+            let fy = (y as f64 / scale) / m.cell_h;
+            let fw = (win_w as f64 / scale) / m.cell_w;
+            let fh = (win_h as f64 / scale) / m.cell_h;
+            let col = fx.round() as usize;
+            let row = fy.round() as usize;
+            emit_preview(&app, &label, fx, fy, fw, fh, col, row);
         }
         if !lbutton_down() {
             break; // released -> ask the main thread to finalize below
@@ -242,6 +262,9 @@ pub fn drag_start(
     // Initial preview with the window's current rect.
     if GRID_LABELS.contains(&label.as_str()) {
         let s = app.state::<AppState>();
+        let (sw, sh) = *s.screen.lock().unwrap();
+        let cell_w = sw / GRID_COLS as f64;
+        let cell_h = sh / GRID_ROWS as f64;
         let settings = s.settings.lock().unwrap();
         let current = settings.grid.get(&label).copied();
         let occupied = occupied_rects(&settings, Some(&label));
@@ -251,6 +274,12 @@ pub fn drag_start(
                 "visible": true,
                 "label": label,
                 "rect": current,
+                "floatRect": {
+                    "x": pos.x as f64 / scale / cell_w,
+                    "y": pos.y as f64 / scale / cell_h,
+                    "w": size.width as f64 / scale / cell_w,
+                    "h": size.height as f64 / scale / cell_h,
+                },
                 "occupiedCells": occupied,
                 "conflict": false,
             }),
