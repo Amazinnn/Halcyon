@@ -1,14 +1,227 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { emit } from "@tauri-apps/api/event";
 import { useAgentStore } from "../../stores/agent";
 import { useUiStore } from "../../stores/ui";
 import { useGridDrag } from "../../composables/useGridDrag";
 
+// Official hatch-pet contract (ADR-0009): fixed 8x9 atlas, 192x208 cells.
+const ATLAS_COLS = 8;
+const ATLAS_ROWS = 9;
+const CELL_W = 192;
+const CELL_H = 208;
+const ATLAS_W = ATLAS_COLS * CELL_W; // 1536
+const ATLAS_H = ATLAS_ROWS * CELL_H; // 1872
+
+interface AnimDef {
+  row: number;
+  durations: number[]; // per-frame ms; last entry holds the final frame
+  loop: boolean;
+}
+
+// App animation name -> official hatch-pet row (animation-rows.md).
+const ANIMS: Record<string, AnimDef> = {
+  idle: { row: 0, durations: [280, 110, 110, 140, 140, 320], loop: true },
+  thinking: { row: 7, durations: [120, 120, 120, 120, 120, 120, 120, 220], loop: true }, // running
+  editing: { row: 8, durations: [150, 150, 150, 150, 150, 280], loop: true }, // review
+  waiting: { row: 6, durations: [150, 150, 150, 150, 150, 260], loop: true },
+  success: { row: 4, durations: [140, 140, 140, 140, 280], loop: false }, // jumping
+  error: { row: 5, durations: [140, 140, 140, 140, 140, 140, 140, 240], loop: false }, // failed
+};
+
+interface PetInfo {
+  id: string;
+  displayName: string;
+  description: string;
+  spritesheetPath: string;
+}
+
 const agent = useAgentStore();
 const ui = useUiStore();
 const { onPointerDown, onPointerMove, onPointerUp } = useGridDrag("pet");
 
+// ---- pet pack state ----
+const pet = ref<PetInfo | null>(null);
+const packs = ref<PetInfo[]>([]);
+const sheet = ref<HTMLImageElement | null>(null);
+const sheetError = ref("");
+const menuOpen = ref(false);
+const importing = ref(false);
+const importError = ref("");
+
+// ---- sprite playback ----
+const canvasRef = ref<HTMLCanvasElement | null>(null);
+const frameIdx = ref(0);
+const animKey = computed(() => ANIMS[agent.animation] ? agent.animation : "idle");
+// Actually playing animation; non-loop animations switch back to "idle" here.
+let currentAnim = "idle" as string;
+let timer: ReturnType<typeof setTimeout> | null = null;
+
+function drawFrame(idx: number) {
+  const canvas = canvasRef.value;
+  const img = sheet.value;
+  if (!canvas || !img) return;
+  const def = ANIMS[currentAnim] ?? ANIMS.idle;
+  const col = idx % ATLAS_COLS;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, col * CELL_W, def.row * CELL_H, CELL_W, CELL_H, 0, 0, canvas.width, canvas.height);
+}
+
+function scheduleNext(idx: number) {
+  if (timer) clearTimeout(timer);
+  const def = ANIMS[currentAnim] ?? ANIMS.idle;
+  const d = def.durations[Math.min(idx, def.durations.length - 1)];
+  timer = setTimeout(() => {
+    let next = idx + 1;
+    if (next >= def.durations.length) {
+      if (def.loop) {
+        next = 0;
+      } else {
+        // non-loop finished: snap back to idle
+        currentAnim = "idle";
+        frameIdx.value = 0;
+        drawFrame(0);
+        scheduleIdleLoop();
+        return;
+      }
+    }
+    frameIdx.value = next;
+    drawFrame(next);
+    scheduleNext(next);
+  }, d);
+}
+
+function scheduleIdleLoop() {
+  if (timer) clearTimeout(timer);
+  const def = ANIMS.idle;
+  const d = def.durations[Math.min(frameIdx.value, def.durations.length - 1)];
+  timer = setTimeout(() => {
+    const next = (frameIdx.value + 1) % def.durations.length;
+    frameIdx.value = next;
+    drawFrame(next);
+    scheduleIdleLoop();
+  }, d);
+}
+
+function resetPlayback() {
+  if (timer) clearTimeout(timer);
+  currentAnim = animKey.value;
+  frameIdx.value = 0;
+  drawFrame(0);
+  scheduleNext(0);
+}
+
+watch(animKey, () => {
+  if (sheet.value) resetPlayback();
+});
+
+// ---- load active pack / sheet ----
+async function loadSheet(info: PetInfo) {
+  sheetError.value = "";
+  const img = new Image();
+  const url = convertFileSrc(info.spritesheetPath);
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("spritesheet 加载失败"));
+    img.src = url;
+  });
+  if (img.naturalWidth !== ATLAS_W || img.naturalHeight !== ATLAS_H) {
+    throw new Error(`spritesheet 尺寸不符：需要 ${ATLAS_W}x${ATLAS_H}，实际 ${img.naturalWidth}x${img.naturalHeight}`);
+  }
+  sheet.value = img;
+  pet.value = info;
+  resetPlayback();
+}
+
+async function refresh() {
+  try {
+    const active = await invoke<PetInfo | null>("pet_active");
+    if (active) {
+      await loadSheet(active);
+    } else {
+      pet.value = null;
+      sheet.value = null;
+    }
+  } catch (e) {
+    sheetError.value = String(e);
+    pet.value = null;
+    sheet.value = null;
+  }
+  try {
+    packs.value = await invoke<PetInfo[]>("pet_list_packs");
+  } catch (e) {
+    console.error("[pet] list packs failed", e);
+  }
+}
+
+async function importPack() {
+  importError.value = "";
+  const sel = await open({ directory: true });
+  if (!sel) return;
+  importing.value = true;
+  try {
+    const info = await invoke<PetInfo>("pet_import_pack", { dir: sel });
+    await loadSheet(info);
+    await refresh();
+    menuOpen.value = false;
+  } catch (e) {
+    importError.value = String(e);
+  } finally {
+    importing.value = false;
+  }
+}
+
+async function activatePack(id: string) {
+  try {
+    const info = await invoke<PetInfo>("pet_activate", { id });
+    await loadSheet(info);
+    menuOpen.value = false;
+  } catch (e) {
+    sheetError.value = String(e);
+  }
+}
+
+// ---- resize handle: 1x1 -> 1x2 -> 2x1 -> 2x2 ----
+const SIZES: Array<[number, number]> = [
+  [1, 1],
+  [1, 2],
+  [2, 1],
+  [2, 2],
+];
+let sizeIdx = 0;
+let dragAccum = 0;
+let resizePointer = -1;
+
+function onResizePointerDown(e: PointerEvent) {
+  if (resizePointer !== -1) return;
+  resizePointer = e.pointerId;
+  dragAccum = 0;
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+}
+
+function onResizePointerMove(e: PointerEvent) {
+  if (e.pointerId !== resizePointer) return;
+  dragAccum += Math.abs(e.movementX) + Math.abs(e.movementY);
+  if (dragAccum > 40) {
+    dragAccum = 0;
+    sizeIdx = (sizeIdx + 1) % SIZES.length;
+    const [cols, rows] = SIZES[sizeIdx];
+    void invoke("resize_window", { label: "pet", cols, rows }).catch((err) =>
+      console.error("[pet] resize failed", err),
+    );
+  }
+}
+
+function onResizePointerUp(e: PointerEvent) {
+  if (e.pointerId !== resizePointer) return;
+  resizePointer = -1;
+}
+
+// ---- bubble / chat ----
 const bubbleVisible = computed(() => {
   if (!agent.bubble) return false;
   if (ui.chatOpen) return false;
@@ -21,6 +234,34 @@ const bubbleVisible = computed(() => {
 function toggleChat() {
   void emit("ui:toggle_chat", {});
 }
+
+let resizeObserver: ResizeObserver | null = null;
+
+function fitCanvas() {
+  const canvas = canvasRef.value;
+  const wrap = canvas?.parentElement;
+  if (!canvas || !wrap) return;
+  const availW = wrap.clientWidth - 16;
+  const availH = wrap.clientHeight - 16;
+  const scale = Math.min(availW / CELL_W, availH / CELL_H);
+  const w = Math.max(16, Math.floor(CELL_W * scale));
+  const h = Math.max(18, Math.floor(CELL_H * scale));
+  canvas.width = w;
+  canvas.height = h;
+  drawFrame(frameIdx.value);
+}
+
+onMounted(async () => {
+  await refresh();
+  resizeObserver = new ResizeObserver(() => fitCanvas());
+  if (canvasRef.value?.parentElement) resizeObserver.observe(canvasRef.value.parentElement);
+  fitCanvas();
+});
+
+onBeforeUnmount(() => {
+  if (timer) clearTimeout(timer);
+  resizeObserver?.disconnect();
+});
 </script>
 
 <template>
@@ -28,17 +269,63 @@ function toggleChat() {
     <div v-if="bubbleVisible" class="bubble" :class="`prio-${agent.bubble?.priority}`" data-no-drag>
       {{ agent.bubble?.text }}
     </div>
-    <div class="sprout" :class="`anim-${agent.animation}`">
-      <svg viewBox="0 0 64 64" width="72" height="72">
-        <path d="M32 58 C32 42 32 30 32 22" stroke="#a3e635" stroke-width="3" fill="none" stroke-linecap="round" />
-        <path d="M32 34 C20 30 15 20 19 11 C28 11 34 21 32 34Z" fill="#4ade80" />
-        <path d="M32 26 C44 22 49 14 45 6 C37 8 31 16 32 26Z" fill="#a3e635" />
-        <path d="M30 46 C22 44 18 38 20 32 C26 33 30 38 30 46Z" fill="#16a34a" />
-      </svg>
-      <span class="halo" :class="`st-${agent.state}`"></span>
+
+    <div class="pet-stage" data-no-drag>
+      <canvas
+        v-if="sheet"
+        ref="canvasRef"
+        class="pet-canvas"
+        :title="pet?.displayName ?? ''"
+      ></canvas>
+      <div v-else class="sprout" :class="`anim-${agent.animation}`">
+        <svg viewBox="0 0 64 64" width="72" height="72">
+          <path d="M32 58 C32 42 32 30 32 22" stroke="#a3e635" stroke-width="3" fill="none" stroke-linecap="round" />
+          <path d="M32 34 C20 30 15 20 19 11 C28 11 34 21 32 34Z" fill="#4ade80" />
+          <path d="M32 26 C44 22 49 14 45 6 C37 8 31 16 32 26Z" fill="#a3e635" />
+          <path d="M30 46 C22 44 18 38 20 32 C26 33 30 38 30 46Z" fill="#16a34a" />
+        </svg>
+        <span class="halo" :class="`st-${agent.state}`"></span>
+      </div>
+      <div v-if="sheetError" class="sheet-err">{{ sheetError }}</div>
     </div>
-    <button class="open-btn" @click.stop="toggleChat">对话</button>
-    <div class="pet-name">{{ agent.state }}</div>
+
+    <div class="pet-bar" data-no-drag>
+      <span class="pet-name">{{ pet?.displayName ?? agent.state }}</span>
+      <button class="open-btn" @click="toggleChat">对话</button>
+      <button class="open-btn" @click="menuOpen = !menuOpen">宠物</button>
+    </div>
+
+    <div v-if="menuOpen" class="pet-menu" data-no-drag @click.stop>
+      <div class="menu-title">
+        宠物包
+        <button class="link-btn" :disabled="importing" @click="importPack">
+          {{ importing ? "导入中…" : "导入宠物包" }}
+        </button>
+      </div>
+      <div v-if="importError" class="sheet-err">{{ importError }}</div>
+      <ul v-if="packs.length" class="pack-list">
+        <li v-for="p in packs" :key="p.id">
+          <button
+            class="pack-item"
+            :class="{ active: pet?.id === p.id }"
+            @click="activatePack(p.id)"
+          >
+            {{ p.displayName }}
+            <span class="pack-id">{{ p.id }}</span>
+          </button>
+        </li>
+      </ul>
+      <p v-else class="empty">尚未导入宠物包，点击「导入宠物包」选择包含 pet.json 与 spritesheet 的文件夹。</p>
+    </div>
+
+    <div
+      class="resize-handle"
+      data-no-drag
+      @pointerdown="onResizePointerDown"
+      @pointermove="onResizePointerMove"
+      @pointerup="onResizePointerUp"
+      title="拖动调整桌宠大小（1×1 / 1×2 / 2×1 / 2×2）"
+    ></div>
   </div>
 </template>
 
@@ -54,6 +341,22 @@ function toggleChat() {
   gap: 4px;
   box-sizing: border-box;
   cursor: grab;
+  overflow: hidden;
+}
+.pet-stage {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  box-sizing: border-box;
+  position: relative;
+}
+.pet-canvas {
+  max-width: 100%;
+  max-height: 100%;
 }
 .sprout { position: relative; display: flex; align-items: center; justify-content: center; }
 .halo {
@@ -81,11 +384,63 @@ function toggleChat() {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 5;
 }
 .bubble.prio-high, .bubble.prio-critical { border: 2px solid var(--warn); }
+.pet-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 4px 8px;
+  width: 100%;
+  box-sizing: border-box;
+  flex-wrap: wrap;
+}
 .open-btn {
   border: none; border-radius: var(--r-pill);
   padding: 4px 14px; font-size: 12px; cursor: pointer;
   background: var(--glass-strong); color: var(--accent-bright);
   border: 1px solid var(--glass-border);
 }
-.pet-name { font-size: 10px; color: var(--text-low); }
+.pet-name { font-size: 10px; color: var(--text-low); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-err {
+  position: absolute; bottom: 4px; left: 8px; right: 8px;
+  font-size: 10px; color: var(--err);
+  text-align: center; word-break: break-all;
+}
+.pet-menu {
+  position: absolute; bottom: 40px; right: 8px;
+  z-index: 12; width: 220px;
+  background: var(--glass-strong); border: 1px solid var(--glass-border);
+  border-radius: var(--r-md); padding: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+.menu-title {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: var(--text-hi); margin-bottom: 6px;
+}
+.link-btn {
+  border: none; background: transparent; color: var(--accent-bright);
+  font-size: 12px; cursor: pointer; padding: 2px 6px;
+}
+.link-btn:disabled { opacity: 0.5; cursor: default; }
+.pack-list { list-style: none; margin: 0; padding: 0; max-height: 140px; overflow-y: auto; }
+.pack-item {
+  width: 100%; text-align: left;
+  border: none; background: transparent; color: var(--text-hi);
+  padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer;
+  font-size: 12px;
+}
+.pack-item:hover { background: var(--accent-wash); color: var(--accent-bright); }
+.pack-item.active { background: var(--accent-wash); color: var(--accent-bright); }
+.pack-id { font-size: 10px; color: var(--text-low); margin-left: 6px; }
+.empty { font-size: 11px; color: var(--text-low); margin: 4px 0; }
+.resize-handle {
+  position: absolute; right: 2px; bottom: 2px;
+  width: 14px; height: 14px;
+  cursor: nwse-resize;
+  border-right: 2px solid var(--text-low);
+  border-bottom: 2px solid var(--text-low);
+  border-bottom-right-radius: 3px;
+  opacity: 0.55;
+}
+.resize-handle:hover { opacity: 1; border-color: var(--accent-bright); }
 </style>
