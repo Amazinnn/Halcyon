@@ -448,6 +448,7 @@ onMounted(async () => {
   bottom: calc(100% + 10px);
   transform: translateX(-50%);
   z-index: 12;
+  width: max-content;
   display: flex; flex-direction: column; gap: 4px;
   padding: 6px;
   border-radius: var(--r-md);
@@ -456,11 +457,13 @@ onMounted(async () => {
 .add-menu button {
   border: none; background: transparent; color: var(--text-hi);
   border-radius: var(--r-sm); padding: 8px 22px; font-size: 13px; cursor: pointer; text-align: left;
+  white-space: nowrap;
 }
 .add-menu button:hover { background: var(--accent-wash); color: var(--accent-bright); }
 .menu-inline {
   display: flex; flex-direction: column; gap: 6px;
   padding: 6px 8px 8px;
+  width: max-content;
 }
 .text-input {
   border: 1px solid var(--glass-border); background: var(--glass-strong);

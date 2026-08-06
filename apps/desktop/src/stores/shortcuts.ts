@@ -23,6 +23,7 @@ export const useShortcutStore = defineStore("shortcuts", {
   state: () => ({
     items: [] as DesktopShortcut[],
     icons: {} as Record<string, string>,
+    launching: {} as Record<string, boolean>,
   }),
   actions: {
     async load() {
@@ -53,6 +54,7 @@ export const useShortcutStore = defineStore("shortcuts", {
     async addPath(path: string) {
       const sc = await invoke<DesktopShortcut>("add_shortcut", { path });
       this.items.push(sc);
+      if (sc.type === "application") void this.loadIcon(sc.target);
     },
     async addUrl(name: string, url: string) {
       const sc = await invoke<DesktopShortcut>("add_url_shortcut", { name, url });
@@ -75,10 +77,15 @@ export const useShortcutStore = defineStore("shortcuts", {
       }
     },
     async open(sc: DesktopShortcut) {
+      // Single-flight: ignore repeated clicks while this shortcut is launching.
+      if (this.launching[sc.id]) return;
+      this.launching[sc.id] = true;
       try {
         await invoke("launch_shortcut", { id: sc.id });
       } catch (e) {
         console.error("[shortcuts] launch failed", sc.id, e);
+      } finally {
+        delete this.launching[sc.id];
       }
     },
   },
