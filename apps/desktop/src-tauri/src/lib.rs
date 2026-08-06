@@ -402,6 +402,31 @@ fn pet_active(state: tauri::State<'_, AppState>) -> Result<Option<pets::PetInfo>
         None => Ok(None),
     }
 }
+#[tauri::command]
+fn resize_window(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    label: String,
+    cols: usize,
+    rows: usize,
+) -> Result<GridRect, String> {
+    let cols = cols.clamp(1, grid::GRID_COLS);
+    let rows = rows.clamp(1, grid::GRID_ROWS);
+    let (w, h) = *state.screen.lock().unwrap();
+    let gm = GridManager { screen_w: w, screen_h: h };
+    let mut settings = state.settings.lock().unwrap();
+    let current = settings
+        .grid
+        .get(&label)
+        .copied()
+        .unwrap_or(GridRect { col: 0, row: 0, cols, rows });
+    let rect = GridRect { col: current.col, row: current.row, cols, rows };
+    settings.grid.insert(label.clone(), rect);
+    let _ = settings.save(&state.data_dir);
+    drop(settings);
+    position_window(&app, &label, &rect, &gm);
+    Ok(rect)
+}
 
 #[tauri::command]
 fn get_grid_metrics(state: tauri::State<'_, AppState>) -> grid::GridMetrics {
@@ -1283,6 +1308,7 @@ pub fn run() {
             pet_list_packs,
             pet_activate,
             pet_active,
+            resize_window,
             quit_app
         ])
         .run(tauri::generate_context!())
