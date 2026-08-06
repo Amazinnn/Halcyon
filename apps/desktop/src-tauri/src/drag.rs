@@ -36,7 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 use crate::grid::GridManager;
 use crate::settings::GridRect;
-use crate::{dock_logos_inner, occupied_rects, place_window_inner, AppState};
+use crate::{occupied_rects, place_window_inner, AppState};
 
 const POLL_MS: u64 = 15;
 const GRID_LABELS: [&str; 4] = ["chat", "stats", "music", "pet"];
@@ -120,25 +120,6 @@ pub fn finalize(app: &AppHandle, label: &str) {
     let _ = app.emit("grid:preview", serde_json::json!({ "visible": false }));
 
     let state = app.state::<AppState>();
-    if label == "logos" {
-        let Some(w) = app.get_webview_window("logos") else { return };
-        let pos = w.outer_position().unwrap_or_default();
-        let size = w.outer_size().unwrap_or_default();
-        let scale = w.scale_factor().unwrap_or(1.0);
-        let (sw, sh) = *state.screen.lock().unwrap();
-        let cx = (pos.x + size.width as i32 / 2) as f64 / scale;
-        let cy = (pos.y + size.height as i32 / 2) as f64 / scale;
-        let edges = [("top", cy), ("bottom", sh - cy), ("left", cx), ("right", sw - cx)];
-        let edge = edges
-            .iter()
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|e| e.0)
-            .unwrap_or("top")
-            .to_string();
-        let _ = dock_logos_inner(app, &state, edge);
-        return;
-    }
-
     let Some(w) = app.get_webview_window(label) else { return };
     let pos = w.outer_position().unwrap_or_default();
     let scale = w.scale_factor().unwrap_or(1.0);
@@ -148,6 +129,8 @@ pub fn finalize(app: &AppHandle, label: &str) {
     let col = ((pos.x as f64 / scale) / m.cell_w).round() as usize;
     let row = ((pos.y as f64 / scale) / m.cell_h).round() as usize;
     let _ = place_window_inner(app, &state, label, col, row);
+    // the float was just raised above the topbar; put the capsule back on top
+    crate::raise_topbar(app);
 }
 
 fn poller(
@@ -234,6 +217,11 @@ pub fn drag_start(
     let Some(w) = app.get_webview_window(&label) else {
         return Err(format!("drag_start: unknown window '{label}'"));
     };
+    // Never start a drag on a hidden/collapsed window: the poller would fight
+    // an invisible window and could leave a zombie thread behind.
+    if !w.is_visible().unwrap_or(true) {
+        return Ok(());
+    }
     // getters on the main thread only
     let pos = w.outer_position().map_err(|e| format!("outer_position: {e}"))?;
     let scale = w.scale_factor().unwrap_or(1.0);

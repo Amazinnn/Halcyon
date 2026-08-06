@@ -7,7 +7,6 @@ import ChatView from "./views/chat/ChatView.vue";
 import StatsView from "./views/stats/StatsView.vue";
 import MusicView from "./views/music/MusicView.vue";
 import PetView from "./views/pet/PetView.vue";
-import LogosView from "./views/logos/LogosView.vue";
 import TopbarView from "./views/topbar/TopbarView.vue";
 import GridOverlayView from "./views/overlay/GridOverlayView.vue";
 import { useUiStore } from "./stores/ui";
@@ -24,7 +23,6 @@ const view = computed(() => {
     case "stats": return StatsView;
     case "music": return MusicView;
     case "pet": return PetView;
-    case "logos": return LogosView;
     case "topbar": return TopbarView;
     case "grid-overlay": return GridOverlayView;
     default: return DesktopView;
@@ -32,7 +30,7 @@ const view = computed(() => {
 });
 
 onMounted(() => {
-  if (["pet", "music", "logos", "topbar", "chat", "stats", "grid-overlay"].includes(label)) {
+  if (["pet", "music", "topbar", "chat", "stats", "grid-overlay"].includes(label)) {
     document.documentElement.classList.add("transparent-window");
     document.body.classList.add("transparent-window");
   }

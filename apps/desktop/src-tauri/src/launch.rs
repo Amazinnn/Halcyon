@@ -233,6 +233,11 @@ fn shell_open_and_fit(app: &AppHandle, row: &ShortcutRow, file: &str) -> Result<
 }
 
 /// Launch one shortcut and (except `internal`) fit its window into the grid.
+///
+/// State guard: only `internal` shortcuts may touch the float windows (they
+/// restore the matching view). Application/file/folder/url launches MUST NOT
+/// modify `settings.collapsed` ? a regression here would "resurrect" collapsed
+/// floats whenever the user opens an app (observed v1.5 regression report).
 pub fn launch_shortcut(app: &AppHandle, row: &ShortcutRow) -> Result<(), String> {
     let kind = ShortcutType::parse(&row.kind).ok_or_else(|| format!("unknown shortcut type {}", row.kind))?;
     match kind {

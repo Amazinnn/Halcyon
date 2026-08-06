@@ -25,7 +25,7 @@
 ## 目录
 
 ```text
-apps/desktop/          Tauri 2 + Vue 3 应用（Desktop / Chat / Stats / Music / Pet / Logos / Grid-Overlay 七窗口）
+apps/desktop/          Tauri 2 + Vue 3 应用（Desktop / Chat / Stats / Music / Pet / Grid-Overlay / Topbar 七窗口）
 packages/event-schema/ AgentEvent 协议 v1（JSON Schema + TS 类型 + fixtures，npm test 校验）
 docs/                  审计、可行性、调查、ADR、风险与下一阶段
 docs/architecture/evidence/visual-v1/   v1.2~v1.5 视觉截图（毛玻璃去灰、浮窗透明、计时/监督、置顶胶囊、v1.5 自由布局/渐变网格线/窗口嵌入）
@@ -62,3 +62,11 @@ src-tauri\target\debug\focus-cli.exe timer status   # 本地控制面（需应�
 ## 首轮硬性边界（未做）
 
 真实 Agent 接入、锁机、替换 Shell、私有虚拟桌面 API、真实音乐播放控制、浏览器追踪、云同步。
+
+## 需求原话记录
+
+用户每次提出的新需求以原话记录在 `docs/requirements-verbatim.md`（只追加、不改历史条目）。
+
+## 诊断
+
+应用运行时可查看浮窗/顶条实时状态：`focus-cli debug windows`（输出各浮窗 visible/collapsed、顶条可见性、grid 布局、active_drag）。

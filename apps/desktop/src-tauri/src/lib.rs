@@ -1,7 +1,7 @@
 //! Focus Desktop spike (v1.2 visual & window-management round).
 //! Windows: desktop (canvas), chat / stats / music / pet (12x8 grid floats,
-//! frosted acrylic, collapsible to logos), grid-overlay (drag preview),
-//! logos (collapsed capsule strip). No AgentEvent protocol / event-name /
+//! frosted acrylic, collapsible to hidden), grid-overlay (drag preview),
+//! topbar (focus status capsule). No AgentEvent protocol / event-name /
 //! DB changes from the spike.
 
 mod acrylic;
@@ -27,7 +27,7 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{Emitter, Listener, Manager};
-use tauri::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
+use tauri::{LogicalPosition, LogicalSize};
 
 use event_bus::CoreEvent;
 use grid::GridManager;
@@ -80,39 +80,8 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
     }
 }
 
-pub(crate) fn position_logos(app: &tauri::AppHandle, state: &AppState) {
-    let Some(w) = app.get_webview_window("logos") else { return };
-    let scale = w.scale_factor().unwrap_or(1.0);
-    let pos = w.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
-    let size = w.outer_size().unwrap_or(PhysicalSize::new(200, 110));
-    let (lx, ly) = (pos.x as f64 / scale, pos.y as f64 / scale);
-    let (lw, lh) = (size.width as f64 / scale, size.height as f64 / scale);
-    let (sw, sh) = *state.screen.lock().unwrap();
-    let edge = state.settings.lock().unwrap().logos_edge.clone();
-    let (x, y) = match edge.as_str() {
-        "top" => (lx.clamp(8.0, (sw - lw - 8.0).max(8.0)), 12.0),
-        "bottom" => (lx.clamp(8.0, (sw - lw - 8.0).max(8.0)), (sh - lh - 12.0).max(8.0)),
-        "left" => (12.0, ly.clamp(8.0, (sh - lh - 8.0).max(8.0))),
-        _ => ((sw - lw - 12.0).max(8.0), ly.clamp(8.0, (sh - lh - 8.0).max(8.0))),
-    };
-    let _ = w.set_position(LogicalPosition::new(x, y));
-}
-
 fn emit_visibility(app: &tauri::AppHandle, label: &str, visible: bool) {
     let _ = app.emit("window:visibility", serde_json::json!({ "label": label, "visible": visible }));
-}
-
-fn update_logos(app: &tauri::AppHandle, state: &AppState) {
-    let collapsed = state.settings.lock().unwrap().collapsed.clone();
-    let _ = app.emit("logos:update", serde_json::json!({ "collapsed": collapsed }));
-    if let Some(w) = app.get_webview_window("logos") {
-        if collapsed.is_empty() {
-            let _ = w.hide();
-        } else {
-            position_logos(app, state);
-            let _ = w.show();
-        }
-    }
 }
 
 pub(crate) fn occupied_rects(settings: &Settings, except: Option<&str>) -> Vec<GridRect> {
@@ -204,11 +173,13 @@ pub(crate) fn place_window_inner(
             settings.grid.insert(label.to_string(), new_rect);
             let _ = settings.save(&state.data_dir);
             position_window(app, label, &new_rect, &gm);
+            raise_topbar(app);
             Ok(new_rect)
         }
         Err(()) => {
             // occupied: snap back to the current cell
             position_window(app, label, &current, &gm);
+            raise_topbar(app);
             Ok(current)
         }
     }
@@ -253,7 +224,6 @@ fn collapse(app: tauri::AppHandle, state: tauri::State<'_, AppState>, label: Str
         let _ = w.hide();
     }
     emit_visibility(&app, &label, false);
-    update_logos(&app, &state);
     Ok(())
 }
 
@@ -273,20 +243,8 @@ fn restore(app: tauri::AppHandle, state: tauri::State<'_, AppState>, label: Stri
     }
     position_window(&app, &label, &rect, &gm);
     emit_visibility(&app, &label, true);
-    update_logos(&app, &state);
+    raise_topbar(&app);
     Ok(())
-}
-
-pub(crate) fn dock_logos_inner(app: &tauri::AppHandle, state: &AppState, edge: String) -> Result<(), String> {
-    state.settings.lock().unwrap().logos_edge = edge;
-    let _ = state.settings.lock().unwrap().save(&state.data_dir);
-    position_logos(app, state);
-    Ok(())
-}
-
-#[tauri::command]
-fn dock_logos(app: tauri::AppHandle, state: tauri::State<'_, AppState>, edge: String) -> Result<(), String> {
-    dock_logos_inner(&app, &state, edge)
 }
 
 #[tauri::command]
@@ -483,7 +441,7 @@ fn set_acrylic(app: tauri::AppHandle, state: tauri::State<'_, AppState>, enabled
         s.acrylic_enabled = enabled;
         let _ = s.save(&state.data_dir);
     }
-    for label in ["chat", "stats", "music", "pet", "logos"] {
+    for label in ["chat", "stats", "music", "pet"] {
         if let Some(w) = app.get_webview_window(label) {
             apply_acrylic_opt(&w, enabled);
         }
@@ -681,15 +639,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .build()?;
     overlay.set_ignore_cursor_events(true)?;
 
-    tauri::WebviewWindowBuilder::new(app, "logos", url.clone())
-        .title("Logos")
-        .inner_size(200.0, 112.0)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .build()?;
+    
 
     let topbar = tauri::WebviewWindowBuilder::new(app, "topbar", url.clone())
         .title("状态")
@@ -719,8 +669,58 @@ fn apply_topbar_visibility(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("topbar") {
         if visible {
             let _ = w.show();
+            raise_topbar(app);
         } else {
             let _ = w.hide();
+        }
+    }
+}
+
+/// Re-assert the status capsule (topbar) above every always-on-top float:
+/// a float shown/restored after the topbar would otherwise cover it.
+///
+/// `set_always_on_top(true)` alone does NOT reorder an already-topmost window
+/// above its peers, so on Windows we raise the raw HWND with
+/// `SetWindowPos(HWND_TOPMOST)` (verified: Tauri's re-assert leaves the float
+/// on top, the native call fixes it).
+pub(crate) fn raise_topbar(app: &tauri::AppHandle) {
+    let Some(w) = app.get_webview_window("topbar") else { return };
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
+        if let Ok(hwnd) = w.hwnd() {
+            // tauri links windows 0.61 while we depend on 0.62; convert via
+            // the raw pointer (both HWNDs wrap *mut c_void).
+            let hwnd_win = windows::Win32::Foundation::HWND(hwnd.0 as *mut core::ffi::c_void);
+            unsafe {
+                let _ = SetWindowPos(
+                    hwnd_win,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+            return;
+        }
+    }
+    let _ = w.set_always_on_top(true);
+}
+
+/// Startup reconciliation: re-hide collapsed floats shortly after the event
+/// loop starts, in case a webview showed one during the boot race. Visible
+/// floats are left untouched (no re-position).
+fn sync_collapsed(app: &tauri::AppHandle, state: &AppState) {
+    let collapsed = state.settings.lock().unwrap().collapsed.clone();
+    for label in ["chat", "stats", "music", "pet"] {
+        if collapsed.contains(&label.to_string()) {
+            if let Some(w) = app.get_webview_window(label) {
+                let _ = w.hide();
+            }
         }
     }
 }
@@ -745,7 +745,6 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
         }
     }
     drop(settings);
-    update_logos(&app.handle(), state);
 }
 
 // ---------------------------------------------------------------------------
@@ -803,7 +802,7 @@ pub fn run() {
 
             // frosted glass on floating windows (respects settings toggle)
             let acrylic_enabled = app.state::<AppState>().settings.lock().unwrap().acrylic_enabled;
-            for label in ["chat", "stats", "music", "pet", "logos", "topbar"] {
+            for label in ["chat", "stats", "music", "pet", "topbar"] {
                 if let Some(w) = app.get_webview_window(label) {
                     apply_acrylic_opt(&w, acrylic_enabled);
                 }
@@ -826,6 +825,8 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
                     apply_topbar_visibility(&h);
+                    let st = h.state::<AppState>();
+                    sync_collapsed(&h, &st);
                 });
             }
 
@@ -859,6 +860,7 @@ pub fn run() {
                         let _ = w.show();
                     }
                     emit_visibility(&h5, "chat", !visible);
+                    raise_topbar(&h5);
                 }
             });
 
@@ -952,7 +954,6 @@ pub fn run() {
             set_topmost,
             collapse,
             restore,
-            dock_logos,
             add_shortcut,
             add_url_shortcut,
             add_internal_shortcut,

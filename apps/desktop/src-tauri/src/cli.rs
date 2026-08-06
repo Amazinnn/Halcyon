@@ -93,6 +93,41 @@ fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Va
     let parts: Vec<&str> = cmd.split_whitespace().collect();
     match parts.as_slice() {
         ["ping"] => json!({ "pong": true }),
+        ["debug", "windows"] => {
+            let app_state = app.state::<AppState>();
+            let settings = app_state.settings.lock().unwrap();
+            let collapsed = settings.collapsed.clone();
+            let grid = settings.grid.clone();
+            drop(settings);
+            let mut wins = Vec::new();
+            for label in ["chat", "stats", "music", "pet"] {
+                let visible = app
+                    .get_webview_window(label)
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(false);
+                wins.push(json!({
+                    "label": label,
+                    "visible": visible,
+                    "collapsed": collapsed.contains(&label.to_string()),
+                }));
+            }
+            let topbar_visible = app
+                .get_webview_window("topbar")
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(false);
+            let active_drag = app_state
+                .active_drag
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|d| d.label.clone());
+            json!({
+                "windows": wins,
+                "topbarVisible": topbar_visible,
+                "activeDrag": active_drag,
+                "grid": grid,
+            })
+        }
         ["timer", action] if ["start", "pause", "skip", "status"].contains(action) => {
             timer_roundtrip(app, action)
         }
