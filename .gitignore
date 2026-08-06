@@ -22,3 +22,6 @@ Thumbs.db
 
 # Local audit cache (never committed)
 .audit-cache/
+
+# Local evidence screenshots (never committed)
+docs/architecture/evidence/local/

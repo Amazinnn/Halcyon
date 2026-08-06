@@ -1,4 +1,5 @@
 # Focus Desktop
+> GitHub：https://github.com/Amazinnn/Halcyon.git（private）
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
