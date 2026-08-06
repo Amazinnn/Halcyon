@@ -22,6 +22,11 @@ path = "src/bin/workerw_probe.rs"
 name = "focus-cli"
 path = "src/bin/focus-cli.rs"
 
+[features]
+# This feature is required for production builds: without it tauri-build
+# emits `dev` (devUrl) even for release, so the binary does not embed dist.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

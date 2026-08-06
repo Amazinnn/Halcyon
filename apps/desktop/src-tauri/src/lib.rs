@@ -38,6 +38,8 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub screen: Mutex<(f64, f64)>, // logical width/height
     pub active_drag: Mutex<Option<drag::ActiveDrag>>,
+    /// Single-flight guard for shortcut launches (async, non-blocking).
+    pub launch_lock: tokio::sync::Mutex<()>,
     pub focus_track: Mutex<supervision::FocusTrack>,
     pub focus_state: Mutex<String>,
     pub cli_pending: Mutex<HashMap<u64, std::sync::mpsc::Sender<serde_json::Value>>>,
@@ -637,16 +639,46 @@ fn set_shortcut_fit(
 }
 
 #[tauri::command]
-fn launch_shortcut(
+async fn launch_shortcut(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
     store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
     id: String,
 ) -> Result<(), String> {
-    let st = store.lock().map_err(|e| e.to_string())?;
-    let rows = st.list_shortcuts().map_err(|e| e.to_string())?;
-    let row = rows.iter().find(|r| r.id == id).cloned().ok_or("shortcut not found")?;
-    drop(st);
-    crate::launch::launch_shortcut(&app, &row)
+    // Keep the store guard inside a block so it is dropped before any await.
+    let row = {
+        let st = store.lock().map_err(|e| e.to_string())?;
+        let rows = st.list_shortcuts().map_err(|e| e.to_string())?;
+        rows.iter().find(|r| r.id == id).cloned().ok_or("shortcut not found")?
+    };
+
+    // Single-flight: rapid clicks must not queue another blocking launch.
+    // Async command runs off the UI thread; the blocking launch work is
+    // moved to the tokio blocking pool so windows stay responsive.
+    let _guard = state
+        .launch_lock
+        .try_lock()
+        .map_err(|_| "另一个快捷方式正在启动，请稍候".to_string())?;
+
+    // Internal shortcuts restore Focus windows; keep Tauri window APIs on the
+    // main thread (run_on_main_thread posts, so this returns immediately).
+    if ShortcutType::parse(&row.kind) == Some(ShortcutType::Internal) {
+        let app2 = app.clone();
+        let app3 = app2.clone();
+        let row2 = row.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let _ = app2.run_on_main_thread(move || {
+                let _ = crate::restore(app3.clone(), app3.state::<AppState>(), row2.target.clone());
+            });
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || crate::launch::launch_shortcut(&app, &row))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -994,6 +1026,7 @@ pub fn run() {
                 data_dir,
                 screen: Mutex::new((sw, sh)),
                 active_drag: Mutex::new(None),
+                launch_lock: tokio::sync::Mutex::new(()),
                 focus_track: Mutex::new(supervision::FocusTrack::default()),
                 focus_state: Mutex::new("idle".to_string()),
                 cli_pending: Mutex::new(HashMap::new()),
