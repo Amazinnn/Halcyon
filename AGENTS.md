@@ -22,6 +22,7 @@ Focus Desktop: a local focus desktop + agent pet system for Windows (Tauri 2 + V
    Don't hand UI/Rust changes to the user before rebuilding: `launch-focus.cmd rebuild`.
 4. Don't commit with non-standard messages; use `feat(...): ...`, `fix(...): ...`, `docs(...): ...`, `chore(...): ...`; don't leave the working tree dirty; don't skip pushing to origin.
 5. Don't modify, move, or renumber `local-focus-desktop-agent-design-v0.2.md`; it stays in place with its section numbering (append new sections at the end only if ever needed).
+6. Don't add or allow a window to change size without accounting for the size-dependent effects (grid snap, drag/resize glow, layout, typography) - window size affects all of them.
 
 ## Environment pitfalls (Don't ...)
 
@@ -39,8 +40,8 @@ Focus Desktop: a local focus desktop + agent pet system for Windows (Tauri 2 + V
 
 - `docs/STATUS.md` - current state & handoff (read first)
 - `docs/next-phase.md` - next candidates / roadmap
-- `docs/requirements-verbatim.md` - verbatim user requirements log (#1..#17)
-- `docs/decisions/` - ADR-0001..ADR-0010
+- `docs/requirements-verbatim.md` - verbatim user requirements log (#1..#23)
+- `docs/decisions/` - ADR-0001..ADR-0011
 
 ## Do NOT
 
