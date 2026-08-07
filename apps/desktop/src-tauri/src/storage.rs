@@ -207,7 +207,7 @@ impl Store {
     pub fn today_focus_summary(&self) -> rusqlite::Result<(i64, i64)> {
         let row = self.conn.query_row(
             "SELECT COALESCE(SUM(duration_sec),0), COUNT(*)
-             FROM focus_sessions WHERE date(ended_at) = date('now','localtime')",
+             FROM focus_sessions WHERE date(ended_at, 'localtime') = date('now','localtime')",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
@@ -334,10 +334,10 @@ impl Store {
     /// Last 7 days (inclusive of today) focus totals: Vec<(date, total_sec)>.
     pub fn week_focus_summary(&self) -> rusqlite::Result<Vec<(String, i64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT date(ended_at), COALESCE(SUM(duration_sec),0)
+            "SELECT date(ended_at, 'localtime'), COALESCE(SUM(duration_sec),0)
              FROM focus_sessions
-             WHERE date(ended_at) >= date('now','localtime','-6 days')
-             GROUP BY date(ended_at) ORDER BY date(ended_at)",
+             WHERE date(ended_at, 'localtime') >= date('now','localtime','-6 days')
+             GROUP BY date(ended_at, 'localtime') ORDER BY date(ended_at, 'localtime')",
         )?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect()
@@ -369,10 +369,10 @@ impl Store {
     /// Attribution follows the local `ended_at` date (same as today/week).
     pub fn heatmap_days(&self, days: u32) -> rusqlite::Result<Vec<HeatmapDay>> {
         let mut stmt = self.conn.prepare(
-            "SELECT date(ended_at), COALESCE(SUM(duration_sec),0)
+            "SELECT date(ended_at, 'localtime'), COALESCE(SUM(duration_sec),0)
              FROM focus_sessions
-             WHERE date(ended_at) >= date('now','localtime', ?1)
-             GROUP BY date(ended_at)",
+             WHERE date(ended_at, 'localtime') >= date('now','localtime', ?1)
+             GROUP BY date(ended_at, 'localtime')",
         )?;
         let days_back = days.saturating_sub(1) as i64;
         let cutoff = format!("-{days_back} days");
@@ -403,10 +403,10 @@ impl Store {
     /// the local `ended_at` hour.
     pub fn hours24_today(&self) -> rusqlite::Result<Vec<i64>> {
         let mut stmt = self.conn.prepare(
-            "SELECT CAST(strftime('%H', ended_at) AS INTEGER), COALESCE(SUM(duration_sec),0)
+            "SELECT CAST(strftime('%H', ended_at, 'localtime') AS INTEGER), COALESCE(SUM(duration_sec),0)
              FROM focus_sessions
-             WHERE date(ended_at) = date('now','localtime')
-             GROUP BY strftime('%H', ended_at)",
+             WHERE date(ended_at, 'localtime') = date('now','localtime')
+             GROUP BY strftime('%H', ended_at, 'localtime')",
         )?;
         let mut hours = vec![0i64; 24];
         let rows = stmt.query_map([], |r| {
@@ -426,9 +426,9 @@ impl Store {
     /// today) breaks the streak.
     pub fn streak_days(&self) -> rusqlite::Result<i64> {
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT date(ended_at) FROM focus_sessions
-             WHERE date(ended_at) <= date('now','localtime') AND duration_sec >= 60
-             ORDER BY date(ended_at) DESC",
+            "SELECT DISTINCT date(ended_at, 'localtime') FROM focus_sessions
+             WHERE date(ended_at, 'localtime') <= date('now','localtime') AND duration_sec >= 60
+             ORDER BY date(ended_at, 'localtime') DESC",
         )?;
         let dates: Vec<String> = stmt
             .query_map([], |r| r.get(0))?
@@ -606,8 +606,9 @@ mod tests {
         let s = temp_store();
         let today = chrono::Local::now().date_naive();
         let yesterday = today - chrono::Duration::days(1);
+        let off = chrono::Local::now().format("%:z").to_string();
         let fmt = |d: chrono::NaiveDate, h: u32| {
-            format!("{}T{:02}:00:00", d.format("%Y-%m-%d"), h)
+            format!("{}T{:02}:00:00{}", d.format("%Y-%m-%d"), h, off)
         };
         s.record_focus_session(&fmt(today, 10), &fmt(today, 10), 1500, None)
             .unwrap();
@@ -641,7 +642,8 @@ mod tests {
         let today = chrono::Local::now().date_naive();
         let yesterday = today - chrono::Duration::days(1);
         let day_before = today - chrono::Duration::days(2);
-        let fmt = |d: chrono::NaiveDate| format!("{}T09:00:00", d.format("%Y-%m-%d"));
+        let off = chrono::Local::now().format("%:z").to_string();
+        let fmt = |d: chrono::NaiveDate| format!("{}T09:00:00{}", d.format("%Y-%m-%d"), off);
         s.record_focus_session(&fmt(yesterday), &fmt(yesterday), 1500, None)
             .unwrap();
         s.record_focus_session(&fmt(day_before), &fmt(day_before), 1500, None)
@@ -654,7 +656,8 @@ mod tests {
     fn streak_ignores_subminute_sessions() {
         let s = temp_store();
         let today = chrono::Local::now().date_naive();
-        let fmt = |d: chrono::NaiveDate| format!("{}T09:00:00", d.format("%Y-%m-%d"));
+        let off = chrono::Local::now().format("%:z").to_string();
+        let fmt = |d: chrono::NaiveDate| format!("{}T09:00:00{}", d.format("%Y-%m-%d"), off);
         s.record_focus_session(&fmt(today), &fmt(today), 30, None).unwrap();
         assert_eq!(s.streak_days().unwrap(), 0);
     }
