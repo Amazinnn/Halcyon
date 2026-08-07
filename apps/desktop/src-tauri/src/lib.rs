@@ -417,14 +417,15 @@ fn pet_active(state: tauri::State<'_, AppState>) -> Result<Option<pets::PetInfo>
     }
 }
 #[tauri::command]
-fn pet_resize_preview(
+fn resize_preview(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    label: String,
     visible: bool,
     cols: Option<usize>,
     rows: Option<usize>,
 ) -> Result<(), String> {
-    let label = "pet";
+    let label = label.as_str();
     let Some(ov) = app.get_webview_window("grid-overlay") else {
         return Ok(());
     };
@@ -1049,6 +1050,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
+        .resizable(false)
         .build()?;
 
     tauri::WebviewWindowBuilder::new(app, "stats", url.clone())
@@ -1057,6 +1059,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
+        .resizable(false)
         .build()?;
 
     tauri::WebviewWindowBuilder::new(app, "music", url.clone())
@@ -1065,6 +1068,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
+        .resizable(false)
         .build()?;
 
     tauri::WebviewWindowBuilder::new(app, "pet", url.clone())
@@ -1073,6 +1077,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
+        .resizable(false)
         .build()?;
 
     let overlay = tauri::WebviewWindowBuilder::new(app, "grid-overlay", url.clone())
@@ -1489,7 +1494,7 @@ pub fn run() {
             pet_list_packs,
             pet_activate,
             pet_active,
-            pet_resize_preview,
+            resize_preview,
             set_pet_bg_fade,
             resize_window,
             quit_app
