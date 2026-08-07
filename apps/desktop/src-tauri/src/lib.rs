@@ -924,17 +924,19 @@ fn set_show_topbar(app: tauri::AppHandle, mode: String) -> Result<(), String> {
 
 #[tauri::command]
 fn record_focus_session(
+    app: tauri::AppHandle,
     store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
     started_at: String,
     ended_at: String,
     duration_sec: i64,
     task_id: Option<String>,
 ) -> Result<(), String> {
-    let _ = store
+    store
         .lock()
-        .unwrap()
+        .map_err(|e| e.to_string())?
         .record_focus_session(&started_at, &ended_at, duration_sec, task_id.as_deref())
         .map_err(|e| e.to_string())?;
+    let _ = app.emit("stats:changed", ());
     Ok(())
 }
 
@@ -949,6 +951,16 @@ fn get_today_focus_summary(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn stats_dashboard(
+    store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
+) -> Result<storage::DashboardPayload, String> {
+    store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .dashboard()
+        .map_err(|e| e.to_string())
+}
 #[tauri::command]
 fn get_shortcut_icon(path: String) -> Result<serde_json::Value, String> {
     match icons::extract_icon_rgba(&path) {
@@ -1318,6 +1330,7 @@ pub fn run() {
                                 .lock()
                                 .unwrap()
                                 .record_focus_session(&started, &ended, dur, tid.as_deref());
+                            let _ = hf.emit("stats:changed", ());
                         }
                         ft.active = false;
                         ft.paused = paused;
@@ -1374,6 +1387,7 @@ pub fn run() {
             list_running_apps,
             record_focus_session,
             get_today_focus_summary,
+            stats_dashboard,
             get_shortcut_icon,
             get_wallpaper,
             persist_wallpaper,

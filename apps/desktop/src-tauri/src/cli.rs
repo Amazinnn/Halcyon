@@ -165,6 +165,13 @@ fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Va
             },
             Err(_) => json!({ "error": "store locked" }),
         },
+        ["stats", "dashboard"] => match store.lock() {
+            Ok(s) => match s.dashboard() {
+                Ok(d) => serde_json::to_value(d).unwrap_or_else(|e| json!({ "error": e.to_string() })),
+                Err(e) => json!({ "error": e.to_string() }),
+            },
+            Err(_) => json!({ "error": "store locked" }),
+        },
         ["desktop", "layout"] => {
             let app_state = app.state::<AppState>();
             let settings = app_state.settings.lock().unwrap();
@@ -194,7 +201,7 @@ fn agent_whitelisted(parts: &[&str]) -> bool {
     match parts {
         ["ping"] => true,
         ["timer", a] if ["start", "pause", "skip", "status"].contains(a) => true,
-        ["stats", "today"] | ["stats", "week"] | ["stats", "sessions"] => true,
+        ["stats", "today"] | ["stats", "week"] | ["stats", "sessions"] | ["stats", "dashboard"] => true,
         ["desktop", "layout"] => true,
         ["apps", "now"] | ["apps", "visible"] => true,
         _ => false,
@@ -283,6 +290,7 @@ mod tests {
         assert!(agent_whitelisted(&["timer", "status"]));
         assert!(agent_whitelisted(&["timer", "start"]));
         assert!(agent_whitelisted(&["stats", "today"]));
+        assert!(agent_whitelisted(&["stats", "dashboard"]));
         assert!(agent_whitelisted(&["desktop", "layout"]));
         assert!(agent_whitelisted(&["apps", "visible"]));
         assert!(!agent_whitelisted(&["debug", "windows"]));

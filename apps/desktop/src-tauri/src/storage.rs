@@ -44,6 +44,35 @@ pub struct FocusSessionRow {
     pub duration_sec: i64,
     pub task_id: Option<String>,
 }
+/// One day of the focus heatmap (calendar date -> focus minutes).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeatmapDay {
+    pub date: String,
+    pub minutes: i64,
+}
+
+/// Today's focus totals.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodaySummary {
+    pub total_sec: i64,
+    pub rounds: i64,
+}
+
+/// Full stats-window payload (v1.8). `distraction`/`idle`/`genres` have no
+/// data source yet and are intentionally `null` (UI shows "暂无数据").
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardPayload {
+    pub today: TodaySummary,
+    pub heatmap30: Vec<HeatmapDay>,
+    pub hours24: Vec<i64>,
+    pub streak_days: i64,
+    pub distraction: Option<()>,
+    pub idle: Option<()>,
+    pub genres: Option<()>,
+}
 
 impl Store {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
@@ -328,6 +357,108 @@ impl Store {
         rows.collect()
     }
 
+
+    // ---- v1.8 stats dashboard (real data) ----
+
+    /// Focus minutes per calendar day for the last `days` days (inclusive of
+    /// today), zero-filled so the frontend always gets a complete sequence.
+    /// Attribution follows the local `ended_at` date (same as today/week).
+    pub fn heatmap_days(&self, days: u32) -> rusqlite::Result<Vec<HeatmapDay>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT date(ended_at), COALESCE(SUM(duration_sec),0)
+             FROM focus_sessions
+             WHERE date(ended_at) >= date('now','localtime', ?1)
+             GROUP BY date(ended_at)",
+        )?;
+        let days_back = days.saturating_sub(1) as i64;
+        let cutoff = format!("-{days_back} days");
+        let rows = stmt.query_map([&cutoff], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        let mut minutes_by_date: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (date, sec) = row?;
+            minutes_by_date.insert(date, sec / 60);
+        }
+        let today = chrono::Local::now().date_naive();
+        let mut out = Vec::with_capacity(days as usize);
+        for i in (0..days).rev() {
+            let date = (today - chrono::Duration::days(i as i64))
+                .format("%Y-%m-%d")
+                .to_string();
+            out.push(HeatmapDay {
+                date: date.clone(),
+                minutes: minutes_by_date.get(&date).copied().unwrap_or(0),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Today's focus minutes bucketed by hour (index 0..=23), attributed to
+    /// the local `ended_at` hour.
+    pub fn hours24_today(&self) -> rusqlite::Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT CAST(strftime('%H', ended_at) AS INTEGER), COALESCE(SUM(duration_sec),0)
+             FROM focus_sessions
+             WHERE date(ended_at) = date('now','localtime')
+             GROUP BY strftime('%H', ended_at)",
+        )?;
+        let mut hours = vec![0i64; 24];
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (h, sec) = row?;
+            if (0..24).contains(&h) {
+                hours[h as usize] = sec / 60;
+            }
+        }
+        Ok(hours)
+    }
+
+    /// Consecutive-day streak ending today: a day counts when it has at least
+    /// one completed session of >= 1 minute; a day without one (starting at
+    /// today) breaks the streak.
+    pub fn streak_days(&self) -> rusqlite::Result<i64> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT date(ended_at) FROM focus_sessions
+             WHERE date(ended_at) <= date('now','localtime') AND duration_sec >= 60
+             ORDER BY date(ended_at) DESC",
+        )?;
+        let dates: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        let today = chrono::Local::now().date_naive();
+        let mut streak = 0i64;
+        let mut expect = today;
+        for d in dates {
+            let Ok(parsed) = chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d") else {
+                continue;
+            };
+            if parsed == expect {
+                streak += 1;
+                expect -= chrono::Duration::days(1);
+            } else if parsed < expect {
+                break;
+            }
+        }
+        Ok(streak)
+    }
+
+    /// One payload for the stats window / `focus-cli stats dashboard`.
+    pub fn dashboard(&self) -> rusqlite::Result<DashboardPayload> {
+        let (total_sec, rounds) = self.today_focus_summary()?;
+        Ok(DashboardPayload {
+            today: TodaySummary { total_sec, rounds },
+            heatmap30: self.heatmap_days(30)?,
+            hours24: self.hours24_today()?,
+            streak_days: self.streak_days()?,
+            distraction: None,
+            idle: None,
+            genres: None,
+        })
+    }
     pub fn insert_probe(&self, name: &str, value: &str) -> rusqlite::Result<i64> {
         self.conn.execute(
             "INSERT INTO spike_probes (name, value, recorded_at) VALUES (?1, ?2, datetime('now'))",
@@ -464,5 +595,63 @@ mod tests {
         assert_eq!(row.1, "th-1");
         assert_eq!(row.2, 0);
         assert!(row.3.as_deref().unwrap_or("").contains("timer status"));
+    }
+
+    #[test]
+    fn dashboard_aggregates_real_sessions() {
+        let s = temp_store();
+        let today = chrono::Local::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+        let fmt = |d: chrono::NaiveDate, h: u32| {
+            format!("{}T{:02}:00:00", d.format("%Y-%m-%d"), h)
+        };
+        s.record_focus_session(&fmt(today, 10), &fmt(today, 10), 1500, None)
+            .unwrap();
+        s.record_focus_session(&fmt(today, 14), &fmt(today, 14), 300, None)
+            .unwrap();
+        s.record_focus_session(&fmt(yesterday, 9), &fmt(yesterday, 9), 1800, None)
+            .unwrap();
+
+        let d = s.dashboard().unwrap();
+        assert_eq!(d.today.total_sec, 1800);
+        assert_eq!(d.today.rounds, 2);
+        assert_eq!(d.hours24.len(), 24);
+        assert_eq!(d.hours24[10], 25);
+        assert_eq!(d.hours24[14], 5);
+        assert_eq!(d.heatmap30.len(), 30);
+        let today_str = today.format("%Y-%m-%d").to_string();
+        let yesterday_str = yesterday.format("%Y-%m-%d").to_string();
+        assert_eq!(d.heatmap30[29].date, today_str);
+        assert_eq!(d.heatmap30[29].minutes, 30);
+        assert_eq!(d.heatmap30[28].date, yesterday_str);
+        assert_eq!(d.heatmap30[28].minutes, 30);
+        assert_eq!(d.streak_days, 2);
+        assert!(d.distraction.is_none());
+        assert!(d.idle.is_none());
+        assert!(d.genres.is_none());
+    }
+
+    #[test]
+    fn streak_breaks_when_today_missing() {
+        let s = temp_store();
+        let today = chrono::Local::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+        let day_before = today - chrono::Duration::days(2);
+        let fmt = |d: chrono::NaiveDate| format!("{}T09:00:00", d.format("%Y-%m-%d"));
+        s.record_focus_session(&fmt(yesterday), &fmt(yesterday), 1500, None)
+            .unwrap();
+        s.record_focus_session(&fmt(day_before), &fmt(day_before), 1500, None)
+            .unwrap();
+        // today has no session -> the streak ends at today
+        assert_eq!(s.streak_days().unwrap(), 0);
+    }
+
+    #[test]
+    fn streak_ignores_subminute_sessions() {
+        let s = temp_store();
+        let today = chrono::Local::now().date_naive();
+        let fmt = |d: chrono::NaiveDate| format!("{}T09:00:00", d.format("%Y-%m-%d"));
+        s.record_focus_session(&fmt(today), &fmt(today), 30, None).unwrap();
+        assert_eq!(s.streak_days().unwrap(), 0);
     }
 }

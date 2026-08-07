@@ -107,7 +107,7 @@ fn print_help() {
     println!("focus-cli — Focus Desktop 本地控制面（需先运行 Focus Desktop）");
     println!("用法：");
     println!("  focus-cli timer start|pause|skip|status");
-    println!("  focus-cli stats today|week|sessions");
+    println!("  focus-cli stats today|week|sessions|dashboard");
     println!("  focus-cli desktop layout");
     println!("  focus-cli apps now|visible");
     println!("  focus-cli ping");
