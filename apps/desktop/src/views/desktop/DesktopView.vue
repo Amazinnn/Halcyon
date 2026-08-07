@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -79,6 +79,14 @@ async function openView(label: string) {
     console.error("open view failed", label, e);
   }
 }
+
+// v1.7.2: the views tray used to close on mouseleave, so moving to click an
+// item hid the menu. It is now click-toggled and closes only on outside
+// clicks or after picking a view.
+function onDocClick(e: MouseEvent) {
+  if (!viewsTrayOpen.value) return;
+  if (!(e.target as HTMLElement).closest(".views-wrap")) viewsTrayOpen.value = false;
+}
 // ---- add menu ----
 async function loadWallpaper() {
   const p = await invoke<string | null>("get_wallpaper");
@@ -126,6 +134,7 @@ function quit() {
 }
 
 onMounted(async () => {
+  document.addEventListener("click", onDocClick);
   await settings.load();
   try {
     const b = await invoke<{ focusSubtitle?: string }>("get_bootstrap");
@@ -154,6 +163,10 @@ onMounted(async () => {
       }
     }
   });
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("click", onDocClick);
 });
 </script>
 
@@ -204,7 +217,7 @@ onMounted(async () => {
 
     <!-- centered shortcut grid (2 rows x 5 cols) + views tray -->
     <section class="icon-area">
-      <div class="views-wrap" @mouseleave="viewsTrayOpen = false">
+      <div class="views-wrap">
         <button class="views-btn glass" title="视图" @click="viewsTrayOpen = !viewsTrayOpen">
           <AppIcon name="panel" />
         </button>

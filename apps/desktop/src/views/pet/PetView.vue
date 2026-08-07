@@ -241,6 +241,22 @@ async function onResizePointerUp(e: PointerEvent) {
   }
 }
 
+// The fullscreen grid overlay used to steal activation on show, which made
+// the browser fire pointercancel/lostpointercapture instead of pointerup.
+// Treat either as a release so the handle never gets stuck and the preview
+// is always hidden.
+function onResizeCancel() {
+  if (resizePointer === -1) return;
+  resizePointer = -1;
+  void invoke("pet_resize_preview", { visible: false }).catch(() => undefined);
+  if (!resizeChanged) return;
+  const [cols, rows] = SIZES[sizeIdx];
+  void invoke("resize_window", { label: "pet", cols, rows }).catch((err) => {
+    sizeIdx = prevSizeIdx;
+    console.error("[pet] resize rejected", err);
+  });
+}
+
 // ---- bubble / chat ----
 const bubbleVisible = computed(() => {
   if (!agent.bubble) return false;
@@ -331,6 +347,8 @@ onBeforeUnmount(() => {
       @pointerdown="onResizePointerDown"
       @pointermove="onResizePointerMove"
       @pointerup="onResizePointerUp"
+      @pointercancel="onResizeCancel"
+      @lostpointercapture="onResizeCancel"
       title="长按并拖动调整桌宠大小（1×1 / 1×2 / 2×1 / 2×2）"
     ></div>
   </div>
