@@ -82,7 +82,7 @@ function shortPreview(t: { id: string; preview: string }) {
 
 <template>
   <div class="chat-window">
-    <WindowHeader title="对话" collapsible />
+    <WindowHeader :title="agent.characterName" collapsible />
 
     <div class="status-row">
       <span class="badge" :class="agent.provider">
@@ -91,6 +91,7 @@ function shortPreview(t: { id: string; preview: string }) {
       <span class="phase" :class="agent.phase">{{ phaseText }}</span>
       <button class="ghost" @click="agent.newThread()">新建</button>
       <button class="ghost" @click="agent.refreshThreads()">刷新</button>
+      <button v-if="agent.threads.some((t) => t.automation)" class="ghost" @click="agent.cleanupAutomationThreads()">清理自动化</button>
       <button class="ghost" @click="optionsOpen = !optionsOpen">选项</button>
     </div>
 
@@ -121,7 +122,7 @@ function shortPreview(t: { id: string; preview: string }) {
     <div v-if="agent.threads.length" class="thread-row">
       <select class="thread-select" :value="agent.currentThreadId ?? ''" @change="chooseThread(($event.target as HTMLSelectElement).value)">
         <option value="" disabled>选择历史会话</option>
-        <option v-for="t in agent.threads" :key="t.id" :value="t.id">{{ shortPreview(t) }}</option>
+        <option v-for="t in agent.threads" :key="t.id" :value="t.id">{{ t.automation ? "〔自动化〕" : "" }}{{ shortPreview(t) }}</option>
       </select>
     </div>
 

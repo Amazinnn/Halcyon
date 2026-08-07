@@ -273,6 +273,7 @@ onBeforeUnmount(() => {
               <button class="btn" @click="submitInternal('对话', 'chat')">对话</button>
               <button class="btn" @click="submitInternal('统计', 'stats')">统计</button>
               <button class="btn" @click="submitInternal('音乐', 'music')">音乐</button>
+        <button class="btn" @click="submitInternal('工作流', 'workflow')">工作流</button>
             </div>
           </div>
         </div>

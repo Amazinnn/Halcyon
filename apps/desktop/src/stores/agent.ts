@@ -15,6 +15,8 @@ export interface AgentThread {
   cwd: string;
   status: string;
   updatedAt: number;
+  /** True when created by a workflow agent node (ADR-0012). */
+  automation?: boolean;
 }
 
 export interface AgentStatus {
@@ -69,6 +71,7 @@ export const useAgentStore = defineStore("agent", {
     currentThreadId: null as string | null,
     phase: "idle" as AgentPhase,
     skills: [] as string[],
+    characterName: "对话",
     initialized: false,
   }),
   actions: {
@@ -101,6 +104,12 @@ export const useAgentStore = defineStore("agent", {
       });
       await this.refreshStatus();
       await this.refreshSkills();
+      try {
+        const chars = await invoke<{ id: string; name: string }[]>("characters_list");
+        if (chars.length) this.characterName = chars[0].name;
+      } catch (e) {
+        console.error("[agent] characters_list failed", e);
+      }
     },
     async refreshStatus() {
       try {
@@ -172,6 +181,14 @@ export const useAgentStore = defineStore("agent", {
       } catch (e) {
         this.phase = "error";
         this.pushSystem(`发送失败：${e}`);
+      }
+    },
+    async cleanupAutomationThreads() {
+      try {
+        await invoke("workflow_cleanup_threads");
+        await this.refreshThreads();
+      } catch (e) {
+        console.error("[agent] workflow_cleanup_threads failed", e);
       }
     },
     async interrupt() {
