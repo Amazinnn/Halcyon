@@ -200,7 +200,7 @@ let resizeChanged = false;
 
 function showResizePreview() {
   const [cols, rows] = SIZES[sizeIdx];
-  void invoke("pet_resize_preview", { visible: true, cols, rows }).catch((err) =>
+  void invoke("resize_preview", { label: "pet", visible: true, cols, rows }).catch((err) =>
     console.error("[pet] resize preview failed", err),
   );
 }
@@ -229,7 +229,7 @@ function onResizePointerMove(e: PointerEvent) {
 async function onResizePointerUp(e: PointerEvent) {
   if (e.pointerId !== resizePointer) return;
   resizePointer = -1;
-  void invoke("pet_resize_preview", { visible: false }).catch(() => undefined);
+  void invoke("resize_preview", { label: "pet", visible: false }).catch(() => undefined);
   if (!resizeChanged) return;
   const [cols, rows] = SIZES[sizeIdx];
   try {
@@ -248,7 +248,7 @@ async function onResizePointerUp(e: PointerEvent) {
 function onResizeCancel() {
   if (resizePointer === -1) return;
   resizePointer = -1;
-  void invoke("pet_resize_preview", { visible: false }).catch(() => undefined);
+  void invoke("resize_preview", { label: "pet", visible: false }).catch(() => undefined);
   if (!resizeChanged) return;
   const [cols, rows] = SIZES[sizeIdx];
   void invoke("resize_window", { label: "pet", cols, rows }).catch((err) => {

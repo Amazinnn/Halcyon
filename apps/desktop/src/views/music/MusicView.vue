@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useMusicStore, type PlayMode } from "../../stores/music";
 import WindowHeader from "../../components/WindowHeader.vue";
 import AppIcon from "../../components/AppIcon.vue";
@@ -33,8 +34,96 @@ function onSeek(e: Event) {
   music.seek(Number(el.value) * 1000);
 }
 
+// ---- resize handle (mirrors pet): 3x1 -> 3x2 -> 3x3 -> 3x4 ----
+const SIZES: Array<[number, number]> = [
+  [3, 1],
+  [3, 2],
+  [3, 3],
+  [3, 4],
+];
+const rows = ref(3);
+const showList = computed(() => rows.value >= 3);
+let sizeIdx = 0;
+let resizePointer = -1;
+let resizeChanged = false;
+let dragAccum = 0;
+
+function syncFromBootstrap() {
+  void (async () => {
+    try {
+      const b = await invoke<{ grid?: Record<string, { cols: number; rows: number }> }>("get_bootstrap");
+      const g = b.grid?.music;
+      if (g) {
+        const i = SIZES.findIndex(([c, r]) => c === g.cols && r === g.rows);
+        sizeIdx = i >= 0 ? i : 0;
+        rows.value = g.rows;
+      }
+    } catch {
+      /* ignore */
+    }
+  })();
+}
+
+function showResizePreview() {
+  const [cols, rr] = SIZES[sizeIdx];
+  void invoke("resize_preview", { label: "music", visible: true, cols, rows: rr }).catch((err) =>
+    console.error("[music] resize preview failed", err),
+  );
+}
+
+function onResizePointerDown(e: PointerEvent) {
+  if (resizePointer !== -1) return;
+  resizePointer = e.pointerId;
+  resizeChanged = false;
+  dragAccum = 0;
+  showResizePreview();
+}
+
+function onResizePointerMove(e: PointerEvent) {
+  if (e.pointerId !== resizePointer) return;
+  dragAccum += Math.abs(e.movementX) + Math.abs(e.movementY);
+  if (dragAccum > 40) {
+    dragAccum = 0;
+    resizeChanged = true;
+    sizeIdx = (sizeIdx + 1) % SIZES.length;
+    showResizePreview();
+  }
+}
+
+async function onResizePointerUp(e: PointerEvent) {
+  if (e.pointerId !== resizePointer) return;
+  resizePointer = -1;
+  void invoke("resize_preview", { label: "music", visible: false }).catch(() => undefined);
+  if (!resizeChanged) return;
+  const [cols, rr] = SIZES[sizeIdx];
+  try {
+    const rect = await invoke<{ cols: number; rows: number }>("resize_window", {
+      label: "music",
+      cols,
+      rows: rr,
+    });
+    rows.value = rect.rows;
+  } catch (err) {
+    console.error("[music] resize rejected", err);
+    syncFromBootstrap();
+  }
+}
+
+function onResizeCancel() {
+  if (resizePointer === -1) return;
+  resizePointer = -1;
+  void invoke("resize_preview", { label: "music", visible: false }).catch(() => undefined);
+  if (!resizeChanged) return;
+  const [cols, rr] = SIZES[sizeIdx];
+  void invoke("resize_window", { label: "music", cols, rows: rr }).catch((err) => {
+    console.error("[music] resize rejected", err);
+    syncFromBootstrap();
+  });
+}
+
 onMounted(() => {
   void music.init();
+  syncFromBootstrap();
 });
 
 onUnmounted(() => {
@@ -53,7 +142,7 @@ onUnmounted(() => {
     </div>
 
     <template v-else>
-      <div class="track-list">
+      <div v-if="showList" class="track-list">
         <button
           v-for="(t, i) in music.tracks"
           :key="t.path"
@@ -67,7 +156,7 @@ onUnmounted(() => {
         <div v-if="music.tracks.length === 0" class="empty-inline">文件夹里还没有音频文件</div>
       </div>
 
-      <div class="control-bar">
+      <div class="control-bar" :class="{ compact: !showList }">
         <div class="row-top">
           <div class="cover" :class="music.cover ? '' : coverClass()">
             <img v-if="music.cover" :src="music.cover" alt="" />
@@ -99,6 +188,17 @@ onUnmounted(() => {
         </div>
       </div>
     </template>
+
+    <div
+      class="resize-handle"
+      data-no-drag
+      @pointerdown="onResizePointerDown"
+      @pointermove="onResizePointerMove"
+      @pointerup="onResizePointerUp"
+      @pointercancel="onResizeCancel"
+      @lostpointercapture="onResizeCancel"
+      title="长按并拖动调整音乐窗口高度（3×1 / 3×2 / 3×3 / 3×4）"
+    ></div>
   </div>
 </template>
 
@@ -309,6 +409,26 @@ onUnmounted(() => {
   outline: none;
   cursor: pointer;
 }
+.resize-handle {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  border-right: 2px solid var(--text-low);
+  border-bottom: 2px solid var(--text-low);
+  border-bottom-right-radius: 3px;
+  opacity: 0.55;
+}
+.resize-handle:hover { opacity: 1; border-color: var(--accent-bright); }
+
+.control-bar.compact { justify-content: center; }
+.control-bar.compact .row-top { justify-content: center; }
+.control-bar.compact .cover { width: 72px; height: 72px; }
+.control-bar.compact .now-meta { flex: none; text-align: left; }
+.control-bar.compact .mode { display: none; }
+
 .progress::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
