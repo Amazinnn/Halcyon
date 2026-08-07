@@ -210,6 +210,20 @@ fn fit_window(app: &AppHandle, hwnd: HWND, slot: GridRect) {
 // ---- open ----
 
 fn shell_open_and_fit(app: &AppHandle, row: &ShortcutRow, file: &str) -> Result<(), String> {
+    // Shell namespace paths (shell:::{GUID}) have no "open" association;
+    // ShellExecuteW would fail and Windows pops a "???????" dialog.
+    // Explorer opens them directly.
+    if file.starts_with("shell:::") || file.starts_with("::{") {
+        let before = snapshot_visible_windows();
+        Command::new("explorer.exe")
+            .arg(file)
+            .spawn()
+            .map_err(|e| format!("spawn explorer failed: {e}"))?;
+        if let Some(h) = detect_new_window(&before, FIND_TIMEOUT) {
+            fit_window(app, h, find_free_slot(app, row));
+        }
+        return Ok(());
+    }
     let before = snapshot_visible_windows();
     let mut file_w: Vec<u16> = file.encode_utf16().collect();
     file_w.push(0);

@@ -92,6 +92,49 @@ pub fn sheet_dimensions(path: &Path) -> Result<(u32, u32), String> {
     Err("精灵图必须是 PNG 或 WebP".into())
 }
 
+/// Reject spritesheets with an opaque background (C1, ADR-0010): sample the
+/// four corners and the four edge midpoints; if the 5x5 average alpha of any
+/// sample exceeds 8, the background is considered non-transparent.
+pub fn check_transparent_background(path: &Path) -> Result<(), String> {
+    let img = image::open(path).map_err(|e| format!("spritesheet ????: {e}"))?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    if w == 0 || h == 0 {
+        return Err("spritesheet ????".into());
+    }
+    let pts: [(u32, u32); 8] = [
+        (0, 0),
+        (w - 1, 0),
+        (0, h - 1),
+        (w - 1, h - 1),
+        (w / 2, 0),
+        (w / 2, h - 1),
+        (0, h / 2),
+        (w - 1, h / 2),
+    ];
+    for (px, py) in pts {
+        let mut sum: u32 = 0;
+        let mut n: u32 = 0;
+        for dy in -2i64..=2 {
+            for dx in -2i64..=2 {
+                let x = px as i64 + dx;
+                let y = py as i64 + dy;
+                if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 {
+                    continue;
+                }
+                let px = rgba.get_pixel(x as u32, y as u32);
+                sum += px.0[3] as u32;
+                n += 1;
+            }
+        }
+        let avg = if n > 0 { sum / n } else { 255 };
+        if avg > 8 {
+            return Err("???????spritesheet ??/???????".into());
+        }
+    }
+    Ok(())
+}
+
 /// Remove an imported pack by id (safe id only).
 pub fn remove(data_dir: &Path, id: &str) -> Result<(), String> {
     if !is_valid_id(id) {
@@ -129,6 +172,7 @@ pub fn load_manifest(dir: &Path) -> Result<PetManifest, String> {
             "spritesheet 尺寸不符：需要 {ATLAS_W}x{ATLAS_H}，实际 {w}x{h}"
         ));
     }
+    check_transparent_background(&sheet)?;
     Ok(m)
 }
 
@@ -256,7 +300,8 @@ mod tests {
             "spritesheetPath": "spritesheet.png"
         });
         std::fs::write(dir.join("pet.json"), serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
-        std::fs::write(dir.join("spritesheet.png"), png_header(1536, 1872)).unwrap();
+        let mut img = image::RgbaImage::from_pixel(1536, 1872, image::Rgba([0, 0, 0, 0]));
+        img.save(dir.join("spritesheet.png")).unwrap();
     }
 
     #[test]
@@ -356,6 +401,41 @@ mod tests {
         let bad = tmp.join("c.png");
         std::fs::write(&bad, b"not an image").unwrap();
         assert!(sheet_dimensions(&bad).is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn transparent_background_validation() {
+        use image::{Rgba, RgbaImage};
+        let tmp = temp_dir("alpha");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // fully transparent sheet -> import ok
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("pet.json"),
+            r#"{"id":"a","displayName":"A","description":"d","spritesheetPath":"spritesheet.png"}"#,
+        )
+        .unwrap();
+        let mut clear = RgbaImage::from_pixel(1536, 1872, Rgba([0, 0, 0, 0]));
+        clear.save(src.join("spritesheet.png")).unwrap();
+        assert!(import(&src, &tmp.join("data")).is_ok());
+
+        // opaque corner -> import rejected
+        let src2 = tmp.join("src2");
+        std::fs::create_dir_all(&src2).unwrap();
+        std::fs::write(
+            src2.join("pet.json"),
+            r#"{"id":"b","displayName":"B","description":"d","spritesheetPath":"spritesheet.png"}"#,
+        )
+        .unwrap();
+        let mut opaque = RgbaImage::from_pixel(1536, 1872, Rgba([0, 0, 0, 0]));
+        opaque.put_pixel(0, 0, Rgba([255, 0, 255, 255]));
+        opaque.save(src2.join("spritesheet.png")).unwrap();
+        let err = import(&src2, &tmp.join("data")).unwrap_err();
+        assert!(err.contains("??"), "unexpected error: {err}");
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

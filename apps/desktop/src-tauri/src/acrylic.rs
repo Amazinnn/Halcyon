@@ -13,6 +13,7 @@ use std::ffi::c_void;
 use windows::core::{s, w};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE};
 
 const ACCENT_ENABLE_ACRYLICBLURBEHIND: i32 = 4;
 const WCA_ACCENT_POLICY: u32 = 19; // 0x13
@@ -90,5 +91,18 @@ pub fn clear(hwnd: *mut c_void) {
     };
     unsafe {
         let _ = f(hwnd, &mut data);
+    }
+}
+
+/// Prevent a window from being activated when shown (used for the always-on-
+/// top grid-overlay so showing it never steals focus / pointer capture from
+/// the window being dragged or resized). Idempotent.
+pub fn noactivate(hwnd: *mut c_void) {
+    unsafe {
+        let hwnd = HWND(hwnd);
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if ex & WS_EX_NOACTIVATE.0 as isize == 0 {
+            let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE.0 as isize);
+        }
     }
 }

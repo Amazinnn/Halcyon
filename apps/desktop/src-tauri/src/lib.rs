@@ -78,6 +78,16 @@ fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
 }
 
 
+/// Keep the drag-preview overlay from activating on show (it would steal
+/// pointer capture from the window being dragged/resized).
+fn overlay_noactivate(app: &tauri::AppHandle) {
+    if let Some(ov) = app.get_webview_window("grid-overlay") {
+        if let Ok(hwnd) = ov.hwnd() {
+            acrylic::noactivate(hwnd.0);
+        }
+    }
+}
+
 fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &GridManager) {
     if let Some(w) = app.get_webview_window(label) {
         let (x, y, wpx, hpx) = gm.rect_to_logical(rect);
@@ -433,6 +443,7 @@ fn pet_resize_preview(
         return Ok(());
     }
     let _ = ov.set_ignore_cursor_events(true);
+    overlay_noactivate(&app);
     let _ = ov.show();
     let settings = state.settings.lock().unwrap();
     let current = settings.grid.get(label).copied().unwrap_or(GridRect { col: 0, row: 0, cols, rows });
@@ -671,6 +682,12 @@ fn add_shortcut(
     store: tauri::State<'_, std::sync::Arc<Mutex<storage::Store>>>,
     path: String,
 ) -> Result<storage::ShortcutRow, String> {
+    // The Windows file dialog can hand back shell namespace paths (virtual
+    // known folders). Keep only real filesystem paths so the launch engine
+    // never pops a "???????" dialog.
+    if path.starts_with("shell:::") || path.starts_with("::{") {
+        return Err("??????????????? shell ??????".into());
+    }
     let p = std::path::PathBuf::from(&path);
     if !p.exists() {
         return Err(format!("path not found: {path}"));
@@ -1018,6 +1035,9 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .visible(false)
         .build()?;
     overlay.set_ignore_cursor_events(true)?;
+    if let Ok(hwnd) = overlay.hwnd() {
+        acrylic::noactivate(hwnd.0);
+    }
 
     
 
