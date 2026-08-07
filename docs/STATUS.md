@@ -1,6 +1,6 @@
 # Focus Desktop 当前状态（压缩交接页）
 
-> 更新：2026-08-07（v1.9.1 + M4 v1 实施中）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
+> 更新：2026-08-07（v1.9.1 + M4 v1 已实现待验收）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 
 ## 项目一句话
@@ -50,7 +50,7 @@
 - M1 剩余：系统托盘（可做）；全局快捷键绑定**暂缓**（需求 #19，开发完成前不绑）。Agent 状态模拟器完善。
 - M2：统计真实化（v1.8）已实现；本地音乐播放器（v1.9）已实现。
 - M3 剩余：plan mode / Diff / 终端面板 / Claude Code 接入。
-- M4：内置工作流引擎（精简 n8n）——2026-08-07 方向锁定（#26/#28/#29），**v1 实施中**（画布版：Vue Flow + Rust 引擎；角色/工作流独立模型；focus-cli workflow 命令；ADR-0012）。
+- M4：内置工作流引擎（精简 n8n）——2026-08-07 方向锁定（#26/#28/#29），**v1 已实现（待验收）**：Vue Flow 画布 + Rust 引擎（5 节点/数据流/IF 分支/失败即停/守卫/防重入）、角色=宠物+agents.md、工作流独立可复制/迁移（自动重绑）、3 模板、focus-cli workflow list|run|runs|cancel、自动化线程徽标+清理；ADR-0012。
 - M5：新的 Agent（外部 Agent 驱动的角色循环）——2026-08-07 已锁定方向（#27）：内核驱动 / 事件+兜底 / 先单角色；Journal/Task 全家桶保持外接 skill 不内置；**未实施**。
 - 悬而未决：图标区是否恢复拖动（当前为居中 2×5 固定）；多屏验证；毛玻璃在部分驱动下透明性（FOCUS_NO_ACRYLIC=1 降级开关）。
 

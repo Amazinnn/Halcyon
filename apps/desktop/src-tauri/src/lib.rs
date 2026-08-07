@@ -1236,6 +1236,15 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
     for label in ["chat", "stats", "music", "pet", "workflow"] {
         if let Some(rect) = settings.grid.get(label) {
             position_window(&app.handle(), label, rect, &gm);
+        } else if label == "workflow" {
+            // M4/ADR-0012: default 4x4 slot so the new window never opens at
+            // the raw 800x600 default size.
+            position_window(
+                &app.handle(),
+                label,
+                &GridRect { col: 4, row: 2, cols: 4, rows: 4 },
+                &gm,
+            );
         }
         if let Some(win) = app.get_webview_window(label) {
             let top = *settings.topmost.get(label).unwrap_or(&true);
