@@ -17,7 +17,7 @@ const shortcuts = useShortcutStore();
 const wallpaperUrl = ref("");
 const dropActive = ref(false);
 const addMenuOpen = ref(false);
-const menuMode = ref<"" | "url" | "internal">("");
+const menuMode = ref<"" | "url">("");
 const urlName = ref("");
 const urlValue = ref("");
 const settingsOpen = ref(false);
@@ -71,8 +71,14 @@ const viewsTrayOpen = ref(false);
 const MAX_SHORTCUTS = 9;
 const canAdd = computed(() => shortcuts.items.length < MAX_SHORTCUTS);
 
+// v1.10 (#31): 150ms lockout so rapid double/triple clicks don't flood the
+// window manager with redundant restore calls (freeze root cause).
+const viewLock = new Map<string, number>();
 async function openView(label: string) {
   viewsTrayOpen.value = false;
+  const now = Date.now();
+  if ((viewLock.get(label) ?? 0) > now - 150) return;
+  viewLock.set(label, now);
   try {
     await invoke("restore", { label });
   } catch (e) {
@@ -119,11 +125,6 @@ async function submitUrl() {
   menuMode.value = "";
 }
 
-async function submitInternal(name: string, target: string) {
-  await shortcuts.addInternal(name, target);
-  addMenuOpen.value = false;
-  menuMode.value = "";
-}
 
 function remove(id: string) {
   void shortcuts.remove(id);
@@ -231,6 +232,9 @@ onBeforeUnmount(() => {
           <button class="view-item" @click="openView('music')">
             <AppIcon name="music" /><span>音乐</span>
           </button>
+          <button class="view-item" @click="openView('workflow')">
+            <AppIcon name="panel" /><span>工作流</span>
+          </button>
         </div>
       </div>
 
@@ -263,17 +267,10 @@ onBeforeUnmount(() => {
             <button @click="pickFiles">文件 / 应用</button>
             <button @click="pickFolders">文件夹</button>
             <button @click="menuMode = menuMode === 'url' ? '' : 'url'">URL 链接</button>
-            <button @click="menuMode = menuMode === 'internal' ? '' : 'internal'">内部页</button>
             <div v-if="menuMode === 'url'" class="menu-inline">
               <input v-model="urlName" class="text-input" placeholder="名称（可选）" @keydown.enter="submitUrl" />
               <input v-model="urlValue" class="text-input" placeholder="https://…" @keydown.enter="submitUrl" />
               <button class="btn" @click="submitUrl">添加</button>
-            </div>
-            <div v-if="menuMode === 'internal'" class="menu-inline">
-              <button class="btn" @click="submitInternal('对话', 'chat')">对话</button>
-              <button class="btn" @click="submitInternal('统计', 'stats')">统计</button>
-              <button class="btn" @click="submitInternal('音乐', 'music')">音乐</button>
-        <button class="btn" @click="submitInternal('工作流', 'workflow')">工作流</button>
             </div>
           </div>
         </div>

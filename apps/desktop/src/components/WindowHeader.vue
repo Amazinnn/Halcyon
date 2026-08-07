@@ -12,12 +12,24 @@ const label = win.label;
 const { onPointerDown, onPointerMove, onPointerUp } = useGridDrag(label);
 const pinned = ref(true);
 
+// v1.10 (#31): 150ms lockout on header buttons so rapid clicking cannot flood
+// the window manager with redundant toggles.
+let lastAction = 0;
+function throttled(): boolean {
+  const now = Date.now();
+  if (now - lastAction < 150) return true;
+  lastAction = now;
+  return false;
+}
+
 async function togglePin() {
+  if (throttled()) return;
   pinned.value = !pinned.value;
   await invoke("set_topmost", { label, topmost: pinned.value });
 }
 
 async function collapseWin() {
+  if (throttled()) return;
   await invoke("collapse", { label });
 }
 </script>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useAgentStore } from "../../stores/agent";
 import { useSettingsStore } from "../../stores/settings";
@@ -52,7 +52,7 @@ const { onPointerDown, onPointerMove, onPointerUp } = useGridDrag("pet");
 
 // ---- pet pack state ----
 const pet = ref<PetInfo | null>(null);
-const sheet = ref<HTMLImageElement | null>(null);
+const sheet = ref<HTMLImageElement | ImageBitmap | null>(null);
 const sheetError = ref("");
 const hovered = ref(false);
 
@@ -80,23 +80,27 @@ function drawFrame(idx: number) {
 /** Soften the outermost ring so any remnant background blends into the
  *  wallpaper (optional, controlled by Settings -> petBgFade). */
 function applyEdgeFade(ctx: CanvasRenderingContext2D) {
-  const w = ctx.canvas.width;
-  const h = ctx.canvas.height;
-  const f = Math.max(2, Math.round(Math.min(w, h) * 0.05));
-  const img = ctx.getImageData(0, 0, w, h);
-  const d = img.data;
-  for (let y = 0; y < h; y++) {
-    const vf = Math.max(y < f ? 1 - y / f : 0, y >= h - f ? 1 - (h - 1 - y) / f : 0);
-    for (let x = 0; x < w; x++) {
-      const hf = Math.max(x < f ? 1 - x / f : 0, x >= w - f ? 1 - (w - 1 - x) / f : 0);
-      const t = Math.max(vf, hf);
-      if (t > 0) {
-        const i = (y * w + x) * 4;
-        d[i + 3] = Math.round(d[i + 3] * (1 - t * 0.8));
+  try {
+    const w = ctx.canvas.width;
+    const h = ctx.canvas.height;
+    const f = Math.max(2, Math.round(Math.min(w, h) * 0.05));
+    const img = ctx.getImageData(0, 0, w, h);
+    const d = img.data;
+    for (let y = 0; y < h; y++) {
+      const vf = Math.max(y < f ? 1 - y / f : 0, y >= h - f ? 1 - (h - 1 - y) / f : 0);
+      for (let x = 0; x < w; x++) {
+        const hf = Math.max(x < f ? 1 - x / f : 0, x >= w - f ? 1 - (w - 1 - x) / f : 0);
+        const t = Math.max(vf, hf);
+        if (t > 0) {
+          const i = (y * w + x) * 4;
+          d[i + 3] = Math.round(d[i + 3] * (1 - t * 0.8));
+        }
       }
     }
+    ctx.putImageData(img, 0, 0);
+  } catch {
+    // v1.10 (#32): never let a tainted canvas break pet playback; skip fade.
   }
-  ctx.putImageData(img, 0, 0);
 }
 
 function scheduleNext(idx: number) {
@@ -150,17 +154,19 @@ watch(animKey, () => {
 // ---- load active pack / sheet ----
 async function loadSheet(info: PetInfo) {
   sheetError.value = "";
-  const img = new Image();
-  const url = convertFileSrc(info.spritesheetPath);
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = () => reject(new Error("spritesheet 加载失败"));
-    img.src = url;
-  });
-  if (img.naturalWidth !== ATLAS_W || img.naturalHeight !== ATLAS_H) {
-    throw new Error(`spritesheet 尺寸不符：需要 ${ATLAS_W}x${ATLAS_H}，实际 ${img.naturalWidth}x${img.naturalHeight}`);
+  // v1.10 (#32): load pixels same-origin (base64 -> Blob -> createImageBitmap)
+  // so canvas getImageData (edge fade) is not blocked by cross-origin taint.
+  const b64 = await invoke<string>("pet_sheet_data", { id: info.id });
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const mime = info.spritesheetPath.toLowerCase().endsWith(".png") ? "image/png" : "image/webp";
+  const blob = new Blob([bytes], { type: mime });
+  const bmp = await createImageBitmap(blob);
+  if (bmp.width !== ATLAS_W || bmp.height !== ATLAS_H) {
+    throw new Error(`spritesheet 尺寸不符：需要 ${ATLAS_W}x${ATLAS_H}，实际 ${bmp.width}x${bmp.height}`);
   }
-  sheet.value = img;
+  sheet.value = bmp;
   pet.value = info;
   resetPlayback();
 }
