@@ -77,6 +77,10 @@ pub struct DashboardPayload {
 impl Store {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+        // v1.8.1: wait up to 5s for a concurrent writer instead of failing
+        // immediately with SQLITE_BUSY (previously dropped inserts when two
+        // app instances shared the same DB).
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Ok(Self { conn })
     }
 

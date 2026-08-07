@@ -1155,6 +1155,27 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
 // ---------------------------------------------------------------------------
 
 pub fn run() {
+    // v1.8.1 single-instance guard: a second process must exit immediately so
+    // two instances never share the same SQLite DB / settings (which could
+    // silently drop writes). The mutex handle lives for the process lifetime
+    // and is released by the OS on exit.
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{GetLastError, SetLastError, ERROR_ALREADY_EXISTS, WIN32_ERROR};
+        use windows::Win32::System::Threading::CreateMutexW;
+        let name = windows::core::HSTRING::from("Local\\FocusDesktop_SingleInstance");
+        unsafe { SetLastError(WIN32_ERROR(0)); }
+        match unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) } {
+            Ok(handle) => {
+                if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                    std::process::exit(0);
+                }
+                // Keep the handle alive for the whole process.
+                std::mem::forget(handle);
+            }
+            Err(e) => eprintln!("[focus] single-instance mutex failed: {e}"),
+        }
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1326,10 +1347,14 @@ pub fn run() {
                             let dur = ft.session_focus_sec.max(1);
                             let tid = ft.task_id.clone();
                             let store_state = hf.state::<std::sync::Arc<Mutex<storage::Store>>>();
-                            let _ = store_state
-                                .lock()
-                                .unwrap()
-                                .record_focus_session(&started, &ended, dur, tid.as_deref());
+                            match store_state.lock() {
+                                Ok(store) => {
+                                    if let Err(e) = store.record_focus_session(&started, &ended, dur, tid.as_deref()) {
+                                        eprintln!("[focus] record_focus_session failed: {e}");
+                                    }
+                                }
+                                Err(_) => eprintln!("[focus] store lock poisoned"),
+                            }
                             let _ = hf.emit("stats:changed", ());
                         }
                         ft.active = false;
