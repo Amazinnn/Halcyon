@@ -14,7 +14,8 @@
   - 视图按钮改点击式展开 + 外部点击关闭（原 mouseleave 悬停逻辑导致移向菜单即消失、无法点击）。
   - 桌宠缩放回归修复：overlay 创建时即设 WS_EX_NOACTIVATE（不抢激活、不丢指针捕获）；前端处理 pointercancel / lostpointercapture 防缩放句柄卡死；pet_resize_preview 隐藏不再要求 cols/rows。
   - 网格亮部中心与窗口对齐（启动布局正常时）。
-- 先前已验证：#12（菜单单行/真实图标/单飞去重/后台线程/release 生产协议）、#13（M1 Pet Pack：hatch-pet 契约播放器/导入/校验/四尺寸）、#14（桌宠 UX：纯精灵图/hover 对话/缩放网格预览/拖拽移动/透明背景校验+淡化开关/pet-builder skill）。
+- 先前已验证：#12（菜单单行/真实图标/单飞去重/后台线程/release 生产协议）
+- v1.8（M2 统计真实化）：统计窗口接真实 SQLite 数据（30 天热力图 / 今日 24h 分布 / 连续天数 / 今日汇总）；新增 focus-cli stats dashboard（白名单+审计）；分心/空闲/音乐类型暂为「暂无数据」占位。、#13（M1 Pet Pack：hatch-pet 契约播放器/导入/校验/四尺寸）、#14（桌宠 UX：纯精灵图/hover 对话/缩放网格预览/拖拽移动/透明背景校验+淡化开关/pet-builder skill）。
 - 已知小问题（用户接受暂不处理）：#17 启动初期浮窗短暂堆叠后自动归位；极少数启动卡死（与 Agent 运行时探测相关）。
 
 ## 架构速览
@@ -45,7 +46,7 @@
 ## 下一步候选
 
 - M1 剩余：托盘 + 全局快捷键；Agent 状态模拟器完善。
-- M2：统计 DB 深化（周/会话查询已有）+ System Media 音乐控制。
+- M2：统计真实化（v1.8 已实现）；剩余 System Media 音乐控制（M2 第二步）。
 - M3 剩余：plan mode / Diff / 终端面板 / Claude Code 接入。
 - 悬而未决：图标区是否恢复拖动（当前为居中 2×5 固定）；多屏验证；毛玻璃在部分驱动下透明性（FOCUS_NO_ACRYLIC=1 降级开关）。
 
