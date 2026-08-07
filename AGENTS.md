@@ -40,7 +40,7 @@ Focus Desktop: a local focus desktop + agent pet system for Windows (Tauri 2 + V
 
 - `docs/STATUS.md` - current state & handoff (read first)
 - `docs/next-phase.md` - next candidates / roadmap
-- `docs/requirements-verbatim.md` - verbatim user requirements log (#1..#23)
+- `docs/requirements-verbatim.md` - verbatim user requirements log (#1..#25)
 - `docs/decisions/` - ADR-0001..ADR-0011
 
 ## Do NOT
