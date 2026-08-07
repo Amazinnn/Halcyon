@@ -76,6 +76,7 @@ function onResizePointerDown(e: PointerEvent) {
   resizePointer = e.pointerId;
   resizeChanged = false;
   dragAccum = 0;
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   showResizePreview();
 }
 
@@ -204,6 +205,7 @@ onUnmounted(() => {
 
 <style scoped>
 .music-window {
+  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -393,6 +395,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding-right: 22px;
 }
 .time {
   font-size: 11px;
@@ -413,20 +416,31 @@ onUnmounted(() => {
   position: absolute;
   right: 2px;
   bottom: 2px;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   cursor: nwse-resize;
   border-right: 2px solid var(--text-low);
   border-bottom: 2px solid var(--text-low);
   border-bottom-right-radius: 3px;
   opacity: 0.55;
+  touch-action: none;
+  z-index: 5;
 }
-.resize-handle:hover { opacity: 1; border-color: var(--accent-bright); }
+.resize-handle:hover {
+  opacity: 1;
+  border-color: var(--accent-bright);
+  background: rgba(163, 230, 53, 0.08);
+}
 
-.control-bar.compact { justify-content: center; }
-.control-bar.compact .row-top { justify-content: center; }
-.control-bar.compact .cover { width: 72px; height: 72px; }
+.control-bar.compact {
+  justify-content: center;
+  padding: 8px 12px 10px;
+  gap: 6px;
+}
+.control-bar.compact .row-top { justify-content: center; gap: 10px; }
+.control-bar.compact .cover { width: 46px; height: 46px; }
 .control-bar.compact .now-meta { flex: none; text-align: left; }
+.control-bar.compact .now-title { font-size: 13px; }
 .control-bar.compact .mode { display: none; }
 
 .progress::-webkit-slider-thumb {
