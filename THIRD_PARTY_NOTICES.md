@@ -20,6 +20,8 @@
 | ajv | 8.20.0 | MIT | event-schema 校验 |
 | ajv-formats | 3.0.1 | MIT | event-schema 校验（date-time 格式） |
 | @tauri-apps/plugin-dialog | 2.7.2 | MIT 或 Apache-2.0 | 壁纸选择对话框（v1.2） |
+| @vue-flow/core | 1.48.x | MIT | M4 工作流画布（节点/连线/拖拽；n8n 同源编辑器库，v1.10 引入） |
+| @vue-flow/background | 1.3.x | MIT | M4 工作流画布背景网格 |
 
 ### Rust 依赖（apps/desktop/src-tauri，以 Cargo.toml 为准）
 
