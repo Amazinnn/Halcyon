@@ -286,6 +286,22 @@ pub fn launch_shortcut(app: &AppHandle, row: &ShortcutRow) -> Result<(), String>
                 shell_open_and_fit(app, row, &row.target)
             }
         }
+        ShortcutType::Folder => {
+            // Folders MUST go through explorer.exe with the physical path:
+            // on this machine ShellExecuteW("open") resolves the Downloads
+            // known folder through an unregistered shell GUID
+            // (shell:::{52205fd8-...}) and pops a "???????" dialog,
+            // while explorer.exe <physical path> opens it correctly.
+            let before = snapshot_visible_windows();
+            Command::new("explorer.exe")
+                .arg(&row.target)
+                .spawn()
+                .map_err(|e| format!("spawn explorer failed: {e}"))?;
+            if let Some(h) = detect_new_window(&before, FIND_TIMEOUT) {
+                fit_window(app, h, find_free_slot(app, row));
+            }
+            Ok(())
+        }
         _ => shell_open_and_fit(app, row, &row.target),
     }
 }
