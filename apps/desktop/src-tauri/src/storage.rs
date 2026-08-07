@@ -767,6 +767,13 @@ impl Store {
         self.conn.execute("UPDATE automation_threads SET hidden = 1 WHERE hidden = 0", [])?;
         Ok(())
     }
+
+    /// Thread ids hidden by "cleanup" (kept for the chat list filter).
+    pub fn hidden_automation_thread_ids(&self) -> rusqlite::Result<std::collections::HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT thread_id FROM automation_threads WHERE hidden = 1")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect()
+    }
 }
 
 fn row_to_workflow(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowDef> {

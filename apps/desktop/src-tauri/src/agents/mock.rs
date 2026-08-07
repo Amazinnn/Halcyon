@@ -158,6 +158,7 @@ impl MockProvider {
             cwd: workspace_dir.to_string(),
             status: "idle".to_string(),
             updated_at: now,
+            automation: false,
         }
     }
 }

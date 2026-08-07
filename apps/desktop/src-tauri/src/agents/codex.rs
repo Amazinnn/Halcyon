@@ -382,6 +382,7 @@ fn thread_info(t: &Value) -> AgentThreadInfo {
             .unwrap_or("idle")
             .to_string(),
         updated_at: t.get("updatedAt").and_then(Value::as_i64).unwrap_or(0),
+        automation: false,
     }
 }
 

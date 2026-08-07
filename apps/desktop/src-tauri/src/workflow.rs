@@ -230,6 +230,12 @@ impl WorkflowManager {
         store.visible_automation_thread_ids().unwrap_or_default()
     }
 
+    /// Automation thread ids hidden by cleanup (chat list filters them out).
+    pub fn hidden_automation_thread_ids(&self) -> HashSet<String> {
+        let Ok(store) = self.store.lock() else { return HashSet::new() };
+        store.hidden_automation_thread_ids().unwrap_or_default()
+    }
+
     // ---- scheduler / triggers ----
 
     pub fn scheduler_tick(&self) {

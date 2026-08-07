@@ -310,7 +310,29 @@ fn agent_resume_thread(
 
 #[tauri::command]
 fn agent_list_threads(app: tauri::AppHandle) -> Result<Vec<agents::AgentThreadInfo>, String> {
-    with_agent(&app, |rt| rt.list_threads())
+    let mut threads = with_agent(&app, |rt| rt.list_threads())?;
+    // ADR-0012: hide cleaned automation threads and badge the rest.
+    let hidden: std::collections::HashSet<String> = app
+        .state::<AppState>()
+        .workflow
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.hidden_automation_thread_ids())
+        .unwrap_or_default();
+    threads.retain(|t| !hidden.contains(&t.id));
+    let visible: std::collections::HashSet<String> = app
+        .state::<AppState>()
+        .workflow
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.visible_automation_thread_ids())
+        .unwrap_or_default();
+    for t in &mut threads {
+        t.automation = visible.contains(&t.id);
+    }
+    Ok(threads)
 }
 
 #[tauri::command]

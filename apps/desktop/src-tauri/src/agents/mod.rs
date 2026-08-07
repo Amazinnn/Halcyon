@@ -58,6 +58,10 @@ pub struct AgentThreadInfo {
     pub cwd: String,
     pub status: String,
     pub updated_at: i64,
+    /// Marked when the thread was created by a workflow agent node
+    /// (ADR-0012 automation threads stay visible with a badge).
+    #[serde(default)]
+    pub automation: bool,
 }
 
 /// Common agent contract implemented by the real (Codex) and mock providers.
