@@ -14,6 +14,7 @@ mod event_bus;
 mod grid;
 mod icons;
 mod launch;
+mod music;
 mod pets;
 mod settings;
 mod shortcuts;
@@ -971,6 +972,43 @@ fn stats_dashboard(
         .map_err(|e| e.to_string())
 }
 #[tauri::command]
+fn music_set_folder(app: tauri::AppHandle, dir: String) -> Result<Vec<music::Track>, String> {
+    let path = std::path::PathBuf::from(&dir);
+    if !path.is_dir() {
+        return Err("音乐文件夹不存在".into());
+    }
+    {
+        let app_state = app.state::<AppState>();
+        let mut settings = app_state.settings.lock().unwrap();
+        settings.music_folder = Some(dir.clone());
+        settings.save(&app_state.data_dir)?;
+    }
+    app.asset_protocol_scope()
+        .allow_directory(&path, true)
+        .map_err(|e| e.to_string())?;
+    Ok(music::list_tracks(&path))
+}
+
+#[tauri::command]
+fn music_get_folder(state: tauri::State<'_, AppState>) -> Option<String> {
+    state.settings.lock().unwrap().music_folder.clone()
+}
+
+#[tauri::command]
+fn music_list(state: tauri::State<'_, AppState>) -> Result<Vec<music::Track>, String> {
+    let folder = state.settings.lock().unwrap().music_folder.clone();
+    match folder {
+        Some(dir) => Ok(music::list_tracks(std::path::Path::new(&dir))),
+        None => Ok(Vec::new()),
+    }
+}
+
+#[tauri::command]
+fn music_cover(path: String) -> Result<Option<String>, String> {
+    Ok(music::cover_data_uri(&path))
+}
+
+#[tauri::command]
 fn get_shortcut_icon(path: String) -> Result<serde_json::Value, String> {
     match icons::extract_icon_rgba(&path) {
         Some(data) => Ok(serde_json::json!({
@@ -1204,6 +1242,11 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let settings = Settings::load(&data_dir);
+            // v1.9: re-allow the saved music folder in the asset protocol scope
+            // (scope is per-process; it only covers $APPDATA/** by default).
+            if let Some(music_folder) = settings.music_folder.clone() {
+                let _ = app.asset_protocol_scope().allow_directory(std::path::Path::new(&music_folder), true);
+            }
             let legacy_shortcuts = settings.shortcuts.clone();
             let data_dir_clone = data_dir.clone();
             let (events_tx, _boot_rx) = tokio::sync::broadcast::channel::<CoreEvent>(256);
@@ -1424,6 +1467,10 @@ pub fn run() {
             record_focus_session,
             get_today_focus_summary,
             stats_dashboard,
+            music_set_folder,
+            music_get_folder,
+            music_list,
+            music_cover,
             get_shortcut_icon,
             get_wallpaper,
             persist_wallpaper,

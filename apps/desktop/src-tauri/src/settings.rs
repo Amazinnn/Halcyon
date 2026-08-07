@@ -115,6 +115,8 @@ pub struct Settings {
     pub pet_pack_id: Option<String>,
     #[serde(default = "default_true")]
     pub pet_bg_fade: bool,
+    #[serde(default)]
+    pub music_folder: Option<String>,
 }
 
 fn default_25() -> u32 {
@@ -175,6 +177,7 @@ impl Default for Settings {
             agent_workspace_dir: None,
         pet_pack_id: None,
         pet_bg_fade: true,
+        music_folder: None,
         }
     }
 }
