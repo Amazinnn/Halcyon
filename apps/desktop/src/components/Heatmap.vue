@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { HeatmapDay } from "../lib/fakeStats";
+import type { HeatmapDay } from "../lib/dashboard";
 
 defineProps<{ days: HeatmapDay[] }>();
 
