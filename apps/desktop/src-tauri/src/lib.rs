@@ -125,6 +125,7 @@ struct Bootstrap {
     show_topbar: String,
     agent_provider: String,
     agent_workspace_dir: Option<String>,
+    pet_bg_fade: bool,
 }
 
 #[tauri::command]
@@ -157,6 +158,7 @@ fn get_bootstrap(
         show_topbar: s.show_topbar.clone(),
         agent_provider: s.agent_provider.clone(),
         agent_workspace_dir: s.agent_workspace_dir.clone(),
+        pet_bg_fade: s.pet_bg_fade,
     }
 }
 
@@ -379,6 +381,17 @@ fn pet_import_pack(state: tauri::State<'_, AppState>, dir: String) -> Result<pet
 }
 
 #[tauri::command]
+fn pet_remove_pack(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let was_active = state.settings.lock().unwrap().pet_pack_id.as_deref() == Some(id.as_str());
+    pets::remove(&state.data_dir, &id)?;
+    if was_active {
+        state.settings.lock().unwrap().pet_pack_id = None;
+        let _ = state.settings.lock().unwrap().save(&state.data_dir);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn pet_list_packs(state: tauri::State<'_, AppState>) -> Result<Vec<pets::PetInfo>, String> {
     pets::list(&state.data_dir)
 }
@@ -403,6 +416,50 @@ fn pet_active(state: tauri::State<'_, AppState>) -> Result<Option<pets::PetInfo>
     }
 }
 #[tauri::command]
+fn pet_resize_preview(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    visible: bool,
+    cols: usize,
+    rows: usize,
+) -> Result<(), String> {
+    let label = "pet";
+    let Some(ov) = app.get_webview_window("grid-overlay") else {
+        return Ok(());
+    };
+    if !visible {
+        let _ = ov.hide();
+        let _ = app.emit("grid:preview", serde_json::json!({ "visible": false }));
+        return Ok(());
+    }
+    let _ = ov.set_ignore_cursor_events(true);
+    let _ = ov.show();
+    let settings = state.settings.lock().unwrap();
+    let current = settings.grid.get(label).copied().unwrap_or(GridRect { col: 0, row: 0, cols, rows });
+    let occupied = occupied_rects(&settings, Some(label));
+    let target = GridRect { col: current.col, row: current.row, cols, rows };
+    let conflict = occupied.iter().any(|o| crate::grid::overlap(&target, o));
+    drop(settings);
+    let _ = app.emit(
+        "grid:preview",
+        serde_json::json!({
+            "visible": true,
+            "label": label,
+            "rect": target,
+            "floatRect": {
+                "x": target.col as f64,
+                "y": target.row as f64,
+                "w": target.cols as f64,
+                "h": target.rows as f64,
+            },
+            "occupiedCells": occupied,
+            "conflict": conflict,
+        }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
 fn resize_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -421,6 +478,13 @@ fn resize_window(
         .copied()
         .unwrap_or(GridRect { col: 0, row: 0, cols, rows });
     let rect = GridRect { col: current.col, row: current.row, cols, rows };
+    let occupied = occupied_rects(&settings, Some(&label));
+    if occupied.iter().any(|o| crate::grid::overlap(&rect, o)) {
+        // Reject conflicting resize: keep current size and window position.
+        drop(settings);
+        position_window(&app, &label, &current, &gm);
+        return Err("目标尺寸与现有窗口重叠".into());
+    }
     settings.grid.insert(label.clone(), rect);
     let _ = settings.save(&state.data_dir);
     drop(settings);
@@ -824,6 +888,14 @@ fn set_supervision_enabled(state: tauri::State<'_, AppState>, enabled: bool) -> 
 fn set_sound_enabled(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
     let mut settings = state.settings.lock().unwrap();
     settings.sound_enabled = enabled;
+    let _ = settings.save(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_pet_bg_fade(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap();
+    settings.pet_bg_fade = enabled;
     let _ = settings.save(&state.data_dir);
     Ok(())
 }
@@ -1305,9 +1377,12 @@ pub fn run() {
             set_agent_provider,
             set_agent_workspace_dir,
             pet_import_pack,
+            pet_remove_pack,
             pet_list_packs,
             pet_activate,
             pet_active,
+            pet_resize_preview,
+            set_pet_bg_fade,
             resize_window,
             quit_app
         ])

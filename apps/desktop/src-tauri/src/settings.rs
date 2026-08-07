@@ -113,6 +113,8 @@ pub struct Settings {
     pub agent_workspace_dir: Option<String>,
     #[serde(default)]
     pub pet_pack_id: Option<String>,
+    #[serde(default = "default_true")]
+    pub pet_bg_fade: bool,
 }
 
 fn default_25() -> u32 {
@@ -172,6 +174,7 @@ impl Default for Settings {
             agent_provider: "codex".into(),
             agent_workspace_dir: None,
         pet_pack_id: None,
+        pet_bg_fade: true,
         }
     }
 }

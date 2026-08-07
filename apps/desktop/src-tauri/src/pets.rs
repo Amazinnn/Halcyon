@@ -51,6 +51,58 @@ fn sheet_path(dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Parse image dimensions from file headers only (PNG IHDR / WebP VP8X/VP8L),
+/// no decoding dependency. Returns (width, height).
+pub fn sheet_dimensions(path: &Path) -> Result<(u32, u32), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读取精灵图失败: {e}"))?;
+    if bytes.len() >= 24 && &bytes[..8] == b"\x89PNG\r\n\x1a\n" {
+        // IHDR: width at 16..20, height at 20..24 (big-endian)
+        let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        return Ok((w, h));
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        let fourcc = &bytes[12..16];
+        if fourcc == b"VP8X" {
+            if bytes.len() < 26 {
+                return Err("不支持的 WebP 变体".into());
+            }
+            // VP8X: canvas width-1 at bytes 20..22, height-1 at bytes 23..25 (24-bit LE)
+            let w = 1 + u32::from(bytes[20]) + (u32::from(bytes[21]) << 8) + (u32::from(bytes[22]) << 16);
+            let h = 1 + u32::from(bytes[23]) + (u32::from(bytes[24]) << 8) + (u32::from(bytes[25]) << 16);
+            return Ok((w, h));
+        }
+        if fourcc == b"VP8 " {
+            // VP8 lossy: 14-byte frame tag; width at offset 26..28 (14-bit LE), height 28..30
+            let w = u16::from_le_bytes([bytes[26], bytes[27]]) & 0x3FFF;
+            let h = u16::from_le_bytes([bytes[28], bytes[29]]) & 0x3FFF;
+            return Ok((u32::from(w), u32::from(h)));
+        }
+        if fourcc == b"VP8L" {
+            // VP8L lossless: 1-byte signature 0x2f then 14-bit width-1 / 14-bit height-1
+            if bytes.len() >= 25 && bytes[20] == 0x2f {
+                let bits = u32::from_le_bytes([bytes[21], bytes[22], bytes[23], bytes[24]]);
+                let w = 1 + (bits & 0x3FFF);
+                let h = 1 + ((bits >> 14) & 0x3FFF);
+                return Ok((w, h));
+            }
+        }
+        return Err("不支持的 WebP 变体".into());
+    }
+    Err("精灵图必须是 PNG 或 WebP".into())
+}
+
+/// Remove an imported pack by id (safe id only).
+pub fn remove(data_dir: &Path, id: &str) -> Result<(), String> {
+    if !is_valid_id(id) {
+        return Err("宠物包 id 非法".into());
+    }
+    let dir = pets_root(data_dir).join(id);
+    if !dir.is_dir() {
+        return Err(format!("宠物包不存在: {id}"));
+    }
+    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+}
 /// Load and validate `pet.json` in `dir`.
 pub fn load_manifest(dir: &Path) -> Result<PetManifest, String> {
     let manifest_path = dir.join("pet.json");
@@ -70,11 +122,22 @@ pub fn load_manifest(dir: &Path) -> Result<PetManifest, String> {
     if m.spritesheet_path.trim().is_empty() {
         return Err("pet.json 缺少 spritesheetPath".into());
     }
-    if sheet_path(dir).is_none() {
-        return Err("宠物包缺少 spritesheet.webp 或 spritesheet.png".into());
+    let sheet = sheet_path(dir).ok_or_else(|| "宠物包缺少 spritesheet.webp 或 spritesheet.png".to_string())?;
+    let (w, h) = sheet_dimensions(&sheet)?;
+    if w != ATLAS_W || h != ATLAS_H {
+        return Err(format!(
+            "spritesheet 尺寸不符：需要 {ATLAS_W}x{ATLAS_H}，实际 {w}x{h}"
+        ));
     }
     Ok(m)
 }
+
+pub const ATLAS_COLS: usize = 8;
+pub const ATLAS_ROWS: usize = 9;
+pub const CELL_W: usize = 192;
+pub const CELL_H: usize = 208;
+const ATLAS_W: u32 = (ATLAS_COLS * CELL_W) as u32;
+const ATLAS_H: u32 = (ATLAS_ROWS * CELL_H) as u32;
 
 fn to_info(m: &PetManifest, dir: &Path) -> Result<PetInfo, String> {
     let sheet = sheet_path(dir).ok_or_else(|| "宠物包缺少 spritesheet".to_string())?;
@@ -173,16 +236,27 @@ mod tests {
         ))
     }
 
+    /// Minimal valid PNG header for ATLAS_W x ATLAS_H.
+    fn png_header(w: u32, h: u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        v.extend_from_slice(b"\x00\x00\x00\x0dIHDR");
+        v.extend_from_slice(&w.to_be_bytes());
+        v.extend_from_slice(&h.to_be_bytes());
+        v.extend_from_slice(&[8u8, 6, 0, 0, 0]);
+        v
+    }
+
     fn write_pack(dir: &Path, id: &str, name: &str, desc: &str) {
         std::fs::create_dir_all(dir).unwrap();
         let manifest = serde_json::json!({
             "id": id,
             "displayName": name,
             "description": desc,
-            "spritesheetPath": "spritesheet.webp"
+            "spritesheetPath": "spritesheet.png"
         });
         std::fs::write(dir.join("pet.json"), serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
-        std::fs::write(dir.join("spritesheet.webp"), b"fake-webp").unwrap();
+        std::fs::write(dir.join("spritesheet.png"), png_header(1536, 1872)).unwrap();
     }
 
     #[test]
@@ -196,8 +270,8 @@ mod tests {
         assert_eq!(info.display_name, "My Pet");
         let copied = data.join(PETS_DIR).join("my.pet");
         assert!(copied.join("pet.json").exists());
-        assert!(copied.join("spritesheet.webp").exists());
-        assert!(info.spritesheet_path.ends_with("spritesheet.webp"));
+        assert!(copied.join("spritesheet.png").exists());
+        assert!(info.spritesheet_path.ends_with("spritesheet.png"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -212,7 +286,12 @@ mod tests {
             r#"{"id":"x","displayName":"X","spritesheetPath":"spritesheet.webp"}"#,
         )
         .unwrap();
-        std::fs::write(src.join("spritesheet.webp"), b"fake").unwrap();
+        std::fs::write(
+            src.join("pet.json"),
+            r#"{"id":"x","displayName":"X","spritesheetPath":"spritesheet.png"}"#,
+        )
+        .unwrap();
+        std::fs::write(src.join("spritesheet.png"), png_header(1536, 1872)).unwrap();
         assert!(import(&src, &tmp.join("data")).is_err());
 
         // invalid id (path traversal)
@@ -220,10 +299,10 @@ mod tests {
         std::fs::create_dir_all(&src2).unwrap();
         std::fs::write(
             src2.join("pet.json"),
-            r#"{"id":"../evil","displayName":"X","description":"d","spritesheetPath":"spritesheet.webp"}"#,
+            r#"{"id":"../evil","displayName":"X","description":"d","spritesheetPath":"spritesheet.png"}"#,
         )
         .unwrap();
-        std::fs::write(src2.join("spritesheet.webp"), b"fake").unwrap();
+        std::fs::write(src2.join("spritesheet.png"), png_header(1536, 1872)).unwrap();
         assert!(import(&src2, &tmp.join("data")).is_err());
 
         // missing spritesheet
@@ -231,10 +310,66 @@ mod tests {
         std::fs::create_dir_all(&src3).unwrap();
         std::fs::write(
             src3.join("pet.json"),
-            r#"{"id":"x","displayName":"X","description":"d","spritesheetPath":"spritesheet.webp"}"#,
+            r#"{"id":"x","displayName":"X","description":"d","spritesheetPath":"spritesheet.png"}"#,
         )
         .unwrap();
         assert!(import(&src3, &tmp.join("data")).is_err());
+
+        // wrong spritesheet dimensions
+        let src4 = tmp.join("src4");
+        std::fs::create_dir_all(&src4).unwrap();
+        std::fs::write(
+            src4.join("pet.json"),
+            r#"{"id":"x","displayName":"X","description":"d","spritesheetPath":"spritesheet.png"}"#,
+        )
+        .unwrap();
+        std::fs::write(src4.join("spritesheet.png"), png_header(64, 64)).unwrap();
+        assert!(import(&src4, &tmp.join("data")).is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sheet_dimensions_parses_png_and_webp() {
+        let tmp = temp_dir("dims");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = tmp.join("a.png");
+        std::fs::write(&p, png_header(1536, 1872)).unwrap();
+        assert_eq!(sheet_dimensions(&p).unwrap(), (1536, 1872));
+
+        let w = tmp.join("b.webp");
+        // VP8X: RIFF size(4) WEBP(4) VP8X(4) flags(1) reserved(3) w-1(3) h-1(3)
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&20u32.to_le_bytes());
+        v.extend_from_slice(b"WEBP");
+        v.extend_from_slice(b"VP8X");
+        v.extend_from_slice(&[0u8; 10]);
+        v[20] = 0xFF; // w-1 low
+        v[21] = 0x05; // w-1 mid (0x5FF = 1535)
+        v[22] = 0x00;
+        v[23] = 0x4F; // h-1 = 0x74F = 1871
+        v[24] = 0x07;
+        v[25] = 0x00;
+        std::fs::write(&w, &v).unwrap();
+        assert_eq!(sheet_dimensions(&w).unwrap(), (1536, 1872));
+
+        let bad = tmp.join("c.png");
+        std::fs::write(&bad, b"not an image").unwrap();
+        assert!(sheet_dimensions(&bad).is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn remove_deletes_imported_pack() {
+        let tmp = temp_dir("remove");
+        let src = tmp.join("src");
+        let data = tmp.join("data");
+        write_pack(&src, "r.pet", "R", "remove me");
+        import(&src, &data).unwrap();
+        assert!(info_for(&data, "r.pet").is_ok());
+        remove(&data, "r.pet").unwrap();
+        assert!(info_for(&data, "r.pet").is_err());
+        assert!(remove(&data, "../evil").is_err());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
