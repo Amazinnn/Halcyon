@@ -200,6 +200,23 @@ impl Store {
                 VALUES ('0005_m4_workflow_engine', datetime('now'));
             ",
         )?;
+
+        // 0006 (v1.10, #30): internal-page cards are removed — internal pages
+        // open from the leftmost views tray only. One-time cleanup.
+        let has0006: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = '0006_remove_internal_shortcuts')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has0006 {
+            self.conn
+                .execute("DELETE FROM app_shortcuts WHERE type = 'internal'", [])?;
+            self.conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (name, applied_at)
+                 VALUES ('0006_remove_internal_shortcuts', datetime('now'))",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -886,6 +903,59 @@ mod tests {
         let sessions = s.recent_sessions(5).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].duration_sec, 1500);
+    }
+
+    #[test]
+    fn migration_0006_removes_internal_shortcuts_once() {
+        let s = temp_store();
+        // Simulate a pre-0006 database: temp_store already applied 0006 as a
+        // no-op, so drop the marker to re-test the one-time cleanup itself.
+        s.conn
+            .execute("DELETE FROM schema_migrations WHERE name = '0006_remove_internal_shortcuts'", [])
+            .unwrap();
+        s.insert_shortcut(&ShortcutRow {
+            id: "a1".into(),
+            name: "应用".into(),
+            kind: "application".into(),
+            target: "C:/x.exe".into(),
+            col: 0,
+            row: 0,
+            fit_col: None,
+            fit_row: None,
+            fit_cols: None,
+            fit_rows: None,
+        })
+        .unwrap();
+        s.insert_shortcut(&ShortcutRow {
+            id: "i1".into(),
+            name: "音乐".into(),
+            kind: "internal".into(),
+            target: "music".into(),
+            col: 1,
+            row: 0,
+            fit_col: None,
+            fit_row: None,
+            fit_cols: None,
+            fit_rows: None,
+        })
+        .unwrap();
+        // run full migration twice: internal removed once, app card kept
+        s.migrate().unwrap();
+        let rows = s.list_shortcuts().unwrap();
+        assert_eq!(rows.len(), 1, "internal card must be removed by 0006");
+        assert_eq!(rows[0].kind, "application");
+        s.migrate().unwrap();
+        let rows2 = s.list_shortcuts().unwrap();
+        assert_eq!(rows2.len(), 1);
+        let has0006: bool = s
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name='0006_remove_internal_shortcuts')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has0006);
     }
 
     #[test]

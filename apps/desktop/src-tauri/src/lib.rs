@@ -49,6 +49,8 @@ pub struct AppState {
     pub cli_pending: Mutex<HashMap<u64, std::sync::mpsc::Sender<serde_json::Value>>>,
     pub cli_next_id: AtomicU64,
     pub cli_token: Mutex<String>,
+    /// v1.10: coalescer for raise_topbar (SetWindowPos churn, #31).
+    pub last_topbar_raise: Mutex<std::time::Instant>,
     pub events_tx: tokio::sync::broadcast::Sender<CoreEvent>,
     pub agent: Mutex<agents::AgentRuntime>,
     pub agent_fallback: AtomicBool,
@@ -86,8 +88,18 @@ fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
 fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &GridManager) {
     if let Some(w) = app.get_webview_window(label) {
         let (x, y, wpx, hpx) = gm.rect_to_logical(rect);
-        let _ = w.set_position(LogicalPosition::new(x, y));
-        let _ = w.set_size(LogicalSize::new(wpx, hpx));
+        // v1.10: skip when already at the target (avoid Win32 churn under
+        // rapid restore/collapse, #31). Getters are main-thread-only; all
+        // callers run on the main thread.
+        let scale = w.scale_factor().unwrap_or(1.0);
+        let (px, py) = ((x * scale).round() as i32, (y * scale).round() as i32);
+        let (pwp, php) = ((wpx * scale).round() as u32, (hpx * scale).round() as u32);
+        let same = w.outer_position().map(|p| (p.x, p.y)).ok() == Some((px, py))
+            && w.outer_size().map(|s| (s.width, s.height)).ok() == Some((pwp, php));
+        if !same {
+            let _ = w.set_position(LogicalPosition::new(x, y));
+            let _ = w.set_size(LogicalSize::new(wpx, hpx));
+        }
     }
 }
 
@@ -424,6 +436,11 @@ fn pet_list_packs(state: tauri::State<'_, AppState>) -> Result<Vec<pets::PetInfo
 }
 
 #[tauri::command]
+fn pet_sheet_data(state: tauri::State<'_, AppState>, id: String) -> Result<String, String> {
+    pets::sheet_base64(&state.data_dir, &id)
+}
+
+#[tauri::command]
 fn pet_activate(state: tauri::State<'_, AppState>, id: String) -> Result<pets::PetInfo, String> {
     let info = pets::info_for(&state.data_dir, &id)?;
     {
@@ -575,11 +592,17 @@ fn set_topmost(
     label: String,
     topmost: bool,
 ) -> Result<(), String> {
+    {
+        let mut settings = state.settings.lock().unwrap();
+        if settings.topmost.get(&label) == Some(&topmost) {
+            return Ok(()); // v1.10: no-op when unchanged (#31)
+        }
+        settings.topmost.insert(label.clone(), topmost);
+        let _ = settings.save(&state.data_dir);
+    }
     if let Some(w) = app.get_webview_window(&label) {
         let _ = w.set_always_on_top(topmost);
     }
-    state.settings.lock().unwrap().topmost.insert(label, topmost);
-    let _ = state.settings.lock().unwrap().save(&state.data_dir);
     Ok(())
 }
 
@@ -587,9 +610,10 @@ fn set_topmost(
 fn collapse(app: tauri::AppHandle, state: tauri::State<'_, AppState>, label: String) -> Result<(), String> {
     {
         let mut settings = state.settings.lock().unwrap();
-        if !settings.collapsed.contains(&label) {
-            settings.collapsed.push(label.clone());
+        if settings.collapsed.contains(&label) {
+            return Ok(()); // v1.10: no-op when already collapsed (#31)
         }
+        settings.collapsed.push(label.clone());
         let _ = settings.save(&state.data_dir);
     }
     if let Some(w) = app.get_webview_window(&label) {
@@ -607,6 +631,19 @@ fn restore(app: tauri::AppHandle, _state: tauri::State<'_, AppState>, label: Str
 /// Show + position a float window back on its grid slot (shared by the
 /// restore command and the M4 `show_window` node).
 pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
+    // v1.10: dedupe — restoring an already-visible window must not churn
+    // show/position/topmost/raise (root cause of the freeze, #31).
+    {
+        let state = app.state::<AppState>();
+        let settings = state.settings.lock().unwrap();
+        if !settings.collapsed.iter().any(|c| c == label) {
+            if let Some(win) = app.get_webview_window(label) {
+                if win.is_visible().unwrap_or(false) {
+                    return Ok(());
+                }
+            }
+        }
+    }
     {
         let state = app.state::<AppState>();
         let mut settings = state.settings.lock().unwrap();
@@ -1187,6 +1224,15 @@ fn apply_topbar_visibility(app: &tauri::AppHandle) {
 /// `SetWindowPos(HWND_TOPMOST)` (verified: Tauri's re-assert leaves the float
 /// on top, the native call fixes it).
 pub(crate) fn raise_topbar(app: &tauri::AppHandle) {
+    // v1.10: coalesce SetWindowPos churn (#31) — at most one raise per 150ms.
+    {
+        let state = app.state::<AppState>();
+        let mut last = state.last_topbar_raise.lock().unwrap();
+        if last.elapsed() < std::time::Duration::from_millis(150) {
+            return;
+        }
+        *last = std::time::Instant::now();
+    }
     let Some(w) = app.get_webview_window("topbar") else { return };
     #[cfg(target_os = "windows")]
     {
@@ -1323,6 +1369,7 @@ pub fn run() {
                 cli_pending: Mutex::new(HashMap::new()),
                 cli_next_id: AtomicU64::new(0),
                 cli_token: Mutex::new(String::new()),
+                last_topbar_raise: Mutex::new(std::time::Instant::now()),
                 events_tx: events_tx.clone(),
                 agent: Mutex::new(agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(
                     events_tx.clone(),
@@ -1579,6 +1626,7 @@ pub fn run() {
             pet_remove_pack,
             pet_list_packs,
             pet_activate,
+            pet_sheet_data,
             pet_active,
             resize_preview,
             set_pet_bg_fade,

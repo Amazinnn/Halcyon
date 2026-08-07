@@ -3,6 +3,7 @@
 //! app data dir `pet-packs/<id>/`, validates the manifest, and resolves the
 //! currently active pack. Rendering/playback lives in the frontend.
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -255,6 +256,16 @@ pub fn list(data_dir: &Path) -> Result<Vec<PetInfo>, String> {
     Ok(out)
 }
 
+/// v1.10 (#32): return the spritesheet as base64 so the frontend can build a
+/// same-origin Blob (`createImageBitmap`) instead of drawing the cross-origin
+/// asset-protocol URL (which taints the canvas and breaks getImageData).
+pub fn sheet_base64(data_dir: &Path, id: &str) -> Result<String, String> {
+    let info = info_for(data_dir, id)?;
+    let bytes = std::fs::read(&info.spritesheet_path)
+        .map_err(|e| format!("读取 spritesheet 失败: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 /// Resolve one pack by id; errors when missing or invalid.
 pub fn info_for(data_dir: &Path, id: &str) -> Result<PetInfo, String> {
     if !is_valid_id(id) {
@@ -450,6 +461,20 @@ mod tests {
         remove(&data, "r.pet").unwrap();
         assert!(info_for(&data, "r.pet").is_err());
         assert!(remove(&data, "../evil").is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sheet_base64_roundtrips_png_bytes() {
+        let tmp = temp_dir("b64");
+        let src = tmp.join("src");
+        let data = tmp.join("data");
+        write_pack(&src, "b64.pet", "B64", "test");
+        let info = import(&src, &data).unwrap();
+        let b64 = sheet_base64(&data, &info.id).unwrap();
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64).unwrap();
+        assert!(!bytes.is_empty());
+        assert_eq!(&bytes[..4], &[0x89, b'P', b'N', b'G'], "decoded bytes must be the PNG we imported");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
