@@ -5,16 +5,19 @@ import { emit as emitEvent } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore } from "../stores/settings";
 import { useAgentStore } from "../stores/agent";
+import { useMusicStore } from "../stores/music";
 import AppIcon from "./AppIcon.vue";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const settings = useSettingsStore();
 const agent = useAgentStore();
+const music = useMusicStore();
 const agentWorkspace = ref("");
 const petInfo = ref<{ id: string; displayName: string; description: string } | null>(null);
 const pets = ref<{ id: string; displayName: string; description: string }[]>([]);
 const petImporting = ref(false);
 const petError = ref("");
+const musicFolder = ref("");
 
 const version = "v0.1.0";
 const wallpaperUrl = ref("");
@@ -47,6 +50,7 @@ async function load() {
   await agent.refreshStatus();
   agentWorkspace.value = agent.workspaceDir;
   await refreshPets();
+  musicFolder.value = music.folder ?? (await invoke<string | null>("music_get_folder")) ?? "";
 }
 
 async function pickWallpaper() {
@@ -150,6 +154,11 @@ async function applyAgentWorkspace() {
 }
 function onResumeSupervision() {
   void settings.resumeSupervision();
+}
+
+async function chooseMusicFolder() {
+  await music.chooseFolder();
+  musicFolder.value = music.folder ?? "";
 }
 
 async function refreshPets() {
@@ -349,6 +358,17 @@ onMounted(load);
     </section>
 
     <section class="group">
+      <h4>音乐</h4>
+      <div class="row">
+        <span class="label">文件夹</span>
+        <span class="text-input folder-path">{{ musicFolder || "未选择" }}</span>
+      </div>
+      <div class="row">
+        <button class="btn" @click="chooseMusicFolder">选择 / 更换</button>
+      </div>
+    </section>
+
+    <section class="group">
       <h4>Agent</h4>
       <div class="row">
         <span class="label">Provider</span>
@@ -440,6 +460,7 @@ onMounted(load);
 .text-input { flex: 1; min-width: 0; }
 .ta { width: 100%; resize: vertical; }
 .unit { font-size: 11px; color: var(--text-low); }
+.folder-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .app-list {
   max-height: 180px;
   overflow-y: auto;
