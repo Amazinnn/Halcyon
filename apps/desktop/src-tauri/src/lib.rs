@@ -922,6 +922,15 @@ fn set_show_topbar(app: tauri::AppHandle, mode: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Wall-clock seconds between two RFC3339 timestamps (v1.8.2): a focus
+/// round records exact elapsed time even when skipped or when parts of it
+/// were judged distraction/idle.
+fn elapsed_sec(started_at: &str, ended_at: &str) -> Option<i64> {
+    let start = chrono::DateTime::parse_from_rfc3339(started_at).ok()?;
+    let end = chrono::DateTime::parse_from_rfc3339(ended_at).ok()?;
+    Some(end.signed_duration_since(start).num_seconds())
+}
+
 #[tauri::command]
 fn record_focus_session(
     app: tauri::AppHandle,
@@ -1325,7 +1334,6 @@ pub fn run() {
                     serde_json::from_str(event.payload()).unwrap_or_default();
                 let state = v.get("state").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let paused = v.get("paused").and_then(|x| x.as_bool()).unwrap_or(false);
-                let completed = v.get("completed").and_then(|x| x.as_bool()).unwrap_or(false);
                 let app_state = hf.state::<AppState>();
                 *app_state.focus_state.lock().unwrap() = state.clone();
                 let mut ft = app_state.focus_track.lock().unwrap();
@@ -1341,10 +1349,13 @@ pub fn run() {
                         ft.paused = paused;
                     }
                     "rest" => {
-                        if ft.active && completed {
+                        // v1.8.2: any focus-round end (natural completion OR skip)
+                        // records wall-clock elapsed time; distracted/idle periods
+                        // inside the round still count as focus.
+                        if ft.active {
                             let started = ft.session_started_at.clone().unwrap_or_default();
                             let ended = chrono::Local::now().to_rfc3339();
-                            let dur = ft.session_focus_sec.max(1);
+                            let dur = elapsed_sec(&started, &ended).unwrap_or_else(|| ft.session_focus_sec.max(1));
                             let tid = ft.task_id.clone();
                             let store_state = hf.state::<std::sync::Arc<Mutex<storage::Store>>>();
                             match store_state.lock() {
@@ -1441,7 +1452,21 @@ pub fn run() {
 }
 #[cfg(test)]
 mod tests {
-    use super::topbar_visible;
+    use super::{elapsed_sec, topbar_visible};
+
+    #[test]
+    fn elapsed_sec_wall_clock() {
+        assert_eq!(
+            elapsed_sec("2026-08-07T13:43:18+08:00", "2026-08-07T13:45:18+08:00"),
+            Some(120)
+        );
+        assert_eq!(
+            elapsed_sec("2026-08-07T13:43:18+08:00", "2026-08-07T13:43:48+08:00"),
+            Some(30)
+        );
+        assert_eq!(elapsed_sec("", ""), None);
+        assert_eq!(elapsed_sec("bad", "2026-08-07T13:45:18+08:00"), None);
+    }
 
     #[test]
     fn topbar_visibility_modes() {

@@ -143,7 +143,7 @@ export const useUiStore = defineStore("ui", {
     },
     skip() {
       if (this.focusState === "focus") {
-        this.startRest(false); // skipped focus -> rest (no session recorded)
+        this.startRest(true); // v1.8.2: skipped focus still records elapsed focus time
       } else {
         this.startFocus(); // idle or rest -> focus
       }
