@@ -22,6 +22,7 @@ export const useSettingsStore = defineStore("settings", {
     supervisionPaused: false,
     soundEnabled: true,
     showTopbar: "auto" as "auto" | "on" | "off",
+    petBgFade: true,
   }),
   getters: {
     currentTask(state): FocusTask | null {
@@ -41,6 +42,7 @@ export const useSettingsStore = defineStore("settings", {
         supervisionPauseUntil?: number | null;
         soundEnabled?: boolean;
         showTopbar?: string;
+        petBgFade?: boolean;
       }>("get_bootstrap");
       this.tasks = b.tasks ?? [];
       this.currentTaskId = b.currentTaskId ?? null;
@@ -53,6 +55,7 @@ export const useSettingsStore = defineStore("settings", {
       this.supervisionPaused = typeof pu === "number" && pu > Date.now() / 1000;
       this.soundEnabled = !!b.soundEnabled;
       this.showTopbar = (b.showTopbar as "auto" | "on" | "off") ?? "auto";
+      this.petBgFade = !!b.petBgFade;
       this.loaded = true;
     },
     async setFocusDurations(focus: number, rest: number) {
@@ -63,6 +66,10 @@ export const useSettingsStore = defineStore("settings", {
     async setSound(enabled: boolean) {
       await invoke("set_sound_enabled", { enabled });
       this.soundEnabled = enabled;
+    },
+    async setPetBgFade(enabled: boolean) {
+      await invoke("set_pet_bg_fade", { enabled });
+      this.petBgFade = enabled;
     },
     async setShowTopbar(mode: "auto" | "on" | "off") {
       await invoke("set_show_topbar", { mode });

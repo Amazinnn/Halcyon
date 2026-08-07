@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { emit as emitEvent } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore } from "../stores/settings";
 import { useAgentStore } from "../stores/agent";
@@ -10,6 +11,10 @@ const emit = defineEmits<{ (e: "close"): void }>();
 const settings = useSettingsStore();
 const agent = useAgentStore();
 const agentWorkspace = ref("");
+const petInfo = ref<{ id: string; displayName: string; description: string } | null>(null);
+const pets = ref<{ id: string; displayName: string; description: string }[]>([]);
+const petImporting = ref(false);
+const petError = ref("");
 
 const version = "v0.1.0";
 const wallpaperUrl = ref("");
@@ -41,6 +46,7 @@ async function load() {
   whiteText.value = settings.allowedApps.join("\n");
   await agent.refreshStatus();
   agentWorkspace.value = agent.workspaceDir;
+  await refreshPets();
 }
 
 async function pickWallpaper() {
@@ -144,6 +150,53 @@ async function applyAgentWorkspace() {
 }
 function onResumeSupervision() {
   void settings.resumeSupervision();
+}
+
+async function refreshPets() {
+  try {
+    petInfo.value = await invoke<{ id: string; displayName: string; description: string } | null>("pet_active");
+    pets.value = await invoke<{ id: string; displayName: string; description: string }[]>("pet_list_packs");
+  } catch (e) {
+    console.error("[settings] pet list failed", e);
+  }
+}
+
+async function importPetPack() {
+  petError.value = "";
+  const sel = await open({ directory: true });
+  if (!sel) return;
+  petImporting.value = true;
+  try {
+    await invoke("pet_import_pack", { dir: sel });
+    await refreshPets();
+    void emitEvent("pet:changed", {});
+  } catch (e) {
+    petError.value = String(e);
+  } finally {
+    petImporting.value = false;
+  }
+}
+
+async function activatePet(id: string) {
+  petError.value = "";
+  try {
+    await invoke("pet_activate", { id });
+    await refreshPets();
+    void emitEvent("pet:changed", {});
+  } catch (e) {
+    petError.value = String(e);
+  }
+}
+
+async function removePet(id: string) {
+  petError.value = "";
+  try {
+    await invoke("pet_remove_pack", { id });
+    await refreshPets();
+    void emitEvent("pet:changed", {});
+  } catch (e) {
+    petError.value = String(e);
+  }
 }
 
 onMounted(load);
@@ -266,6 +319,34 @@ onMounted(load);
       </div>
     </section>
 
+
+    <section class="group">
+      <h4>宠物</h4>
+      <div class="row">
+        <span class="label">当前</span>
+        <span class="ok">{{ petInfo?.displayName ?? "内置占位" }}</span>
+      </div>
+      <div class="row">
+        <button class="btn" :disabled="petImporting" @click="importPetPack">
+          {{ petImporting ? "导入中…" : "导入宠物包" }}
+        </button>
+      </div>
+      <div v-if="petError" class="err">{{ petError }}</div>
+      <div v-if="pets.length" class="pack-list">
+        <div v-for="p in pets" :key="p.id" class="pack-row">
+          <button class="pack-name" :class="{ active: petInfo?.id === p.id }" @click="activatePet(p.id)">
+            {{ p.displayName }}
+          </button>
+          <button class="mini" title="删除" @click="removePet(p.id)">删除</button>
+        </div>
+      </div>
+      <div class="row">
+        <span class="label">背景淡化</span>
+        <button class="switch" :class="{ on: settings.petBgFade }" @click="settings.setPetBgFade(!settings.petBgFade)">
+          {{ settings.petBgFade ? "开" : "关" }}
+        </button>
+      </div>
+    </section>
 
     <section class="group">
       <h4>Agent</h4>
@@ -395,6 +476,16 @@ onMounted(load);
   cursor: pointer;
 }
 .mini:hover { border-color: var(--accent); color: var(--accent-bright); }
+.err { font-size: 11px; color: var(--err); }
+.pack-list { display: flex; flex-direction: column; gap: 2px; max-height: 140px; overflow-y: auto; }
+.pack-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.pack-name {
+  flex: 1; min-width: 0; text-align: left;
+  border: none; background: transparent; color: var(--text-hi);
+  padding: 4px 8px; border-radius: var(--r-sm); cursor: pointer; font-size: 12px;
+}
+.pack-name:hover { background: var(--accent-wash); color: var(--accent-bright); }
+.pack-name.active { background: var(--accent-wash); color: var(--accent-bright); }
 .about { font-size: 11px; color: var(--text-low); border-top: 1px solid var(--glass-border); padding-top: 8px; }
 .seg { display: flex; gap: 4px; }
 .seg button {

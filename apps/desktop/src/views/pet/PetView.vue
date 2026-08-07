@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { useAgentStore } from "../../stores/agent";
+import { useSettingsStore } from "../../stores/settings";
 import { useUiStore } from "../../stores/ui";
 import { useGridDrag } from "../../composables/useGridDrag";
 
@@ -31,6 +31,13 @@ const ANIMS: Record<string, AnimDef> = {
   error: { row: 5, durations: [140, 140, 140, 140, 140, 140, 140, 240], loop: false }, // failed
 };
 
+const SIZES: Array<[number, number]> = [
+  [1, 1],
+  [1, 2],
+  [2, 1],
+  [2, 2],
+];
+
 interface PetInfo {
   id: string;
   displayName: string;
@@ -40,16 +47,14 @@ interface PetInfo {
 
 const agent = useAgentStore();
 const ui = useUiStore();
+const settingsStore = useSettingsStore();
 const { onPointerDown, onPointerMove, onPointerUp } = useGridDrag("pet");
 
 // ---- pet pack state ----
 const pet = ref<PetInfo | null>(null);
-const packs = ref<PetInfo[]>([]);
 const sheet = ref<HTMLImageElement | null>(null);
 const sheetError = ref("");
-const menuOpen = ref(false);
-const importing = ref(false);
-const importError = ref("");
+const hovered = ref(false);
 
 // ---- sprite playback ----
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -69,6 +74,29 @@ function drawFrame(idx: number) {
   if (!ctx) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(img, col * CELL_W, def.row * CELL_H, CELL_W, CELL_H, 0, 0, canvas.width, canvas.height);
+  if (settingsStore.petBgFade) applyEdgeFade(ctx);
+}
+
+/** Soften the outermost ring so any remnant background blends into the
+ *  wallpaper (optional, controlled by Settings -> petBgFade). */
+function applyEdgeFade(ctx: CanvasRenderingContext2D) {
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+  const f = Math.max(2, Math.round(Math.min(w, h) * 0.05));
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  for (let y = 0; y < h; y++) {
+    const vf = Math.max(y < f ? 1 - y / f : 0, y >= h - f ? 1 - (h - 1 - y) / f : 0);
+    for (let x = 0; x < w; x++) {
+      const hf = Math.max(x < f ? 1 - x / f : 0, x >= w - f ? 1 - (w - 1 - x) / f : 0);
+      const t = Math.max(vf, hf);
+      if (t > 0) {
+        const i = (y * w + x) * 4;
+        d[i + 3] = Math.round(d[i + 3] * (1 - t * 0.8));
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
 }
 
 function scheduleNext(idx: number) {
@@ -152,55 +180,39 @@ async function refresh() {
     sheet.value = null;
   }
   try {
-    packs.value = await invoke<PetInfo[]>("pet_list_packs");
+    const b = await invoke<{ grid?: Record<string, { cols: number; rows: number }> }>("get_bootstrap");
+    const g = b.grid?.pet;
+    if (g) {
+      const i = SIZES.findIndex(([c, r]) => c === g.cols && r === g.rows);
+      if (i >= 0) sizeIdx = i;
+    }
   } catch (e) {
-    console.error("[pet] list packs failed", e);
+    console.error("[pet] bootstrap failed", e);
   }
 }
 
-async function importPack() {
-  importError.value = "";
-  const sel = await open({ directory: true });
-  if (!sel) return;
-  importing.value = true;
-  try {
-    const info = await invoke<PetInfo>("pet_import_pack", { dir: sel });
-    await loadSheet(info);
-    await refresh();
-    menuOpen.value = false;
-  } catch (e) {
-    importError.value = String(e);
-  } finally {
-    importing.value = false;
-  }
-}
-
-async function activatePack(id: string) {
-  try {
-    const info = await invoke<PetInfo>("pet_activate", { id });
-    await loadSheet(info);
-    menuOpen.value = false;
-  } catch (e) {
-    sheetError.value = String(e);
-  }
-}
-
-// ---- resize handle: 1x1 -> 1x2 -> 2x1 -> 2x2 ----
-const SIZES: Array<[number, number]> = [
-  [1, 1],
-  [1, 2],
-  [2, 1],
-  [2, 2],
-];
+// ---- resize handle: 1x1 -> 1x2 -> 2x1 -> 2x2 (preview while held, commit on release) ----
 let sizeIdx = 0;
+let prevSizeIdx = 0;
 let dragAccum = 0;
 let resizePointer = -1;
+let resizeChanged = false;
+
+function showResizePreview() {
+  const [cols, rows] = SIZES[sizeIdx];
+  void invoke("pet_resize_preview", { visible: true, cols, rows }).catch((err) =>
+    console.error("[pet] resize preview failed", err),
+  );
+}
 
 function onResizePointerDown(e: PointerEvent) {
   if (resizePointer !== -1) return;
   resizePointer = e.pointerId;
   dragAccum = 0;
+  resizeChanged = false;
+  prevSizeIdx = sizeIdx;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  showResizePreview();
 }
 
 function onResizePointerMove(e: PointerEvent) {
@@ -208,17 +220,25 @@ function onResizePointerMove(e: PointerEvent) {
   dragAccum += Math.abs(e.movementX) + Math.abs(e.movementY);
   if (dragAccum > 40) {
     dragAccum = 0;
+    resizeChanged = true;
     sizeIdx = (sizeIdx + 1) % SIZES.length;
-    const [cols, rows] = SIZES[sizeIdx];
-    void invoke("resize_window", { label: "pet", cols, rows }).catch((err) =>
-      console.error("[pet] resize failed", err),
-    );
+    showResizePreview();
   }
 }
 
-function onResizePointerUp(e: PointerEvent) {
+async function onResizePointerUp(e: PointerEvent) {
   if (e.pointerId !== resizePointer) return;
   resizePointer = -1;
+  void invoke("pet_resize_preview", { visible: false }).catch(() => undefined);
+  if (!resizeChanged) return;
+  const [cols, rows] = SIZES[sizeIdx];
+  try {
+    await invoke("resize_window", { label: "pet", cols, rows });
+  } catch (err) {
+    // Conflict: the window stayed at its original size; revert the cycle state.
+    sizeIdx = prevSizeIdx;
+    console.error("[pet] resize rejected", err);
+  }
 }
 
 // ---- bubble / chat ----
@@ -232,6 +252,7 @@ const bubbleVisible = computed(() => {
 });
 
 function toggleChat() {
+  hovered.value = false;
   void emit("ui:toggle_chat", {});
 }
 
@@ -251,7 +272,10 @@ function fitCanvas() {
   drawFrame(frameIdx.value);
 }
 
+let unlistenPet: (() => void) | null = null;
+
 onMounted(async () => {
+  unlistenPet = await listen("pet:changed", () => void refresh());
   await refresh();
   resizeObserver = new ResizeObserver(() => fitCanvas());
   if (canvasRef.value?.parentElement) resizeObserver.observe(canvasRef.value.parentElement);
@@ -259,18 +283,28 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  unlistenPet?.();
   if (timer) clearTimeout(timer);
   resizeObserver?.disconnect();
 });
 </script>
 
 <template>
-  <div class="pet-window" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp">
+  <div
+    class="pet-window"
+    @pointerdown="onPointerDown"
+    @pointermove="onPointerMove"
+    @pointerup="onPointerUp"
+    @mouseenter="hovered = true"
+    @mouseleave="hovered = false"
+  >
     <div v-if="bubbleVisible" class="bubble" :class="`prio-${agent.bubble?.priority}`" data-no-drag>
       {{ agent.bubble?.text }}
     </div>
 
-    <div class="pet-stage" data-no-drag>
+    <div v-if="hovered && pet?.displayName" class="pet-name" data-no-drag>{{ pet.displayName }}</div>
+
+    <div class="pet-stage">
       <canvas
         v-if="sheet"
         ref="canvasRef"
@@ -289,34 +323,7 @@ onBeforeUnmount(() => {
       <div v-if="sheetError" class="sheet-err">{{ sheetError }}</div>
     </div>
 
-    <div class="pet-bar" data-no-drag>
-      <span class="pet-name">{{ pet?.displayName ?? agent.state }}</span>
-      <button class="open-btn" @click="toggleChat">对话</button>
-      <button class="open-btn" @click="menuOpen = !menuOpen">宠物</button>
-    </div>
-
-    <div v-if="menuOpen" class="pet-menu" data-no-drag @click.stop>
-      <div class="menu-title">
-        宠物包
-        <button class="link-btn" :disabled="importing" @click="importPack">
-          {{ importing ? "导入中…" : "导入宠物包" }}
-        </button>
-      </div>
-      <div v-if="importError" class="sheet-err">{{ importError }}</div>
-      <ul v-if="packs.length" class="pack-list">
-        <li v-for="p in packs" :key="p.id">
-          <button
-            class="pack-item"
-            :class="{ active: pet?.id === p.id }"
-            @click="activatePack(p.id)"
-          >
-            {{ p.displayName }}
-            <span class="pack-id">{{ p.id }}</span>
-          </button>
-        </li>
-      </ul>
-      <p v-else class="empty">尚未导入宠物包，点击「导入宠物包」选择包含 pet.json 与 spritesheet 的文件夹。</p>
-    </div>
+    <button v-if="hovered && !ui.chatOpen" class="chat-btn" data-no-drag @click="toggleChat">对话</button>
 
     <div
       class="resize-handle"
@@ -324,7 +331,7 @@ onBeforeUnmount(() => {
       @pointerdown="onResizePointerDown"
       @pointermove="onResizePointerMove"
       @pointerup="onResizePointerUp"
-      title="拖动调整桌宠大小（1×1 / 1×2 / 2×1 / 2×2）"
+      title="长按并拖动调整桌宠大小（1×1 / 1×2 / 2×1 / 2×2）"
     ></div>
   </div>
 </template>
@@ -335,22 +342,19 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
+  justify-content: center;
   box-sizing: border-box;
   cursor: grab;
   overflow: hidden;
 }
 .pet-stage {
-  flex: 1;
   width: 100%;
-  min-height: 0;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 8px;
+  padding: min(8%, 8px);
   box-sizing: border-box;
   position: relative;
 }
@@ -384,55 +388,25 @@ onBeforeUnmount(() => {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 5;
 }
 .bubble.prio-high, .bubble.prio-critical { border: 2px solid var(--warn); }
-.pet-bar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 4px 8px;
-  width: 100%;
-  box-sizing: border-box;
-  flex-wrap: wrap;
+.pet-name {
+  position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: var(--text-hi); background: var(--glass-strong);
+  border: 1px solid var(--glass-border); border-radius: var(--r-pill);
+  padding: 2px 10px; max-width: 70%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; z-index: 6;
 }
-.open-btn {
-  border: none; border-radius: var(--r-pill);
-  padding: 4px 14px; font-size: 12px; cursor: pointer;
-  background: var(--glass-strong); color: var(--accent-bright);
-  border: 1px solid var(--glass-border);
+.chat-btn {
+  position: absolute; right: 12px; bottom: 24px;
+  border: 1px solid var(--glass-border); border-radius: var(--r-pill);
+  padding: 4px 12px; font-size: 12px; cursor: pointer;
+  background: var(--glass-strong); color: var(--accent-bright); z-index: 6;
 }
-.pet-name { font-size: 10px; color: var(--text-low); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-btn:hover { border-color: var(--accent); }
 .sheet-err {
   position: absolute; bottom: 4px; left: 8px; right: 8px;
   font-size: 10px; color: var(--err);
   text-align: center; word-break: break-all;
 }
-.pet-menu {
-  position: absolute; bottom: 40px; right: 8px;
-  z-index: 12; width: 220px;
-  background: var(--glass-strong); border: 1px solid var(--glass-border);
-  border-radius: var(--r-md); padding: 8px;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
-}
-.menu-title {
-  display: flex; align-items: center; justify-content: space-between;
-  font-size: 12px; color: var(--text-hi); margin-bottom: 6px;
-}
-.link-btn {
-  border: none; background: transparent; color: var(--accent-bright);
-  font-size: 12px; cursor: pointer; padding: 2px 6px;
-}
-.link-btn:disabled { opacity: 0.5; cursor: default; }
-.pack-list { list-style: none; margin: 0; padding: 0; max-height: 140px; overflow-y: auto; }
-.pack-item {
-  width: 100%; text-align: left;
-  border: none; background: transparent; color: var(--text-hi);
-  padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer;
-  font-size: 12px;
-}
-.pack-item:hover { background: var(--accent-wash); color: var(--accent-bright); }
-.pack-item.active { background: var(--accent-wash); color: var(--accent-bright); }
-.pack-id { font-size: 10px; color: var(--text-low); margin-left: 6px; }
-.empty { font-size: 11px; color: var(--text-low); margin: 4px 0; }
 .resize-handle {
   position: absolute; right: 2px; bottom: 2px;
   width: 14px; height: 14px;
