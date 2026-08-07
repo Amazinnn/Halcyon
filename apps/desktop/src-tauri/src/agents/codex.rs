@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::Sender;
 
-use super::{AgentProvider, AgentThreadInfo, AGENT_ID};
+use super::{AgentProvider, AgentThreadInfo, TurnDone, AGENT_ID};
 use crate::event_bus::CoreEvent;
 use crate::agents::mock::state_to_animation;
 
@@ -30,6 +30,7 @@ struct Shared {
     session_id: String,
     current_thread: Mutex<Option<String>>,
     current_turn: Mutex<Option<String>>,
+    last_message: Mutex<String>,
 }
 
 pub struct CodexProvider {
@@ -40,6 +41,7 @@ pub struct CodexProvider {
     stdin: Option<Mutex<ChildStdin>>,
     pending: Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Value>>>>,
     next_id: AtomicU64,
+    turn_done: Arc<tokio::sync::broadcast::Sender<TurnDone>>,
 }
 
 /// Latest installed `codex.exe` under %LOCALAPPDATA%\OpenAI\Codex\bin\*\.
@@ -104,11 +106,13 @@ impl CodexProvider {
                 session_id,
                 current_thread: Mutex::new(None),
                 current_turn: Mutex::new(None),
+                last_message: Mutex::new(String::new()),
             }),
             child: None,
             stdin: None,
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
+            turn_done: Arc::new(tokio::sync::broadcast::channel::<TurnDone>(64).0),
         }
     }
 
@@ -164,12 +168,13 @@ impl CodexProvider {
         let pending = self.pending.clone();
         let tx = self.tx.clone();
         let shared = self.shared.clone();
+        let turn_done = self.turn_done.clone();
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 let Ok(line) = line else { break };
                 let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
-                dispatch_message(&tx, &shared, &pending, msg);
+                dispatch_message(&tx, &shared, &pending, &turn_done, msg);
             }
         });
         self.child = Some(child);
@@ -255,6 +260,10 @@ impl CodexProvider {
         let _ = self.tx.send(CoreEvent::AgentEvent(env));
     }
 
+    /// Subscribe to turn-completion signals (M4 workflow agent nodes).
+    pub fn subscribe_turn_done(&self) -> tokio::sync::broadcast::Receiver<TurnDone> {
+        self.turn_done.subscribe()
+    }
 }
 
 impl Drop for CodexProvider {
@@ -385,6 +394,7 @@ fn dispatch_message(
     tx: &Sender<CoreEvent>,
     shared: &Arc<Shared>,
     pending: &Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Value>>>>,
+    turn_done: &Arc<tokio::sync::broadcast::Sender<TurnDone>>,
     msg: Value,
 ) {
     if let Some(id) = msg.get("id").and_then(Value::as_u64) {
@@ -409,7 +419,7 @@ fn dispatch_message(
             }
             emit_status(tx, shared, "thinking");
         }
-        "turn/completed" => handle_turn_completed(tx, shared, &params),
+        "turn/completed" => handle_turn_completed(tx, shared, turn_done, &params),
         "thread/started" => {
             if let Some(tid) = params.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str) {
                 *shared.current_thread.lock().unwrap() = Some(tid.to_string());
@@ -462,7 +472,6 @@ fn tool_summary(item: &Value, fallback: &str) -> String {
     }
     fallback.to_string()
 }
-
 fn handle_item_started(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value) {
     let Some(item) = params.get("item") else { return };
     match item.get("type").and_then(Value::as_str) {
@@ -515,8 +524,26 @@ fn handle_agent_delta(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value) {
     }
 }
 
-fn handle_turn_completed(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value) {
+fn handle_turn_completed(
+    tx: &Sender<CoreEvent>,
+    shared: &Shared,
+    turn_done: &Arc<tokio::sync::broadcast::Sender<TurnDone>>,
+    params: &Value,
+) {
     *shared.current_turn.lock().unwrap() = None;
+    let thread_id = params
+        .get("threadId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(|t| t.get("threadId"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| shared.current_thread.lock().unwrap().clone());
+    let result = shared.last_message.lock().unwrap().clone();
     let status = params
         .get("turn")
         .and_then(|t| t.get("status"))
@@ -527,11 +554,13 @@ fn handle_turn_completed(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value
             emit_status(tx, shared, "success");
             emit_envelope(tx, shared, json!({ "type": "session.completed", "outcome": "success" }));
             emit_status(tx, shared, "idle");
+            let _ = turn_done.send(TurnDone { thread_id, status: "completed".into(), result: Some(result) });
         }
         "interrupted" => {
             emit_status(tx, shared, "cancelled");
             emit_envelope(tx, shared, json!({ "type": "session.completed", "outcome": "cancelled" }));
             emit_status(tx, shared, "idle");
+            let _ = turn_done.send(TurnDone { thread_id, status: "interrupted".into(), result: Some(result) });
         }
         _ => {
             let message = params
@@ -548,10 +577,10 @@ fn handle_turn_completed(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value
                 priority: "critical".to_string(),
             });
             emit_status(tx, shared, "idle");
+            let _ = turn_done.send(TurnDone { thread_id, status: "error".into(), result: Some(result) });
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -627,6 +656,7 @@ mod tests {
             session_id: "s1".into(),
             current_thread: Mutex::new(None),
             current_turn: Mutex::new(None),
+            last_message: Mutex::new(String::new()),
         });
         let mut rx = tx.subscribe();
         handle_agent_delta(
@@ -647,11 +677,15 @@ mod tests {
             session_id: "s1".into(),
             current_thread: Mutex::new(None),
             current_turn: Mutex::new(Some("u1".into())),
+            last_message: Mutex::new(String::new()),
         });
+        let (td_tx, _td_rx) = tokio::sync::broadcast::channel::<TurnDone>(16);
+        let td = Arc::new(td_tx);
         let mut rx = tx.subscribe();
         handle_turn_completed(
             &tx,
             &shared,
+            &td,
             &json!({ "threadId": "t", "turn": { "id": "u1", "status": "failed", "error": { "message": "boom" } } }),
         );
         assert!(shared.current_turn.lock().unwrap().is_none());

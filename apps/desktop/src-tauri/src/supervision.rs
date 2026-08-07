@@ -17,6 +17,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINF
 use windows::Win32::System::SystemInformation::GetTickCount;
 
 use crate::activity;
+use crate::event_bus::CoreEvent;
 use crate::storage::Store;
 use crate::AppState;
 
@@ -155,6 +156,18 @@ fn fire(
         "supervision:alert",
         serde_json::json!({ "rule": rule, "app": app_name, "level": level, "text": text }),
     );
+    // M4/ADR-0012: also route through the core event bus so the workflow
+    // engine can trigger `supervision_alert` workflows (frontend behavior
+    // unchanged — the relay re-emits the same window event).
+    let _ = app
+        .state::<AppState>()
+        .events_tx
+        .send(CoreEvent::SupervisionAlert {
+            rule: rule.to_string(),
+            app: app_name.map(str::to_string),
+            level,
+            text: text.to_string(),
+        });
     if let Ok(s) = store.lock() {
         let _ = s.record_supervision_event(rule, app_name, level);
     }

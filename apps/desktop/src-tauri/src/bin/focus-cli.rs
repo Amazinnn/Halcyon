@@ -110,6 +110,7 @@ fn print_help() {
     println!("  focus-cli stats today|week|sessions|dashboard");
     println!("  focus-cli desktop layout");
     println!("  focus-cli apps now|visible");
+    println!("  focus-cli workflow list|run <id>|runs <id>|cancel <id>");
     println!("  focus-cli ping");
     println!("  focus-cli --agent-thread <thread_id> <command>  （Agent 专用：白名单+审计）");
 }

@@ -186,6 +186,12 @@ fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Va
             None => json!({ "process": null, "title": null }),
         },
         ["apps", "visible"] => json!({ "apps": crate::apps::list_running_apps() }),
+        // M4 workflow engine (ADR-0012): local control only; workflow commands
+        // are intentionally NOT in the agent whitelist (anti-loop rule).
+        ["workflow", ..] => match crate::workflow::cli_handle(&app, &parts) {
+            Ok(v) => v,
+            Err(e) => json!({ "error": e }),
+        },
         _ => json!({ "error": format!("unknown command: {cmd}") }),
     };
     if let Some(tid) = agent_thread {

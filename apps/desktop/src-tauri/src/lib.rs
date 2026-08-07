@@ -21,6 +21,8 @@ mod shortcuts;
 mod storage;
 mod supervision;
 mod wallpaper;
+mod workflow;
+mod workflow_engine;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -50,6 +52,8 @@ pub struct AppState {
     pub events_tx: tokio::sync::broadcast::Sender<CoreEvent>,
     pub agent: Mutex<agents::AgentRuntime>,
     pub agent_fallback: AtomicBool,
+    /// M4 workflow engine app layer (ADR-0012), initialized after the store.
+    pub workflow: Mutex<Option<std::sync::Arc<workflow::WorkflowManager>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -574,22 +578,35 @@ fn collapse(app: tauri::AppHandle, state: tauri::State<'_, AppState>, label: Str
 }
 
 #[tauri::command]
-fn restore(app: tauri::AppHandle, state: tauri::State<'_, AppState>, label: String) -> Result<(), String> {
+fn restore(app: tauri::AppHandle, _state: tauri::State<'_, AppState>, label: String) -> Result<(), String> {
+    restore_window(&app, &label)
+}
+
+/// Show + position a float window back on its grid slot (shared by the
+/// restore command and the M4 `show_window` node).
+pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
     {
+        let state = app.state::<AppState>();
         let mut settings = state.settings.lock().unwrap();
-        settings.collapsed.retain(|c| c != &label);
+        settings.collapsed.retain(|c| c != label);
         let _ = settings.save(&state.data_dir);
     }
+    let state = app.state::<AppState>();
     let (w, h) = *state.screen.lock().unwrap();
     let gm = GridManager { screen_w: w, screen_h: h };
-    let rect = state.settings.lock().unwrap().grid.get(&label).copied().unwrap_or(GridRect { col: 0, row: 0, cols: 2, rows: 2 });
-    if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.set_always_on_top(*state.settings.lock().unwrap().topmost.get(&label).unwrap_or(&true));
+    let default_rect = if label == "workflow" {
+        GridRect { col: 4, row: 2, cols: 4, rows: 4 }
+    } else {
+        GridRect { col: 0, row: 0, cols: 2, rows: 2 }
+    };
+    let rect = state.settings.lock().unwrap().grid.get(label).copied().unwrap_or(default_rect);
+    if let Some(win) = app.get_webview_window(label) {
+        let _ = win.set_always_on_top(*state.settings.lock().unwrap().topmost.get(label).unwrap_or(&true));
         let _ = win.show();
     }
-    position_window(&app, &label, &rect, &gm);
-    emit_visibility(&app, &label, true);
-    raise_topbar(&app);
+    position_window(app, label, &rect, &gm);
+    emit_visibility(app, label, true);
+    raise_topbar(app);
     Ok(())
 }
 
@@ -823,7 +840,7 @@ fn set_acrylic(app: tauri::AppHandle, state: tauri::State<'_, AppState>, enabled
         s.acrylic_enabled = enabled;
         let _ = s.save(&state.data_dir);
     }
-    for label in ["chat", "stats", "music", "pet"] {
+    for label in ["chat", "stats", "music", "pet", "workflow"] {
         if let Some(w) = app.get_webview_window(label) {
             apply_acrylic_opt(&w, enabled);
         }
@@ -1080,6 +1097,15 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .resizable(false)
         .build()?;
 
+    tauri::WebviewWindowBuilder::new(app, "workflow", url.clone())
+        .title("工作流")
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .build()?;
+
     let overlay = tauri::WebviewWindowBuilder::new(app, "grid-overlay", url.clone())
         .title("Grid Overlay")
         .fullscreen(true)
@@ -1171,7 +1197,7 @@ pub(crate) fn raise_topbar(app: &tauri::AppHandle) {
 /// floats are left untouched (no re-position).
 fn sync_collapsed(app: &tauri::AppHandle, state: &AppState) {
     let collapsed = state.settings.lock().unwrap().collapsed.clone();
-    for label in ["chat", "stats", "music", "pet"] {
+    for label in ["chat", "stats", "music", "pet", "workflow"] {
         if collapsed.contains(&label.to_string()) {
             if let Some(w) = app.get_webview_window(label) {
                 let _ = w.hide();
@@ -1185,7 +1211,7 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
     let gm = GridManager { screen_w: w, screen_h: h };
     let settings = state.settings.lock().unwrap();
 
-    for label in ["chat", "stats", "music", "pet"] {
+    for label in ["chat", "stats", "music", "pet", "workflow"] {
         if let Some(rect) = settings.grid.get(label) {
             position_window(&app.handle(), label, rect, &gm);
         }
@@ -1271,6 +1297,7 @@ pub fn run() {
                     events_tx.clone(),
                 )))),
                 agent_fallback: AtomicBool::new(false),
+                workflow: Mutex::new(None),
             };
             app.manage(state);
             rebuild_agent_runtime(&app.handle());
@@ -1291,7 +1318,7 @@ pub fn run() {
 
             // frosted glass on floating windows (respects settings toggle)
             let acrylic_enabled = app.state::<AppState>().settings.lock().unwrap().acrylic_enabled;
-            for label in ["chat", "stats", "music", "pet", "topbar"] {
+            for label in ["chat", "stats", "music", "pet", "workflow", "topbar"] {
                 if let Some(w) = app.get_webview_window(label) {
                     apply_acrylic_opt(&w, acrylic_enabled);
                 }
@@ -1329,6 +1356,29 @@ pub fn run() {
 
             // v1.5: local CLI control plane (focus-cli)
             cli::spawn(app_handle.clone(), store.clone(), data_dir_clone);
+
+            // M4 workflow engine (ADR-0012): manager + scheduler + bus hooks
+            {
+                let wm =
+                    std::sync::Arc::new(workflow::WorkflowManager::new(app_handle.clone(), store.clone()));
+                *app_handle.state::<AppState>().workflow.lock().unwrap() = Some(wm.clone());
+                let wm_tick = wm.clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(workflow::SCHEDULER_TICK_SEC));
+                    wm_tick.scheduler_tick();
+                });
+                let wm_events = wm.clone();
+                let mut rx_wf = tx.subscribe();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        match rx_wf.recv().await {
+                            Ok(ev) => wm_events.on_core_event(&ev),
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                });
+            }
             let tx_probe = tx.clone();
             activity::spawn_probe(tx_probe, store.clone());
             supervision::spawn(app_handle.clone(), store);
@@ -1382,8 +1432,13 @@ pub fn run() {
                     serde_json::from_str(event.payload()).unwrap_or_default();
                 let state = v.get("state").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let paused = v.get("paused").and_then(|x| x.as_bool()).unwrap_or(false);
+                let completed = v.get("completed").and_then(|x| x.as_bool()).unwrap_or(false);
                 let app_state = hf.state::<AppState>();
                 *app_state.focus_state.lock().unwrap() = state.clone();
+                // M4/ADR-0012: focus-end trigger via the core event bus
+                let _ = app_state
+                    .events_tx
+                    .send(CoreEvent::FocusStateChanged { state: state.clone(), completed });
                 let mut ft = app_state.focus_track.lock().unwrap();
                 match state.as_str() {
                     "focus" => {
@@ -1497,6 +1552,16 @@ pub fn run() {
             resize_preview,
             set_pet_bg_fade,
             resize_window,
+            workflow::characters_list,
+            workflow::workflow_list,
+            workflow::workflow_save,
+            workflow::workflow_delete,
+            workflow::workflow_run,
+            workflow::workflow_cancel,
+            workflow::workflow_copy,
+            workflow::workflow_runs,
+            workflow::workflow_cleanup_threads,
+            workflow::workflow_automation_threads,
             quit_app
         ])
         .run(tauri::generate_context!())

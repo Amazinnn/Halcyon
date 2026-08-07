@@ -2,6 +2,8 @@
 //! Full product schema (design doc §15) is intentionally deferred.
 
 use rusqlite::{params, Connection};
+use rusqlite::OptionalExtension;
+use crate::workflow_engine::model::WorkflowDef;
 use std::path::Path;
 
 pub struct Store {
@@ -150,6 +152,53 @@ impl Store {
             "INSERT OR IGNORE INTO schema_migrations (name, applied_at)
              VALUES ('0004_agent_cli_audit', datetime('now'))",
             [],
+        )?;
+
+        // 0005: M4 workflow engine (ADR-0012) — characters / workflows / runs
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS characters (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                persona TEXT NOT NULL DEFAULT '',
+                pet_pack_id TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workflows (
+                id TEXT PRIMARY KEY,
+                character_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                trigger TEXT NOT NULL DEFAULT 'manual',
+                schedule_type TEXT,
+                interval_minutes INTEGER,
+                daily_time TEXT,
+                guard TEXT NOT NULL DEFAULT 'none',
+                nodes_json TEXT NOT NULL DEFAULT '[]',
+                edges_json TEXT NOT NULL DEFAULT '[]',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                next_run_at INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workflow_runs (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                triggered_by TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                status TEXT NOT NULL DEFAULT 'running',
+                error TEXT,
+                node_log TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE IF NOT EXISTS automation_threads (
+                thread_id TEXT PRIMARY KEY,
+                character_id TEXT NOT NULL,
+                workflow_id TEXT,
+                created_at INTEGER NOT NULL,
+                hidden INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT OR IGNORE INTO schema_migrations (name, applied_at)
+                VALUES ('0005_m4_workflow_engine', datetime('now'));
+            ",
         )?;
         Ok(())
     }
@@ -488,6 +537,258 @@ impl Store {
     }
 }
 
+// ---- M4 workflow engine (ADR-0012) ----
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CharacterRow {
+    pub id: String,
+    pub name: String,
+    pub persona: String,
+    pub pet_pack_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRunRow {
+    pub id: String,
+    pub workflow_id: String,
+    pub triggered_by: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub status: String,
+    pub error: Option<String>,
+    pub node_log: String,
+}
+
+impl Store {
+    // ---- characters ----
+
+    pub fn list_characters(&self) -> rusqlite::Result<Vec<CharacterRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, persona, pet_pack_id FROM characters ORDER BY created_at, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(CharacterRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                persona: r.get(2)?,
+                pet_pack_id: r.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_character(&self, id: &str) -> rusqlite::Result<Option<CharacterRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, persona, pet_pack_id FROM characters WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |r| {
+            Ok(CharacterRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                persona: r.get(2)?,
+                pet_pack_id: r.get(3)?,
+            })
+        })?;
+        rows.next().transpose()
+    }
+
+    pub fn insert_character(&self, row: &CharacterRow) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO characters (id, name, persona, pet_pack_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now','localtime'))",
+            params![row.id, row.name, row.persona, row.pet_pack_id],
+        )?;
+        Ok(())
+    }
+
+    /// Lazy-create a character for a pet pack; returns the existing id when
+    /// the pack already has one (ADR-0012: one character per imported pet).
+    pub fn ensure_character(&self, pet_pack_id: &str, name: &str) -> rusqlite::Result<String> {
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM characters WHERE pet_pack_id = ?1",
+                params![pet_pack_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        let id = format!("char-{}", crate::workflow::new_id());
+        let persona = format!("你是「{name}」的桌面角色助手（Focus 桌宠人格）。请用简洁中文回答，围绕帮助用户保持专注、整理任务与状态自检。");
+        self.insert_character(&CharacterRow {
+            id: id.clone(),
+            name: name.to_string(),
+            persona,
+            pet_pack_id: Some(pet_pack_id.to_string()),
+        })?;
+        Ok(id)
+    }
+
+    // ---- workflows ----
+
+    pub fn list_workflows(&self) -> rusqlite::Result<Vec<WorkflowDef>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, character_id, name, trigger, schedule_type, interval_minutes,
+                    daily_time, guard, nodes_json, edges_json, enabled, next_run_at
+             FROM workflows ORDER BY created_at, id",
+        )?;
+        let rows = stmt.query_map([], |r| row_to_workflow(r))?;
+        rows.collect()
+    }
+
+    pub fn get_workflow(&self, id: &str) -> rusqlite::Result<Option<WorkflowDef>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, character_id, name, trigger, schedule_type, interval_minutes,
+                    daily_time, guard, nodes_json, edges_json, enabled, next_run_at
+             FROM workflows WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |r| row_to_workflow(r))?;
+        rows.next().transpose()
+    }
+
+    pub fn save_workflow(&self, wf: &WorkflowDef) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO workflows (id, character_id, name, trigger, schedule_type,
+                                    interval_minutes, daily_time, guard, nodes_json,
+                                    edges_json, enabled, next_run_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now','localtime'), datetime('now','localtime'))
+             ON CONFLICT(id) DO UPDATE SET
+               character_id=excluded.character_id, name=excluded.name, trigger=excluded.trigger,
+               schedule_type=excluded.schedule_type, interval_minutes=excluded.interval_minutes,
+               daily_time=excluded.daily_time, guard=excluded.guard, nodes_json=excluded.nodes_json,
+               edges_json=excluded.edges_json, enabled=excluded.enabled, next_run_at=excluded.next_run_at,
+               updated_at=datetime('now','localtime')",
+            params![
+                wf.id,
+                wf.character_id,
+                wf.name,
+                wf.trigger,
+                wf.schedule_type,
+                wf.interval_minutes,
+                wf.daily_time,
+                wf.guard,
+                serde_json::to_string(&wf.nodes).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&wf.edges).unwrap_or_else(|_| "[]".into()),
+                if wf.enabled { 1 } else { 0 },
+                wf.next_run_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_workflow(&self, id: &str) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // ---- workflow runs ----
+
+    pub fn insert_workflow_run(
+        &self,
+        id: &str,
+        workflow_id: &str,
+        triggered_by: &str,
+    ) -> rusqlite::Result<()> {
+        let now = crate::workflow_engine::model::now_ts();
+        self.conn.execute(
+            "INSERT INTO workflow_runs (id, workflow_id, triggered_by, started_at, status)
+             VALUES (?1, ?2, ?3, ?4, 'running')",
+            params![id, workflow_id, triggered_by, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_workflow_run(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<&str>,
+        node_log: &str,
+    ) -> rusqlite::Result<()> {
+        let now = crate::workflow_engine::model::now_ts();
+        self.conn.execute(
+            "UPDATE workflow_runs SET finished_at = ?2, status = ?3, error = ?4, node_log = ?5
+             WHERE id = ?1",
+            params![id, now, status, error, node_log],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_workflow_runs(&self, workflow_id: &str, limit: i64) -> rusqlite::Result<Vec<WorkflowRunRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workflow_id, triggered_by, started_at, finished_at, status, error, node_log
+             FROM workflow_runs WHERE workflow_id = ?1 ORDER BY started_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![workflow_id, limit], |r| {
+            Ok(WorkflowRunRow {
+                id: r.get(0)?,
+                workflow_id: r.get(1)?,
+                triggered_by: r.get(2)?,
+                started_at: r.get(3)?,
+                finished_at: r.get(4)?,
+                status: r.get(5)?,
+                error: r.get(6)?,
+                node_log: r.get(7)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    // ---- automation threads ----
+
+    pub fn record_automation_thread(
+        &self,
+        thread_id: &str,
+        character_id: &str,
+        workflow_id: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let now = crate::workflow_engine::model::now_ts();
+        self.conn.execute(
+            "INSERT OR IGNORE INTO automation_threads (thread_id, character_id, workflow_id, created_at, hidden)
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            params![thread_id, character_id, workflow_id, now],
+        )?;
+        Ok(())
+    }
+
+    /// Thread ids marked as automation and not hidden (used to annotate the
+    /// chat thread list; hidden threads are filtered out).
+    pub fn visible_automation_thread_ids(&self) -> rusqlite::Result<std::collections::HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT thread_id FROM automation_threads WHERE hidden = 0")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    pub fn hide_automation_threads(&self) -> rusqlite::Result<()> {
+        self.conn.execute("UPDATE automation_threads SET hidden = 1 WHERE hidden = 0", [])?;
+        Ok(())
+    }
+}
+
+fn row_to_workflow(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowDef> {
+    let nodes_json: String = r.get(8)?;
+    let edges_json: String = r.get(9)?;
+    let enabled: i64 = r.get(10)?;
+    Ok(WorkflowDef {
+        id: r.get(0)?,
+        character_id: r.get(1)?,
+        name: r.get(2)?,
+        trigger: r.get(3)?,
+        schedule_type: r.get(4)?,
+        interval_minutes: r.get(5)?,
+        daily_time: r.get(6)?,
+        guard: r.get(7)?,
+        nodes: serde_json::from_str(&nodes_json).unwrap_or_default(),
+        edges: serde_json::from_str(&edges_json).unwrap_or_default(),
+        enabled: enabled != 0,
+        next_run_at: r.get(11)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,6 +879,59 @@ mod tests {
         let sessions = s.recent_sessions(5).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].duration_sec, 1500);
+    }
+
+    #[test]
+    fn workflow_crud_runs_and_automation_threads() {
+        use crate::workflow_engine::model::{EdgeDef, NodeDef, WorkflowDef};
+        let s = temp_store();
+        let cid = s.ensure_character("pet-1", "测试宠").unwrap();
+        let c = s.get_character(&cid).unwrap().unwrap();
+        assert_eq!(c.pet_pack_id.as_deref(), Some("pet-1"));
+        assert!(c.persona.contains("测试宠"));
+        // ensure is idempotent
+        let cid2 = s.ensure_character("pet-1", "测试宠").unwrap();
+        assert_eq!(cid, cid2);
+        assert_eq!(s.list_characters().unwrap().len(), 1);
+
+        let wf = WorkflowDef {
+            id: "wf1".into(),
+            character_id: cid.clone(),
+            name: "测试".into(),
+            trigger: "manual".into(),
+            schedule_type: None,
+            interval_minutes: None,
+            daily_time: None,
+            guard: "none".into(),
+            nodes: vec![
+                NodeDef { id: "n1".into(), kind: "bubble".into(), params: serde_json::json!({"text":"hi"}), x: 0.0, y: 0.0 },
+            ],
+            edges: vec![EdgeDef { id: "e1".into(), source: "n1".into(), source_handle: "out".into(), target: "n1".into() }],
+            enabled: true,
+            next_run_at: None,
+        };
+        s.save_workflow(&wf).unwrap();
+        let list = s.list_workflows().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].nodes.len(), 1);
+        let got = s.get_workflow("wf1").unwrap().unwrap();
+        assert_eq!(got.name, "测试");
+
+        s.insert_workflow_run("r1", "wf1", "manual").unwrap();
+        s.finish_workflow_run("r1", "success", None, "[]").unwrap();
+        let runs = s.list_workflow_runs("wf1", 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "success");
+        assert!(runs[0].finished_at.is_some());
+
+        s.record_automation_thread("th-1", &cid, Some("wf1")).unwrap();
+        s.record_automation_thread("th-1", &cid, Some("wf1")).unwrap();
+        assert!(s.visible_automation_thread_ids().unwrap().contains("th-1"));
+        s.hide_automation_threads().unwrap();
+        assert!(!s.visible_automation_thread_ids().unwrap().contains("th-1"));
+
+        s.delete_workflow("wf1").unwrap();
+        assert!(s.get_workflow("wf1").unwrap().is_none());
     }
 
     #[test]

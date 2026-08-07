@@ -19,6 +19,17 @@ pub enum CoreEvent {
     MusicTick { position_ms: u64, duration_ms: u64 },
     /// Foreground window probe sample.
     ProbeRecorded { process: String, title: String },
+    /// Focus round state changed (frontend timer -> engine, M4/ADR-0012).
+    FocusStateChanged { state: String, completed: bool },
+    /// Supervision alert fired (M4 workflow trigger source, ADR-0012).
+    SupervisionAlert { rule: String, app: Option<String>, level: i64, text: String },
+    /// A workflow run changed (workflow window refresh, M4/ADR-0012).
+    WorkflowRunChanged {
+        workflow_id: String,
+        run_id: String,
+        status: String,
+        error: Option<String>,
+    },
 }
 
 impl CoreEvent {
@@ -30,6 +41,9 @@ impl CoreEvent {
             CoreEvent::PanelModeChanged { .. } => "panel:mode_changed",
             CoreEvent::MusicTick { .. } => "music:playback_tick",
             CoreEvent::ProbeRecorded { .. } => "probe:recorded",
+            CoreEvent::FocusStateChanged { .. } => "focus:core_state",
+            CoreEvent::SupervisionAlert { .. } => "supervision:core_alert",
+            CoreEvent::WorkflowRunChanged { .. } => "workflow:runs_changed",
         }
     }
 
@@ -48,6 +62,15 @@ impl CoreEvent {
             }
             CoreEvent::ProbeRecorded { process, title } => {
                 json!({ "process": process, "title": title })
+            }
+            CoreEvent::FocusStateChanged { state, completed } => {
+                json!({ "state": state, "completed": completed })
+            }
+            CoreEvent::SupervisionAlert { rule, app, level, text } => {
+                json!({ "rule": rule, "app": app, "level": level, "text": text })
+            }
+            CoreEvent::WorkflowRunChanged { workflow_id, run_id, status, error } => {
+                json!({ "workflowId": workflow_id, "runId": run_id, "status": status, "error": error })
             }
         }
     }

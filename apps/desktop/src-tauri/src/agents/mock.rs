@@ -4,7 +4,7 @@
 //! Used when `agentProvider=mock` or as fallback when Codex is unavailable
 //! (ADR-0007).
 
-use crate::agents::{AgentProvider, AgentThreadInfo};
+use crate::agents::{AgentProvider, AgentThreadInfo, TurnDone};
 use crate::event_bus::CoreEvent;
 use serde_json::{json, Value};
 use std::sync::Mutex;
@@ -92,18 +92,33 @@ fn reply_cycle(text: &str) -> Vec<Step> {
 pub struct MockProvider {
     tx: Sender<CoreEvent>,
     session_id: Mutex<String>,
+    turn_done: tokio::sync::broadcast::Sender<TurnDone>,
 }
 
 impl MockProvider {
     pub fn new(tx: Sender<CoreEvent>) -> Self {
-        Self { tx, session_id: Mutex::new(SESSION_ID.to_string()) }
+        let (turn_done, _) = tokio::sync::broadcast::channel(64);
+        Self { tx, session_id: Mutex::new(SESSION_ID.to_string()), turn_done }
+    }
+
+    pub fn subscribe_turn_done(&self) -> tokio::sync::broadcast::Receiver<TurnDone> {
+        self.turn_done.subscribe()
     }
 
     fn emit(&self, steps: Vec<Step>) {
         let tx = self.tx.clone();
         let session_id = self.session_id.lock().unwrap().clone();
+        let turn_done = self.turn_done.clone();
         tauri::async_runtime::spawn(async move {
+            let mut last_message = String::new();
+            let mut last_outcome = "success".to_string();
             for step in steps {
+                if let Some(text) = step.event.get("text").and_then(|v| v.as_str()) {
+                    last_message = text.to_string();
+                }
+                if let Some(outcome) = step.event.get("outcome").and_then(|v| v.as_str()) {
+                    last_outcome = outcome.to_string();
+                }
                 let _ = tx.send(CoreEvent::AgentEvent(envelope_session(&session_id, step.event)));
                 if let Some(state) = step.state {
                     let _ = tx.send(CoreEvent::PetStateChanged {
@@ -119,6 +134,16 @@ impl MockProvider {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(600)).await;
             }
+            let status = match last_outcome.as_str() {
+                "success" => "completed".to_string(),
+                "cancelled" => "interrupted".to_string(),
+                _ => "error".to_string(),
+            };
+            let _ = turn_done.send(TurnDone {
+                thread_id: Some(session_id),
+                status,
+                result: Some(last_message),
+            });
         });
     }
 

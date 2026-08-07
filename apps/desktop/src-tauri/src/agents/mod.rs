@@ -40,6 +40,15 @@ impl AgentProviderKind {
     }
 }
 
+/// Turn completion signal (M4 workflow engine, ADR-0012): lets a one-shot
+/// agent node wait for its turn to finish instead of polling events.
+#[derive(Debug, Clone)]
+pub struct TurnDone {
+    pub thread_id: Option<String>,
+    pub status: String, // completed | interrupted | error
+    pub result: Option<String>,
+}
+
 /// A thread summary returned to the UI (subset of the app-server Thread).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +126,14 @@ impl AgentRuntime {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().send(thread_id, text),
             AgentRuntime::Mock(p) => p.lock().unwrap().send(thread_id, text),
+        }
+    }
+
+    /// Subscribe to turn-completion signals (workflow agent nodes).
+    pub fn subscribe_turn_done(&self) -> Option<tokio::sync::broadcast::Receiver<TurnDone>> {
+        match self {
+            AgentRuntime::Codex(p) => Some(p.lock().unwrap().subscribe_turn_done()),
+            AgentRuntime::Mock(p) => Some(p.lock().unwrap().subscribe_turn_done()),
         }
     }
 
