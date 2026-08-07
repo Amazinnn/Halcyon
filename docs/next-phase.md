@@ -14,7 +14,13 @@
 4. 多显示器：外接或虚拟显示器驱动验证窗口位置与 Desktop 覆盖。
 5. 连续运行 2 小时观察内存与事件丢包（M0 验收）。
 
-## M1：桌宠与桌面壳层（2026-08-07 现状）`n`n### v1.10 修复轮（2026-08-08 实施中，需求 #30/#31/#32）`n- 工作流入口：移到最左侧视图托盘；+ 菜单移除「内部页」；迁移 0006 清理 internal 卡片。`n- 快速开关窗口卡死：去冗余窗口操作（restore/collapse/topmost/raise/position 去重与节流）+ 前端 150ms 防抖 + `scripts/hang-detector.ps1` 独立检测。`n- 宠物更换失败 + canvas tainted：spritesheet 改同源加载（pet_sheet_data + createImageBitmap），applyEdgeFade try/catch 兜底。
+## M1：桌宠与桌面壳层（2026-08-07 现状）
+
+### v1.10 修复轮（2026-08-08 已实现待验收，需求 #30/#31/#32/#33）
+- 工作流入口：移到最左侧视图托盘；+ 菜单移除「内部页」；迁移 0006 清理 internal 卡片。
+- 快速开关窗口卡死：去冗余窗口操作（restore/collapse/topmost/raise/position 去重与节流）+ 前端 150ms 防抖 + `scripts/hang-detector.ps1` 独立检测。
+- 宠物更换失败 + canvas tainted：spritesheet 改同源加载（pet_sheet_data + createImageBitmap），applyEdgeFade try/catch 兜底。
+- 启动卡死同步检测（#33）：launch-focus.cmd monitor 启动应用并同步开启 scripts/hang-detector.ps1（HUNG 时抓 minidump + 记录窗口标题/句柄，恢复时记录时长）。
 
 已完成（v1.5–v1.7.2）：
 - 桌面快捷方式与图标自由布局（v1.5）：应用/文件/文件夹/URL/内部页，真实图标提取，12×8 网格吸附 + DB 持久化。

@@ -1,6 +1,6 @@
 # Focus Desktop 当前状态（压缩交接页）
 
-> 更新：2026-08-08（v1.10 修复轮实施中：#30 工作流入口 / #31 窗口卡死 / #32 宠物更换）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
+> 更新：2026-08-08（v1.10 修复轮已实现待验收：#30 工作流入口 / #31 窗口卡死 / #32 宠物更换 / #33 启动卡死检测命令）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 
 ## 项目一句话
@@ -9,7 +9,7 @@
 
 ## 当前版本与已验证清单（v1.9.1 + M4 v1 已实现待验收）
 
-- v1.10（修复轮，实施中，需求 #30/#31/#32）：工作流入口改到最左侧视图托盘、去掉 + 内部页并清理 internal 卡片（迁移 0006）；快速开关窗口卡死修复（去冗余窗口操作 + 前端防抖 + scripts/hang-detector.ps1 独立检测）；宠物更换失败与 canvas tainted 修复（spritesheet 同源加载 + 淡化 try/catch）。
+- v1.10（修复轮，已实现待验收，需求 #30/#31/#32/#33）：工作流入口改到最左侧视图托盘、去掉 + 内部页并清理 internal 卡片（迁移 0006）；快速开关窗口卡死修复（去冗余窗口操作 + 前端防抖 + scripts/hang-detector.ps1 独立检测）；宠物更换失败与 canvas tainted 修复（spritesheet 同源加载 + 淡化 try/catch）；#33 launch-focus.cmd monitor 同步启动 hang-detector（HUNG 抓 minidump，日志 %APPDATA%\com.focusdesktop.app\hang-detector.log）。
 
 - v1.9.1（音乐窗口尺寸化，需求 #24/#25）：右下手柄 3×1~3×4 离散缩放（网格预览/冲突回弹/持久化）；chat/stats/music/pet 禁用原生拉伸（尺寸唯一由网格控制，准则 #23）；行数≥3 才显示播放列表（3 行→4 首可见、1 行→隐藏）；手柄 setPointerCapture 修复、紧凑 3×1 布局不裁切。
 - v1.9（M2 本地音乐播放器，需求 #22）：选定文件夹（记住）扫描 MP3/FLAC/M4A，HTML5 audio + asset 协议（Range seek、运行时 scope 扩展），lofty 标签/封面（回退文件名/渐变），列表+控制条，单曲循环/列表循环/列表顺序三模式（ADR-0011）。
@@ -34,7 +34,7 @@
 
 ## 命令
 
-- 启动/重建：launch-focus.cmd；launch-focus.cmd rebuild 强制重建 release。
+- 启动/重建：launch-focus.cmd；launch-focus.cmd rebuild 强制重建 release；launch-focus.cmd monitor 启动应用并同步开启卡死检测（scripts/hang-detector.ps1，日志 %APPDATA%\com.focusdesktop.app\hang-detector.log，HUNG 时抓 minidump 到 hangs\）。
 - 测试：cd apps/desktop && npm run build；cd apps/desktop/src-tauri && cargo test --lib；cd packages/event-schema && npm test。
 - 控制面：apps/desktop/src-tauri/target/release/focus-cli.exe timer status（需应用运行）。
 
