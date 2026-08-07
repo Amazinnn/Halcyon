@@ -256,7 +256,6 @@ pub fn drag_start(
     // layer can never swallow the mouse during the drag.
     if let Some(ov) = app.get_webview_window("grid-overlay") {
         let _ = ov.set_ignore_cursor_events(true);
-        crate::overlay_noactivate(&app);
         let _ = ov.show();
     }
 

@@ -78,16 +78,6 @@ fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
 }
 
 
-/// Keep the drag-preview overlay from activating on show (it would steal
-/// pointer capture from the window being dragged/resized).
-fn overlay_noactivate(app: &tauri::AppHandle) {
-    if let Some(ov) = app.get_webview_window("grid-overlay") {
-        if let Ok(hwnd) = ov.hwnd() {
-            acrylic::noactivate(hwnd.0);
-        }
-    }
-}
-
 fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &GridManager) {
     if let Some(w) = app.get_webview_window(label) {
         let (x, y, wpx, hpx) = gm.rect_to_logical(rect);
@@ -430,8 +420,8 @@ fn pet_resize_preview(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     visible: bool,
-    cols: usize,
-    rows: usize,
+    cols: Option<usize>,
+    rows: Option<usize>,
 ) -> Result<(), String> {
     let label = "pet";
     let Some(ov) = app.get_webview_window("grid-overlay") else {
@@ -443,8 +433,9 @@ fn pet_resize_preview(
         return Ok(());
     }
     let _ = ov.set_ignore_cursor_events(true);
-    overlay_noactivate(&app);
     let _ = ov.show();
+    let cols = cols.unwrap_or(1);
+    let rows = rows.unwrap_or(1);
     let settings = state.settings.lock().unwrap();
     let current = settings.grid.get(label).copied().unwrap_or(GridRect { col: 0, row: 0, cols, rows });
     let occupied = occupied_rects(&settings, Some(label));
