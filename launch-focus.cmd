@@ -35,11 +35,21 @@ if not exist "%EXE%" (
   pause
   exit /b 1
 )
+
+REM In monitor mode, attach to an already-running instance instead of relaunching.
+tasklist /FI "IMAGENAME eq desktop.exe" 2>nul | find /I "desktop.exe" >nul
+if not errorlevel 1 (
+  if defined MONITOR (
+    echo [Focus] desktop.exe is already running - hang monitor attaches to the existing instance.
+    goto monitor
+  )
+)
+
 echo [Focus] Starting Focus Desktop...
 start "" "%EXE%" <nul >nul 2>nul
 
-if defined MONITOR (
-  echo [Focus] Starting hang monitor (scripts\hang-detector.ps1, Ctrl+C in that window to stop)...
-  start "Focus Hang Monitor" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\hang-detector.ps1" -ProcessName desktop -Seconds 0 -LogFile "%APPDATA%\com.focusdesktop.app\hang-detector.log" -DumpDir "%APPDATA%\com.focusdesktop.app\hangs"
-)
+:monitor
+if not defined MONITOR exit /b 0
+echo [Focus] Starting hang monitor (scripts\hang-detector.ps1; Ctrl+C in that window to stop)...
+start "Focus Hang Monitor" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\hang-detector.ps1" -ProcessName desktop -Seconds 0 -WaitForProcess 30 -LogFile "%APPDATA%\com.focusdesktop.app\hang-detector.log" -DumpDir "%APPDATA%\com.focusdesktop.app\hangs"
 exit /b 0
