@@ -181,6 +181,17 @@ fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Va
                 "shortcuts": shortcuts_json(app, store),
             })
         }
+        // v1.12: desktop lock/unlock (escape hatch — TCP cannot be blocked by
+        // the keyboard hook).
+        ["desktop", "lock"] => match crate::desktop_lock::lock_desktop() {
+            Ok(()) => json!({ "locked": true }),
+            Err(e) => json!({ "error": e }),
+        },
+        ["desktop", "unlock"] => match crate::desktop_lock::unlock_desktop() {
+            Ok(()) => json!({ "locked": false }),
+            Err(e) => json!({ "error": e }),
+        },
+        ["desktop", "status"] => json!({ "locked": crate::desktop_lock::is_locked() }),
         ["apps", "now"] => match crate::activity::probe_foreground() {
             Some(f) => json!({ "process": f.process, "title": f.title }),
             None => json!({ "process": null, "title": null }),
@@ -250,6 +261,8 @@ fn agent_whitelisted(parts: &[&str]) -> bool {
         ["timer", a] if ["start", "pause", "skip", "status"].contains(a) => true,
         ["stats", "today"] | ["stats", "week"] | ["stats", "sessions"] | ["stats", "dashboard"] => true,
         ["desktop", "layout"] => true,
+        // v1.12: desktop lock/unlock/status — Agent can also lock/unlock.
+        ["desktop", "lock"] | ["desktop", "unlock"] | ["desktop", "status"] => true,
         ["apps", "now"] | ["apps", "visible"] => true,
         ["workflow", sub, ..] if ["list", "read", "create", "update", "delete", "run", "runs", "cancel"].contains(sub) => true,
         // M5 (ADR-0022): Agent reads its own session hash / agent list.
@@ -342,6 +355,9 @@ mod tests {
         assert!(agent_whitelisted(&["stats", "today"]));
         assert!(agent_whitelisted(&["stats", "dashboard"]));
         assert!(agent_whitelisted(&["desktop", "layout"]));
+        assert!(agent_whitelisted(&["desktop", "lock"]));
+        assert!(agent_whitelisted(&["desktop", "unlock"]));
+        assert!(agent_whitelisted(&["desktop", "status"]));
         assert!(agent_whitelisted(&["apps", "visible"]));
         // v1.11 (ADR-0020): Agent is the Boss — workflow CRUD allowed.
         assert!(agent_whitelisted(&["workflow", "list"]));

@@ -130,6 +130,7 @@ fn print_help() {
     println!("  focus-cli timer start|pause|skip|status");
     println!("  focus-cli stats today|week|sessions|dashboard");
     println!("  focus-cli desktop layout");
+    println!("  focus-cli desktop lock|unlock|status");
     println!("  focus-cli apps now|visible");
     println!("  focus-cli workflow list|run <id>|runs <id>|cancel <id>");
     println!("  focus-cli workflow read <id>");
