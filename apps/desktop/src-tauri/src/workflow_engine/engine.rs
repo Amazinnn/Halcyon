@@ -125,6 +125,15 @@ pub fn execute_run(
         .map(|n| n.id.as_str())
         .collect();
 
+    // v1.10.5 (ADR-0018): first non-back incoming edge source per node. Branch
+    // nodes read the upstream Agent's fill-slot through this map (no UI vars).
+    let mut incoming: HashMap<&str, &str> = HashMap::new();
+    for (e, is_back) in out_edges.iter().flat_map(|(_, v)| v.iter()) {
+        if !*is_back {
+            incoming.entry(e.target.as_str()).or_insert(e.source.as_str());
+        }
+    }
+
     let mut data: HashMap<String, Value> = HashMap::new();
     let mut log: Vec<NodeLogEntry> = Vec::new();
     let mut done: HashSet<&str> = HashSet::new();
@@ -141,7 +150,7 @@ pub fn execute_run(
             break;
         }
         let node = nodes[id];
-        match run_node(node, &data, character, agent, events, windows, system, cancel) {
+        match run_node(node, &data, &incoming, character, agent, events, windows, system, cancel) {
             Ok((output, taken_handle)) => {
                 data.insert(id.to_string(), output.clone());
                 log.push(NodeLogEntry {
@@ -243,6 +252,7 @@ fn reset_forward<'a>(
 fn run_node(
     node: &NodeDef,
     data: &HashMap<String, Value>,
+    incoming: &HashMap<&str, &str>,
     character: &CharacterInfo,
     agent: &dyn AgentCall,
     events: &dyn EventSink,
@@ -251,19 +261,17 @@ fn run_node(
     cancel: &AtomicBool,
 ) -> Result<(Value, String), String> {
     match node.kind.as_str() {
-        "bubble" => {
-            let text = param_str(node, "text")?;
-            let text = resolve_with_system(&text, data, system)?;
-            let priority = param_str(node, "priority").unwrap_or_else(|_| "normal".into());
-            events.bubble(&text, &priority);
-            Ok((json!({ "text": text }), "out".into()))
-        }
+
         "agent" => {
             let prompt = param_str(node, "prompt")?;
             let prompt = resolve_with_system(&prompt, data, system)?;
             let wait = param_bool(node, "wait").unwrap_or(true);
             match agent.call_one_shot(character, &prompt, wait, cancel) {
                 Ok(Some((result, thread_id))) => {
+                    // v1.10.5 (ADR-0018): Agent reply is shown to the user —
+                    // pet bubble here; chat side comes from the agent thread
+                    // event (one message, line breaks preserved).
+                    events.bubble(&result, "normal");
                     let mut out = json!({ "result": result, "threadId": thread_id, "status": "completed" });
                     // v2 fill-slot: the agent answers a single-choice question;
                     // the slot value is the option contained in the reply, or the
@@ -305,36 +313,44 @@ fn run_node(
             Ok((json!({ "elapsedSec": secs }), "out".into()))
         }
         "branch" => {
-            let source = param_str(node, "source").unwrap_or_default();
-            let resolved = resolve_with_system(&source, data, system)?;
-            let options = param_str_array(node, "options").unwrap_or_default();
-            let idx = options.iter().position(|o| o.trim() == resolved.trim());
-            match idx {
-                Some(k) => {
-                    let handle = format!("option{}", k + 1);
-                    Ok((
-                        json!({ "matched": true, "value": resolved, "option": options[k] }),
-                        handle,
-                    ))
-                }
-                None => {
-                    // No matching option: the flow stops at this node.
-                    Ok((json!({ "matched": false, "value": resolved, "option": "" }), "none".into()))
+            // v1.10.5 (ADR-0018): friendly conditions only — upstream Agent
+            // fill-slot (auto via incoming edge) or current focus state. No
+            // user-visible variables.
+            let condition = param_str(node, "condition").unwrap_or_else(|_| "slot".into());
+            if condition == "focus_state" {
+                let state = system.focus_state();
+                let want = param_str(node, "focusState").unwrap_or_else(|_| "focus".into());
+                let matched = state == want;
+                Ok((
+                    json!({ "matched": matched, "value": state, "option": "" }),
+                    if matched { "true" } else { "false" }.into(),
+                ))
+            } else {
+                let up = incoming
+                    .get(node.id.as_str())
+                    .copied()
+                    .ok_or_else(|| format!("分支 {} 需要连接上游 Agent", node.id))?;
+                let resolved = data
+                    .get(up)
+                    .and_then(|o| o.get("slot"))
+                    .map(value_to_string)
+                    .unwrap_or_default();
+                let options = param_str_array(node, "options").unwrap_or_default();
+                let idx = options.iter().position(|o| o.trim() == resolved.trim());
+                match idx {
+                    Some(k) => {
+                        let handle = format!("option{}", k + 1);
+                        Ok((
+                            json!({ "matched": true, "value": resolved, "option": options[k] }),
+                            handle,
+                        ))
+                    }
+                    None => {
+                        // No matching option: the flow stops at this node.
+                        Ok((json!({ "matched": false, "value": resolved, "option": "" }), "none".into()))
+                    }
                 }
             }
-        }
-        // legacy binary condition (kept for old saved flows)
-        "if" => {
-            let source = param_str(node, "source").unwrap_or_default();
-            let resolved = resolve_with_system(&source, data, system)?;
-            let op = param_str(node, "op").unwrap_or_else(|_| "not_empty".into());
-            let value = param_str(node, "value").unwrap_or_default();
-            let matched = match op.as_str() {
-                "contains" => resolved.contains(&value),
-                "equals" => resolved == value,
-                _ => !resolved.trim().is_empty(),
-            };
-            Ok((json!({ "matched": matched }), if matched { "true" } else { "false" }.into()))
         }
         "focus" => {
             let secs = param_i64(node, "seconds").unwrap_or(1).clamp(1, 3600);
@@ -457,6 +473,7 @@ fn value_to_string(v: &Value) -> String {
         other => other.to_string(),
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,6 +530,16 @@ mod tests {
     struct MockAgent {
         result: String,
         fail: bool,
+        prompts: Mutex<Vec<String>>,
+    }
+    impl MockAgent {
+        fn new(result: &str) -> Self {
+            Self {
+                result: result.into(),
+                fail: false,
+                prompts: Mutex::new(vec![]),
+            }
+        }
     }
     impl AgentCall for MockAgent {
         fn call_one_shot(
@@ -522,6 +549,7 @@ mod tests {
             wait: bool,
             _cancel: &AtomicBool,
         ) -> Result<Option<(String, String)>, String> {
+            self.prompts.lock().unwrap().push(prompt.to_string());
             if self.fail {
                 return Err("agent boom".into());
             }
@@ -575,11 +603,7 @@ mod tests {
     fn char_info() -> CharacterInfo {
         CharacterInfo { id: "c".into(), name: "c".into(), persona: "p".into() }
     }
-    fn run(
-        w: &WorkflowDef,
-        agent: &MockAgent,
-        system: &MockSystem,
-    ) -> RunOutcome {
+    fn run(w: &WorkflowDef, agent: &MockAgent, system: &MockSystem) -> RunOutcome {
         let sink = Sink { bubbles: Mutex::new(vec![]) };
         let win = Win { opened: Mutex::new(vec![]) };
         let cancel = AtomicBool::new(false);
@@ -597,102 +621,117 @@ mod tests {
     }
 
     #[test]
-    fn bubble_output_and_ref_resolution() {
+    fn agent_success_bubbles_result() {
         let sink = Sink { bubbles: Mutex::new(vec![]) };
-        let agent = MockAgent { result: "R".into(), fail: false };
+        let agent = MockAgent::new("我比较专注吧");
+        let system = MockSystem::new("idle");
+        let w = wf(
+            vec![node("a", "agent", json!({ "prompt": "自检", "wait": true }))],
+            vec![],
+        );
+        let out = run_with_sink(&w, &agent, &system, &sink);
+        assert_eq!(out.status, RunStatus::Success);
+        let bubbles: Vec<String> = sink.bubbles.lock().unwrap().iter().map(|(t, _p)| t.clone()).collect();
+        assert_eq!(bubbles.len(), 1);
+        assert!(bubbles[0].starts_with("我比较专注吧 => "));
+        assert_eq!(sink.bubbles.lock().unwrap()[0].1, "normal");
+    }
+
+    #[test]
+    fn agent_no_wait_does_not_bubble() {
+        let sink = Sink { bubbles: Mutex::new(vec![]) };
+        let agent = MockAgent::new("R");
         let system = MockSystem::new("idle");
         let w = wf(
             vec![
-                node("a", "agent", json!({ "prompt": "hi", "wait": true })),
-                node("b", "bubble", json!({ "text": "got: {{a.result}}" })),
+                node("a", "agent", json!({ "prompt": "go", "wait": false })),
+                node("b", "show_window", json!({ "target": "chat" })),
             ],
             vec![edge("a", "out", "b")],
         );
         let out = run_with_sink(&w, &agent, &system, &sink);
         assert_eq!(out.status, RunStatus::Success);
-        assert_eq!(sink.bubbles.lock().unwrap()[0].0, "got: R => hi");
+        assert!(sink.bubbles.lock().unwrap().is_empty());
+        assert_eq!(out.node_log.iter().find(|l| l.node_id == "a").unwrap().output, Some(json!({ "status": "sent" })));
     }
 
     #[test]
-    fn if_branch_routes_to_true_only() {
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
-        let agent = MockAgent { result: "分心了".into(), fail: false };
-        let system = MockSystem::new("idle");
-        let w = wf(
-            vec![
-                node("a", "agent", json!({ "prompt": "自检", "wait": true })),
-                node("i", "if", json!({ "source": "{{a.result}}", "op": "contains", "value": "分心" })),
-                node("t", "bubble", json!({ "text": "警告" })),
-                node("f", "bubble", json!({ "text": "else" })),
-            ],
-            vec![
-                edge("a", "out", "i"),
-                edge("i", "true", "t"),
-                edge("i", "false", "f"),
-            ],
-        );
-        let out = run_with_sink(&w, &agent, &system, &sink);
-        assert_eq!(out.status, RunStatus::Success);
-        let bubbles: Vec<String> = sink.bubbles.lock().unwrap().iter().map(|(t, _)| t.clone()).collect();
-        assert_eq!(bubbles, vec!["警告"]);
-        assert_eq!(out.node_log.iter().find(|l| l.node_id == "f").unwrap().status, "skipped");
-    }
-
-    #[test]
-    fn branch_routes_option1_option2() {
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
-        let agent = MockAgent { result: "我现在很专注".into(), fail: false };
+    fn branch_slot_auto_routes_option() {
+        let agent = MockAgent::new("我现在很专注");
         let system = MockSystem::new("idle");
         let w = wf(
             vec![
                 node("a", "agent", json!({ "prompt": "自检", "wait": true, "fillOptions": ["专注", "分心"] })),
-                node("b", "branch", json!({ "source": "{{a.slot}}", "options": ["专注", "分心"] })),
-                node("o1", "bubble", json!({ "text": "好" })),
-                node("o2", "bubble", json!({ "text": "警告" })),
+                node("b", "branch", json!({ "condition": "slot", "options": ["专注", "分心"] })),
+                node("w1", "wait", json!({ "seconds": 1 })),
+                node("w2", "wait", json!({ "seconds": 1 })),
             ],
             vec![
                 edge("a", "out", "b"),
-                edge("b", "option1", "o1"),
-                edge("b", "option2", "o2"),
+                edge("b", "option1", "w1"),
+                edge("b", "option2", "w2"),
             ],
         );
-        let out = run_with_sink(&w, &agent, &system, &sink);
+        let out = run(&w, &agent, &system);
         assert_eq!(out.status, RunStatus::Success);
-        let bubbles: Vec<String> = sink.bubbles.lock().unwrap().iter().map(|(t, _)| t.clone()).collect();
-        assert_eq!(bubbles, vec!["好"]);
-        assert_eq!(out.node_log.iter().find(|l| l.node_id == "o2").unwrap().status, "skipped");
+        assert_eq!(out.node_log.iter().find(|l| l.node_id == "w1").unwrap().status, "ok");
+        assert_eq!(out.node_log.iter().find(|l| l.node_id == "w2").unwrap().status, "skipped");
         let slot = out.node_log.iter().find(|l| l.node_id == "a").unwrap().output.as_ref().unwrap().get("slot").unwrap();
         assert_eq!(slot, "专注");
     }
 
     #[test]
-    fn branch_no_match_stops_at_none() {
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
-        let agent = MockAgent { result: "不知道".into(), fail: false };
-        let system = MockSystem::new("idle");
+    fn branch_focus_state_routes_true_false() {
+        let agent = MockAgent::new("x");
+        let system = MockSystem::new("focus");
         let w = wf(
             vec![
-                node("a", "agent", json!({ "prompt": "自检", "wait": true, "fillOptions": ["专注", "分心"] })),
-                node("b", "branch", json!({ "source": "{{a.slot}}", "options": ["专注", "分心"] })),
-                node("o1", "bubble", json!({ "text": "好" })),
+                node("b", "branch", json!({ "condition": "focus_state", "focusState": "focus" })),
+                node("t", "wait", json!({ "seconds": 1 })),
+                node("f", "wait", json!({ "seconds": 1 })),
             ],
-            vec![
-                edge("a", "out", "b"),
-                edge("b", "option1", "o1"),
-            ],
+            vec![edge("b", "true", "t"), edge("b", "false", "f")],
         );
-        let out = run_with_sink(&w, &agent, &system, &sink);
+        let out = run(&w, &agent, &system);
         assert_eq!(out.status, RunStatus::Success);
-        assert!(sink.bubbles.lock().unwrap().is_empty());
-        let branch = out.node_log.iter().find(|l| l.node_id == "b").unwrap();
-        assert_eq!(branch.output.as_ref().unwrap().get("matched"), Some(&json!(false)));
-        assert_eq!(out.node_log.iter().find(|l| l.node_id == "o1").unwrap().status, "skipped");
+        assert_eq!(out.node_log.iter().find(|l| l.node_id == "t").unwrap().status, "ok");
+        assert_eq!(out.node_log.iter().find(|l| l.node_id == "f").unwrap().status, "skipped");
+
+        let system2 = MockSystem::new("rest");
+        let out2 = run(&w, &agent, &system2);
+        assert_eq!(out2.node_log.iter().find(|l| l.node_id == "t").unwrap().status, "skipped");
+        assert_eq!(out2.node_log.iter().find(|l| l.node_id == "f").unwrap().status, "ok");
+    }
+
+    #[test]
+    fn branch_without_upstream_fails() {
+        let agent = MockAgent::new("x");
+        let system = MockSystem::new("idle");
+        let w = wf(
+            vec![node("b", "branch", json!({ "condition": "slot", "options": ["专注"] }))],
+            vec![],
+        );
+        let out = run(&w, &agent, &system);
+        assert_eq!(out.status, RunStatus::Failed);
+        assert!(out.error.as_deref().unwrap().contains("连接上游"));
+    }
+
+    #[test]
+    fn agent_prompt_resolves_system_refs() {
+        let agent = MockAgent::new("R");
+        let system = MockSystem::new("focus");
+        let w = wf(
+            vec![node("a", "agent", json!({ "prompt": "{{system.focus_state}} @ {{system.time}}", "wait": true }))],
+            vec![],
+        );
+        let out = run(&w, &agent, &system);
+        assert_eq!(out.status, RunStatus::Success);
+        assert_eq!(agent.prompts.lock().unwrap()[0], "focus @ 12:00");
     }
 
     #[test]
     fn fill_slot_hit_and_free_fallback() {
-        // Hit: option contained in reply (case-insensitive substring).
-        let agent = MockAgent { result: "我比较专注吧".into(), fail: false };
+        let agent = MockAgent::new("我比较专注吧");
         let system = MockSystem::new("idle");
         let w = wf(
             vec![node("a", "agent", json!({ "prompt": "自检", "wait": true, "fillOptions": ["专注", "分心"] }))],
@@ -702,7 +741,6 @@ mod tests {
         let slot = out.node_log.iter().find(|l| l.node_id == "a").unwrap().output.as_ref().unwrap().get("slot").unwrap();
         assert_eq!(slot, "专注");
 
-        // No fillOptions -> free-form slot = trimmed raw reply.
         let w2 = wf(
             vec![node("a", "agent", json!({ "prompt": "自由回答", "wait": true }))],
             vec![],
@@ -711,8 +749,7 @@ mod tests {
         let slot2 = out2.node_log.iter().find(|l| l.node_id == "a").unwrap().output.as_ref().unwrap().get("slot").unwrap();
         assert_eq!(slot2, "我比较专注吧 => 自由回答");
 
-        // No option matched -> slot falls back to the raw reply (flow can still branch on none).
-        let agent2 = MockAgent { result: "随便说说".into(), fail: false };
+        let agent2 = MockAgent::new("随便说说");
         let out3 = run(&w, &agent2, &system);
         let slot3 = out3.node_log.iter().find(|l| l.node_id == "a").unwrap().output.as_ref().unwrap().get("slot").unwrap();
         assert_eq!(slot3, "随便说说 => 自检");
@@ -720,14 +757,12 @@ mod tests {
 
     #[test]
     fn cycle_executes_and_cancel_escapes() {
-        // a (wait) -> b (bubble) -> back to a (back edge). Cancel after ~2.2s.
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
-        let agent = MockAgent { result: "".into(), fail: false };
+        let agent = MockAgent::new("x");
         let system = MockSystem::new("idle");
         let w = wf(
             vec![
                 node("a", "wait", json!({ "seconds": 1 })),
-                node("b", "bubble", json!({ "text": "loop" })),
+                node("b", "wait", json!({ "seconds": 1 })),
             ],
             vec![edge("a", "out", "b"), edge("b", "out", "a")],
         );
@@ -737,23 +772,24 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2200));
             cancel_ref.store(true, Ordering::Relaxed);
         });
+        let sink = Sink { bubbles: Mutex::new(vec![]) };
+        let win = Win { opened: Mutex::new(vec![]) };
         let out = execute_run(
             &w,
             &char_info(),
             &agent,
             &sink,
-            &Win { opened: Mutex::new(vec![]) },
+            &win,
             &system,
             cancel.as_ref(),
         );
         let _ = cancel_thread.join();
         assert_eq!(out.status, RunStatus::Cancelled);
-        assert!(sink.bubbles.lock().unwrap().len() >= 1, "loop should have run at least once");
     }
 
     #[test]
     fn focus_idle_ring_actions_called() {
-        let agent = MockAgent { result: "".into(), fail: false };
+        let agent = MockAgent::new("x");
         let system = MockSystem::new("idle");
         let w = wf(
             vec![
@@ -770,46 +806,34 @@ mod tests {
 
     #[test]
     fn system_action_failure_fails_fast() {
-        let agent = MockAgent { result: "".into(), fail: false };
+        let agent = MockAgent::new("x");
         let mut system = MockSystem::new("idle");
         system.fail_actions = true;
         let w = wf(
             vec![
                 node("f", "focus", json!({ "seconds": 1500 })),
-                node("b", "bubble", json!({ "text": "later" })),
+                node("w", "wait", json!({ "seconds": 1 })),
             ],
-            vec![edge("f", "out", "b")],
+            vec![edge("f", "out", "w")],
         );
         let out = run(&w, &agent, &system);
         assert_eq!(out.status, RunStatus::Failed);
         assert!(out.error.as_deref().unwrap().contains("system boom"));
-    }
-
-    #[test]
-    fn system_ref_resolution() {
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
-        let agent = MockAgent { result: "".into(), fail: false };
-        let system = MockSystem::new("focus");
-        let w = wf(
-            vec![node("b", "bubble", json!({ "text": "{{system.focus_state}} @ {{system.time}}" }))],
-            vec![],
-        );
-        let out = run_with_sink(&w, &agent, &system, &sink);
-        assert_eq!(out.status, RunStatus::Success);
-        assert_eq!(sink.bubbles.lock().unwrap()[0].0, "focus @ 12:00");
+        assert_eq!(out.node_log.iter().find(|l| l.node_id == "w").unwrap().status, "skipped");
     }
 
     #[test]
     fn fail_fast_stops_run() {
         let sink = Sink { bubbles: Mutex::new(vec![]) };
-        let agent = MockAgent { result: "".into(), fail: true };
+        let mut agent = MockAgent::new("x");
+        agent.fail = true;
         let system = MockSystem::new("idle");
         let w = wf(
             vec![
                 node("a", "agent", json!({ "prompt": "x", "wait": true })),
-                node("b", "bubble", json!({ "text": "later" })),
+                node("w", "wait", json!({ "seconds": 1 })),
             ],
-            vec![edge("a", "out", "b")],
+            vec![edge("a", "out", "w")],
         );
         let out = run_with_sink(&w, &agent, &system, &sink);
         assert_eq!(out.status, RunStatus::Failed);
@@ -819,7 +843,7 @@ mod tests {
 
     #[test]
     fn wait_node_cancellation() {
-        let agent = MockAgent { result: "".into(), fail: false };
+        let agent = MockAgent::new("x");
         let system = MockSystem::new("idle");
         let cancel = AtomicBool::new(true);
         let sink = Sink { bubbles: Mutex::new(vec![]) };
@@ -830,27 +854,13 @@ mod tests {
     }
 
     #[test]
-    fn no_wait_agent_has_no_result_output() {
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
-        let agent = MockAgent { result: "".into(), fail: false };
+    fn missing_ref_fails_fast() {
+        let agent = MockAgent::new("x");
         let system = MockSystem::new("idle");
         let w = wf(
-            vec![
-                node("a", "agent", json!({ "prompt": "go", "wait": false })),
-                node("b", "show_window", json!({ "target": "chat" })),
-            ],
-            vec![edge("a", "out", "b")],
+            vec![node("a", "agent", json!({ "prompt": "{{ghost.result}}", "wait": true }))],
+            vec![],
         );
-        let out = run_with_sink(&w, &agent, &system, &sink);
-        assert_eq!(out.status, RunStatus::Success);
-        assert_eq!(out.node_log.iter().find(|l| l.node_id == "a").unwrap().output, Some(json!({ "status": "sent" })));
-    }
-
-    #[test]
-    fn missing_ref_fails_fast() {
-        let agent = MockAgent { result: "".into(), fail: false };
-        let system = MockSystem::new("idle");
-        let w = wf(vec![node("b", "bubble", json!({ "text": "{{ghost.result}}" }))], vec![]);
         let out = run(&w, &agent, &system);
         assert_eq!(out.status, RunStatus::Failed);
         assert!(out.error.as_deref().unwrap().contains("引用缺失"));
@@ -864,5 +874,16 @@ mod tests {
         assert_eq!(resolve("n={{a.n}}", &data).unwrap(), "n=3");
         assert!(resolve("{{a.missing}}", &data).is_err());
         assert_eq!(resolve("no refs", &data).unwrap(), "no refs");
+    }
+
+    #[test]
+    fn resolve_with_system_fields() {
+        let system = MockSystem::new("rest");
+        let mut data = HashMap::new();
+        data.insert("a".into(), json!({ "slot": "专注" }));
+        assert_eq!(
+            resolve_with_system("s={{system.focus_state}} t={{system.time}} slot={{a.slot}}", &data, &system).unwrap(),
+            "s=rest t=12:00 slot=专注"
+        );
     }
 }

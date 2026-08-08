@@ -42,7 +42,7 @@ fn default_true() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct NodeDef {
     pub id: String,
-    pub kind: String, // bubble | agent | show_window | wait | branch | focus | idle | ring | if(legacy)
+    pub kind: String, // agent | show_window | wait | branch | focus | idle | ring (v1.10.5, ADR-0018)
     #[serde(default)]
     pub params: serde_json::Value,
     #[serde(default)]
@@ -178,7 +178,7 @@ pub fn validate_workflow(wf: &WorkflowDef) -> Result<(), String> {
     for n in &wf.nodes {
         if !matches!(
             n.kind.as_str(),
-            "bubble" | "agent" | "show_window" | "wait" | "branch" | "focus" | "idle" | "ring" | "if"
+            "agent" | "show_window" | "wait" | "branch" | "focus" | "idle" | "ring"
         ) {
             return Err(format!("未知节点类型: {}", n.kind));
         }
@@ -217,8 +217,8 @@ mod tests {
             daily_time: None,
             guard: "none".into(),
             nodes: vec![
-                NodeDef { id: "n1".into(), kind: "bubble".into(), params: serde_json::json!({"text":"hi"}), x: 0.0, y: 0.0 },
-                NodeDef { id: "n2".into(), kind: "bubble".into(), params: serde_json::json!({"text":"yo"}), x: 0.0, y: 0.0 },
+                NodeDef { id: "n1".into(), kind: "wait".into(), params: serde_json::json!({"seconds":1}), x: 0.0, y: 0.0 },
+                NodeDef { id: "n2".into(), kind: "wait".into(), params: serde_json::json!({"seconds":1}), x: 0.0, y: 0.0 },
             ],
             edges: vec![EdgeDef { id: "e1".into(), source: "n1".into(), source_handle: "out".into(), target: "n2".into() }],
             enabled: true,
@@ -248,6 +248,16 @@ mod tests {
         assert!(validate_workflow(&wf).is_err());
         let mut wf2 = sample();
         wf2.edges[0].target = "ghost".into();
+        assert!(validate_workflow(&wf2).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_if_and_bubble() {
+        let mut wf = sample();
+        wf.nodes[0].kind = "if".into();
+        assert!(validate_workflow(&wf).is_err());
+        let mut wf2 = sample();
+        wf2.nodes[0].kind = "bubble".into();
         assert!(validate_workflow(&wf2).is_err());
     }
 

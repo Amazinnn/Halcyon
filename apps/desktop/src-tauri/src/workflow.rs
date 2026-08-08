@@ -22,6 +22,11 @@ use crate::AppState;
 
 /// Default wait timeout for a workflow agent node (10 minutes).
 pub const AGENT_TIMEOUT_SEC: u64 = 600;
+
+/// v1.10.5 (ADR-0018, #61): output discipline injected into workflow Agent
+/// calls only — short sentences, single newlines, no Markdown, short total.
+/// Kept as a built-in constant; not user-visible or user-editable.
+pub const OUTPUT_DISCIPLINE_PROMPT: &str = "给用户的输出规范：请用简洁的中文短句回答，句间用单个换行分隔；不要使用 Markdown、列表、代码块或长段落；总长度不超过约 200 字；只输出需要直接展示给用户看的内容。";
 /// Scheduler heartbeat.
 pub const SCHEDULER_TICK_SEC: u64 = 15;
 
@@ -111,7 +116,22 @@ impl WorkflowManager {
 
     // ---- workflows ----
 
+    /// v1.10.5 (ADR-0018, #62): delete workflows that fail structural
+    /// validation (removed node kinds such as `if`/`bubble`). No backward
+    /// compatibility — no placeholders, no migration.
+    pub fn purge_incompatible(&self) {
+        let Ok(store) = self.store.lock() else { return };
+        let Ok(all) = store.list_workflows() else { return };
+        for w in all {
+            if let Err(e) = validate_workflow(&w) {
+                eprintln!("[workflow] purge incompatible {} ({}): {e}", w.id, w.name);
+                let _ = store.delete_workflow(&w.id);
+            }
+        }
+    }
+
     pub fn list_workflows(&self, character_id: &str) -> Vec<WorkflowDef> {
+        self.purge_incompatible();
         let Ok(store) = self.store.lock() else { return vec![] };
         store
             .list_workflows()
@@ -410,9 +430,14 @@ impl AgentCall for WorkflowManager {
                 std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())
             });
         let full = if character.persona.trim().is_empty() {
-            prompt.to_string()
+            format!("{}\n\n{}", OUTPUT_DISCIPLINE_PROMPT, prompt)
         } else {
-            format!("{}\n\n{}", character.persona.trim(), prompt)
+            format!(
+                "{}\n\n{}\n\n{}",
+                character.persona.trim(),
+                OUTPUT_DISCIPLINE_PROMPT,
+                prompt
+            )
         };
         let (info, mut rx) = {
             let agent = app_state.agent.lock().unwrap();

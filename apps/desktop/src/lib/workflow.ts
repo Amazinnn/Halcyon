@@ -1,6 +1,7 @@
-// M4 workflow v2 (ADR-0017): 8 node kinds + legacy `if`. Wire shapes match the
-// Rust WorkflowDef. v2 has no bundled templates: blank canvas + guided empty
-// state; the frontend auto-saves with an 800ms debounce.
+// M4 workflow v2 (ADR-0017) + v1.10.5 convergence (ADR-0018): 7 node kinds.
+// No bubble / no IF. UI is variable-free: data flows through edges, the
+// engine keeps {{nodeId.field}} internally only. Params are card-based;
+// the only free-text field in the UI is the Agent prompt.
 
 export interface WorkflowNode {
   id: string;
@@ -64,7 +65,6 @@ export interface RecentRunRow {
 }
 
 export const NODE_KINDS = [
-  "bubble",
   "agent",
   "show_window",
   "wait",
@@ -74,11 +74,7 @@ export const NODE_KINDS = [
   "ring",
 ] as const;
 
-/** Legacy binary condition kept for old saved flows (ADR-0017). */
-export const LEGACY_KINDS = ["if"] as const;
-
 export const NODE_LABELS: Record<string, string> = {
-  bubble: "气泡",
   agent: "发送给 Agent",
   show_window: "显示窗口",
   wait: "等待",
@@ -86,54 +82,34 @@ export const NODE_LABELS: Record<string, string> = {
   focus: "专注",
   idle: "空闲",
   ring: "响铃",
-  if: "条件 IF（旧）",
 };
 
 export const NODE_DESC: Record<string, string> = {
-  bubble: "显示一条气泡消息",
-  agent: "调用角色 Agent，可等待结果",
+  agent: "调用角色 Agent；回复显示在对话框与宠物",
   show_window: "打开一个内部窗口",
   wait: "等待 N 秒",
-  branch: "按「选项1..N」多路路由",
+  branch: "按选项多路路由",
   focus: "进入专注 N 秒",
   idle: "进入空闲 N 秒",
   ring: "响铃 N 秒",
-  if: "旧式二分支条件",
-};
-
-/** Output fields a node exposes for {{nodeId.field}} references. */
-export const NODE_OUT_FIELDS: Record<string, string[]> = {
-  bubble: ["text"],
-  agent: ["result", "status", "threadId", "slot"],
-  show_window: ["opened"],
-  wait: ["elapsedSec"],
-  branch: ["matched", "value", "option"],
-  focus: ["completed", "elapsedSec"],
-  idle: ["completed", "elapsedSec"],
-  ring: ["played", "seconds"],
-  if: ["matched"],
 };
 
 export function defaultParams(kind: string): Record<string, unknown> {
   switch (kind) {
-    case "bubble":
-      return { text: "", priority: "normal" };
     case "agent":
       return { prompt: "", wait: true, timeout: 600, fillOptions: [] as string[] };
     case "show_window":
       return { target: "chat" };
     case "wait":
-      return { seconds: 5 };
+      return { seconds: 30 };
     case "branch":
-      return { source: "", options: ["专注", "分心"] as string[] };
+      return { condition: "slot", options: ["专注", "分心"] as string[], focusState: "focus" };
     case "focus":
       return { seconds: 1500 };
     case "idle":
       return { seconds: 300 };
     case "ring":
       return { seconds: 3 };
-    case "if":
-      return { source: "", op: "not_empty", value: "" };
     default:
       return {};
   }

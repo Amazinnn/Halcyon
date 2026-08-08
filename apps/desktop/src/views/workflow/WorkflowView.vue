@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { VueFlow, type Edge, type Node, type Connection } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import "@vue-flow/core/dist/style.css";
@@ -11,7 +11,6 @@ import {
   NODE_DESC,
   NODE_KINDS,
   NODE_LABELS,
-  NODE_OUT_FIELDS,
   TRIGGER_LABELS,
   defaultParams,
   emptyWorkflow,
@@ -24,8 +23,6 @@ const store = useWorkflowStore();
 const nodes = ref<any[]>([]);
 const edges = ref<any[]>([]);
 const selectedNodeId = ref<string | null>(null);
-const activeParam = ref("");
-const refMenu = ref(false);
 const errorMsg = ref("");
 const copyTarget = ref<{ id: string; action: "copy" | "move" } | null>(null);
 const copyCharId = ref("");
@@ -33,6 +30,9 @@ const triggerEditor = ref(false);
 const running = ref(false);
 const nodeStatus = ref<Record<string, string>>({});
 const editingId = ref<string | null>(null);
+
+// v1.10.5 (#59): self-originated auto-saves must never trigger a canvas reload.
+let selfSave = false;
 
 const nodeTypes = { workflow: FlowNode as any };
 
@@ -61,17 +61,24 @@ const currentBadge = computed(() => {
   return TRIGGER_LABELS[meta.value.trigger] ?? meta.value.trigger;
 });
 
-const refCandidates = computed(() => {
-  if (!selectedNode.value) return [];
-  const list: { nodeId: string; field: string }[] = [];
-  for (const n of nodes.value) {
-    if (n.id === selectedNode.value.id) continue;
-    for (const f of NODE_OUT_FIELDS[n.data.kind as string] ?? []) {
-      list.push({ nodeId: n.id, field: f });
-    }
-  }
-  return list;
-});
+// ---- preset chips (v1.10.5 #60) ----
+const PRESETS: Record<string, { label: string; value: number }[]> = {
+  wait: [5, 10, 30, 60, 300].map((s) => ({ label: s + " 秒", value: s })),
+  focus: [25, 50, 90].map((m) => ({ label: m + " 分钟", value: m * 60 })),
+  idle: [5, 10, 15].map((m) => ({ label: m + " 分钟", value: m * 60 })),
+  ring: [1, 3, 5, 10].map((s) => ({ label: s + " 秒", value: s })),
+  timeout: [5, 10, 30].map((m) => ({ label: m + " 分钟", value: m * 60 })),
+  interval: [15, 30, 60, 120].map((m) => ({ label: m + " 分钟", value: m })),
+};
+const DAILY_PRESETS = ["09:00", "12:00", "14:00", "18:00", "21:00"];
+
+// ---- card-list editors (fillOptions / branch options) ----
+const addingFill = ref(false);
+const addFillText = ref("");
+const fillInput = ref<HTMLInputElement | null>(null);
+const addingOpt = ref(false);
+const addOptText = ref("");
+const optInput = ref<HTMLInputElement | null>(null);
 
 function loadDraft(wf: WorkflowDef | null) {
   if (wf) {
@@ -111,8 +118,6 @@ function loadDraft(wf: WorkflowDef | null) {
     edges.value = [];
   }
   selectedNodeId.value = null;
-  activeParam.value = "";
-  refMenu.value = false;
   triggerEditor.value = false;
   nodeStatus.value = {};
   running.value = false;
@@ -156,6 +161,7 @@ function scheduleAutoSave() {
 async function saveNow() {
   saveTimer = null;
   if (nodes.value.length === 0) return; // empty canvas has nothing to persist
+  selfSave = true;
   try {
     const saved = await store.save(toDraft());
     editingId.value = saved.id;
@@ -163,6 +169,8 @@ async function saveNow() {
     errorMsg.value = "";
   } catch (e) {
     errorMsg.value = String(e);
+  } finally {
+    selfSave = false;
   }
 }
 function flushAutoSave() {
@@ -182,9 +190,9 @@ onMounted(async () => {
 watch(
   () => [store.currentCharacterId, store.currentWorkflowId] as const,
   ([, wfId]) => {
-    // Skip reload when the change came from our own auto-save (keeps the
-    // in-progress selection/typing intact).
-    if (wfId === editingId.value) return;
+    // v1.10.5 (#59): never reload for our own auto-save (keeps the node and
+    // the in-progress selection); only external switches reload.
+    if (selfSave || wfId === editingId.value) return;
     const wf = store.workflows.find((w) => w.id === wfId);
     loadDraft(wf ?? null);
   },
@@ -250,13 +258,10 @@ function onConnect(conn: Connection) {
 
 function onNodeClick(ev: { node: Node }) {
   selectedNodeId.value = ev.node.id;
-  activeParam.value = "";
-  refMenu.value = false;
 }
 
 function onPaneClick() {
   selectedNodeId.value = null;
-  refMenu.value = false;
 }
 
 function onEdgeClick(ev: { edge: Edge }) {
@@ -278,8 +283,6 @@ function addNode(kind: string) {
   };
   nodes.value.push(n);
   selectedNodeId.value = n.id;
-  activeParam.value = "";
-  refMenu.value = false;
 }
 
 function removeSelectedNode() {
@@ -303,22 +306,18 @@ function setMeta(key: string, value: unknown) {
   scheduleAutoSave();
 }
 
-function insertRef(nodeId: string, field: string) {
-  if (!selectedNode.value || !activeParam.value) return;
-  const cur = String((selectedNode.value.data.params as Record<string, unknown>)[activeParam.value] ?? "");
-  setParam(activeParam.value, cur + "{{" + nodeId + "." + field + "}}");
-  refMenu.value = false;
-}
-
-function insertSystem(token: string) {
-  if (!selectedNode.value || !activeParam.value) return;
-  const cur = String((selectedNode.value.data.params as Record<string, unknown>)[activeParam.value] ?? "");
-  setParam(activeParam.value, cur + "{{" + token + "}}");
-  refMenu.value = false;
-}
-
 async function runCurrent() {
   if (!store.currentWorkflowId) return;
+  const bad = nodes.value.find(
+    (n) =>
+      n.data.kind === "branch" &&
+      n.data.params.condition !== "focus_state" &&
+      (!Array.isArray(n.data.params.options) || n.data.params.options.length < 2),
+  );
+  if (bad) {
+    errorMsg.value = "分支「" + bad.id + "」至少需要 2 个选项";
+    return;
+  }
   try {
     running.value = true;
     nodeStatus.value = {};
@@ -378,25 +377,42 @@ async function removeWorkflow(w: { id: string; name: string }) {
   }
 }
 
-
-function fillOptionsText(): string {
-  const a = Array.isArray(sp.value.fillOptions) ? (sp.value.fillOptions as string[]) : [];
-  return a.join("\n");
+// ---- card-list helpers ----
+function strArray(key: string): string[] {
+  const a = sp.value[key];
+  return Array.isArray(a) ? (a as string[]).filter((s) => typeof s === "string") : [];
 }
-function setFillOptions(text: string) {
-  const a = text.split("\n").map((s) => s.trim()).filter(Boolean);
+function startAddFill() {
+  addingFill.value = true;
+  addFillText.value = "";
+  void nextTick(() => fillInput.value?.focus());
+}
+function confirmAddFill() {
+  const v = addFillText.value.trim();
+  if (v) setParam("fillOptions", [...strArray("fillOptions"), v]);
+  addingFill.value = false;
+}
+function removeFillOption(i: number) {
+  const a = strArray("fillOptions");
+  a.splice(i, 1);
   setParam("fillOptions", a);
 }
-function branchOptionsText(): string {
-  const a = Array.isArray(sp.value.options) ? (sp.value.options as string[]) : [];
-  return a.join("\n");
+function startAddOpt() {
+  addingOpt.value = true;
+  addOptText.value = "";
+  void nextTick(() => optInput.value?.focus());
 }
-function setBranchOptions(text: string) {
-  const a = text.split("\n").map((s) => s.trim()).filter(Boolean);
-  setParam("options", a.length >= 2 ? a : ["专注", "分心"]);
+function confirmAddOpt() {
+  const v = addOptText.value.trim();
+  if (v) setParam("options", [...strArray("options"), v]);
+  addingOpt.value = false;
+}
+function removeOpt(i: number) {
+  const a = strArray("options");
+  a.splice(i, 1);
+  setParam("options", a);
 }
 </script>
-
 <template>
   <div class="wf-window">
     <WindowHeader :title="currentName" collapsible />
@@ -440,12 +456,30 @@ function setBranchOptions(text: string) {
         </div>
         <div v-if="meta.scheduleType === 'interval'" class="tr-row">
           <span class="label">每</span>
+          <div class="chips">
+            <button
+              v-for="c in PRESETS.interval"
+              :key="c.value"
+              class="chip"
+              :class="{ on: meta.intervalMinutes === c.value }"
+              @click="setMeta('intervalMinutes', c.value)"
+            >{{ c.label }}</button>
+          </div>
           <input class="ta num" type="number" min="1" :value="meta.intervalMinutes ?? 30"
             @change="setMeta('intervalMinutes', Number(($event.target as HTMLInputElement).value) || 30)" />
           <span class="label">分钟</span>
         </div>
         <div v-else class="tr-row">
           <span class="label">时间</span>
+          <div class="chips">
+            <button
+              v-for="t in DAILY_PRESETS"
+              :key="t"
+              class="chip"
+              :class="{ on: meta.dailyTime === t }"
+              @click="setMeta('dailyTime', t)"
+            >{{ t }}</button>
+          </div>
           <input class="ta" type="time" :value="meta.dailyTime ?? '09:00'"
             @change="setMeta('dailyTime', ($event.target as HTMLInputElement).value || '09:00')" />
         </div>
@@ -531,7 +565,6 @@ function setBranchOptions(text: string) {
           </svg>
         </VueFlow>
       </div>
-
       <aside class="wf-inspector">
         <div class="insp-section">
           <div class="insp-head">动作库</div>
@@ -556,33 +589,46 @@ function setBranchOptions(text: string) {
           </div>
           <template v-if="selectedNode">
             <div class="insp-body">
-              <template v-if="selectedNode.data.kind === 'bubble'">
-                <label>气泡文本</label>
-                <textarea class="ta" :value="String(sp.text ?? '')"
-                  @focus="activeParam = 'text'; refMenu = true"
-                  @input="setParam('text', ($event.target as HTMLTextAreaElement).value)" />
-                <label>优先级</label>
-                <select class="sel" :value="String(sp.priority ?? 'normal')" @change="setParam('priority', ($event.target as HTMLSelectElement).value)">
-                  <option value="normal">normal</option>
-                  <option value="high">high</option>
-                  <option value="critical">critical</option>
-                </select>
-              </template>
-
-              <template v-else-if="selectedNode.data.kind === 'agent'">
-                <label>提示词（自动注入角色 agents.md 人格）</label>
-                <textarea class="ta" :value="String(sp.prompt ?? '')"
-                  @focus="activeParam = 'prompt'; refMenu = true"
-                  @input="setParam('prompt', ($event.target as HTMLTextAreaElement).value)" />
+              <template v-if="selectedNode.data.kind === 'agent'">
+                <label>提示词（自动注入角色人格与输出规范）</label>
+                <textarea
+                  class="ta"
+                  :value="String(sp.prompt ?? '')"
+                  @input="setParam('prompt', ($event.target as HTMLTextAreaElement).value)"
+                />
                 <label class="check">
                   <input type="checkbox" :checked="sp.wait !== false" @change="setParam('wait', ($event.target as HTMLInputElement).checked)" />
-                  等待结果（取消则发完即走、无输出）
+                  等待结果（取消则发完即走、不展示）
                 </label>
-                <label>填空槽候选项（每行一个；留空=自由填空）</label>
-                <textarea class="ta" rows="3" :value="fillOptionsText()" @input="setFillOptions(($event.target as HTMLTextAreaElement).value)" />
-                <label>超时秒数（默认 600）</label>
-                <input class="ta num" type="number" min="10" :value="Number(sp.timeout ?? 600)"
-                  @change="setParam('timeout', Number(($event.target as HTMLInputElement).value) || 600)" />
+                <template v-if="sp.wait !== false">
+                  <label>回复会显示在对话框（一条消息）与宠物泡泡</label>
+                  <label>超时</label>
+                  <div class="chips">
+                    <button
+                      v-for="c in PRESETS.timeout"
+                      :key="c.value"
+                      class="chip"
+                      :class="{ on: Number(sp.timeout ?? 600) === c.value }"
+                      @click="setParam('timeout', c.value)"
+                    >{{ c.label }}</button>
+                  </div>
+                  <input class="ta num" type="number" min="10" :value="Number(sp.timeout ?? 600)"
+                    @change="setParam('timeout', Number(($event.target as HTMLInputElement).value) || 600)" />
+                  <label>填空槽候选项（留空 = 自由填空）</label>
+                  <div class="card-list">
+                    <div v-for="(o, i) in strArray('fillOptions')" :key="i" class="card-chip">
+                      <span>{{ o }}</span>
+                      <button class="chip-x" @click="removeFillOption(i)">×</button>
+                    </div>
+                    <div v-if="addingFill" class="card-add">
+                      <input ref="fillInput" class="ta" :value="addFillText"
+                        @input="addFillText = ($event.target as HTMLInputElement).value"
+                        @keydown.enter="confirmAddFill" @keydown.esc="addingFill = false" />
+                      <button class="btn accent" @click="confirmAddFill">确定</button>
+                    </div>
+                    <button v-else class="btn" @click="startAddFill">+ 添加</button>
+                  </div>
+                </template>
               </template>
 
               <template v-else-if="selectedNode.data.kind === 'show_window'">
@@ -596,53 +642,67 @@ function setBranchOptions(text: string) {
               </template>
 
               <template v-else-if="selectedNode.data.kind === 'wait'">
-                <label>等待秒数（1–3600）</label>
-                <input class="ta num" type="number" min="1" max="3600" :value="Number(sp.seconds ?? 5)"
+                <label>等待秒数</label>
+                <div class="chips">
+                  <button
+                    v-for="c in PRESETS.wait"
+                    :key="c.value"
+                    class="chip"
+                    :class="{ on: Number(sp.seconds ?? 30) === c.value }"
+                    @click="setParam('seconds', c.value)"
+                  >{{ c.label }}</button>
+                </div>
+                <input class="ta num" type="number" min="1" max="3600" :value="Number(sp.seconds ?? 30)"
                   @change="setParam('seconds', Number(($event.target as HTMLInputElement).value) || 1)" />
               </template>
 
               <template v-else-if="selectedNode.data.kind === 'branch'">
-                <label>判断来源（可引用 <span v-pre>{{node.field}}</span> / <span v-pre>{{system.focus_state}}</span>）</label>
-                <input class="ta" :value="String(sp.source ?? '')"
-                  @focus="activeParam = 'source'; refMenu = true"
-                  @input="setParam('source', ($event.target as HTMLInputElement).value)" />
-                <label>选项（每行一个，≥2；命中「选项N」出口，都不命中则流程停在此节点）</label>
-                <textarea class="ta" rows="3" :value="branchOptionsText()" @input="setBranchOptions(($event.target as HTMLTextAreaElement).value)" />
+                <label>条件来源</label>
+                <div class="seg">
+                  <button :class="{ on: sp.condition !== 'focus_state' }" @click="setParam('condition', 'slot')">上游 Agent 槽值</button>
+                  <button :class="{ on: sp.condition === 'focus_state' }" @click="setParam('condition', 'focus_state')">当前专注状态</button>
+                </div>
+                <template v-if="sp.condition === 'focus_state'">
+                  <label>状态</label>
+                  <div class="seg">
+                    <button :class="{ on: sp.focusState === 'focus' }" @click="setParam('focusState', 'focus')">专注中</button>
+                    <button :class="{ on: sp.focusState === 'rest' }" @click="setParam('focusState', 'rest')">休息中</button>
+                    <button :class="{ on: sp.focusState === 'idle' }" @click="setParam('focusState', 'idle')">空闲中</button>
+                  </div>
+                  <label class="muted">出口：符合 / 不符合</label>
+                </template>
+                <template v-else>
+                  <label>选项（≥2，需连接上游 Agent）</label>
+                  <div class="card-list">
+                    <div v-for="(o, i) in strArray('options')" :key="i" class="card-chip">
+                      <span>{{ o }}</span>
+                      <button class="chip-x" @click="removeOpt(i)">×</button>
+                    </div>
+                    <div v-if="addingOpt" class="card-add">
+                      <input ref="optInput" class="ta" :value="addOptText"
+                        @input="addOptText = ($event.target as HTMLInputElement).value"
+                        @keydown.enter="confirmAddOpt" @keydown.esc="addingOpt = false" />
+                      <button class="btn accent" @click="confirmAddOpt">确定</button>
+                    </div>
+                    <button v-else class="btn" @click="startAddOpt">+ 添加</button>
+                  </div>
+                </template>
               </template>
 
               <template v-else-if="selectedNode.data.kind === 'focus' || selectedNode.data.kind === 'idle' || selectedNode.data.kind === 'ring'">
                 <label>秒数（focus/idle ≤3600，ring ≤120）</label>
+                <div class="chips">
+                  <button
+                    v-for="c in PRESETS[selectedNode.data.kind as string] ?? []"
+                    :key="c.value"
+                    class="chip"
+                    :class="{ on: Number(sp.seconds ?? c.value) === c.value }"
+                    @click="setParam('seconds', c.value)"
+                  >{{ c.label }}</button>
+                </div>
                 <input class="ta num" type="number" min="1" :value="Number(sp.seconds ?? (selectedNode.data.kind === 'ring' ? 3 : 1500))"
                   @change="setParam('seconds', Number(($event.target as HTMLInputElement).value) || 1)" />
               </template>
-
-              <template v-else-if="selectedNode.data.kind === 'if'">
-                <label>判断来源</label>
-                <input class="ta" :value="String(sp.source ?? '')"
-                  @focus="activeParam = 'source'; refMenu = true"
-                  @input="setParam('source', ($event.target as HTMLInputElement).value)" />
-                <label>运算</label>
-                <select class="sel" :value="String(sp.op ?? 'not_empty')" @change="setParam('op', ($event.target as HTMLSelectElement).value)">
-                  <option value="not_empty">非空</option>
-                  <option value="contains">包含</option>
-                  <option value="equals">等于</option>
-                </select>
-                <template v-if="sp.op !== 'not_empty'">
-                  <label>比较值</label>
-                  <input class="ta" :value="String(sp.value ?? '')" @input="setParam('value', ($event.target as HTMLInputElement).value)" />
-                </template>
-              </template>
-
-              <div v-if="refMenu" class="ref-menu">
-                <div class="ref-title">插入引用（{{ activeParam }}）</div>
-                <button v-for="r in refCandidates" :key="r.nodeId + r.field" class="ref-item" @click="insertRef(r.nodeId, r.field)">
-                  {{ r.nodeId }}.{{ r.field }}
-                </button>
-                <div class="ref-title">系统字段</div>
-                <button class="ref-item" @click="insertSystem('system.focus_state')">system.focus_state</button>
-                <button class="ref-item" @click="insertSystem('system.time')">system.time</button>
-                <div v-if="!refCandidates.length" class="ref-item muted">没有可引用的前序节点输出</div>
-              </div>
             </div>
           </template>
           <div v-else class="insp-empty">选择画布中的节点编辑参数</div>
@@ -651,9 +711,6 @@ function setBranchOptions(text: string) {
     </div>
   </div>
 </template>
-
-
-
 <style scoped>
 .wf-window {
   height: 100%;
@@ -730,7 +787,7 @@ function setBranchOptions(text: string) {
   gap: 6px;
   background: rgba(10, 18, 14, 0.6);
 }
-.tr-row { display: flex; align-items: center; gap: 8px; }
+.tr-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .wf-body {
   flex: 1;
   display: flex;
@@ -843,16 +900,51 @@ function setBranchOptions(text: string) {
 textarea.ta { min-height: 56px; resize: vertical; }
 .ta.num { width: 90px; }
 .insp-empty { padding: 14px; color: var(--text-low); }
-.ref-menu { border: 1px solid var(--glass-border); border-radius: var(--r-sm); padding: 6px; display: flex; flex-direction: column; gap: 4px; }
-.ref-title { color: var(--text-low); font-size: 10px; }
-.ref-item {
-  text-align: left;
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip {
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-mid);
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.chip:hover { color: var(--text-hi); border-color: var(--accent); }
+.chip.on { background: var(--accent-wash); color: var(--accent-bright); border-color: var(--accent); }
+.card-list { display: flex; flex-direction: column; gap: 4px; }
+.card-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  border: 1px solid var(--glass-border);
+  background: rgba(10, 18, 14, 0.6);
+  border-radius: var(--r-sm);
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-hi);
+}
+.chip-x {
   border: none;
   background: transparent;
-  color: var(--accent-bright);
-  font-size: 11px;
+  color: var(--text-low);
+  font-size: 12px;
   cursor: pointer;
-  padding: 2px 0;
+  line-height: 1;
 }
-.ref-item.muted { color: var(--text-low); }
+.chip-x:hover { color: #ff7b72; }
+.card-add { display: flex; gap: 4px; align-items: center; }
+.card-add .ta { flex: 1; }
+.seg { display: flex; gap: 4px; flex-wrap: wrap; }
+.seg button {
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-mid);
+  border-radius: var(--r-sm);
+  padding: 3px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.seg button.on { background: var(--accent-wash); color: var(--accent-bright); border-color: var(--accent); }
 </style>

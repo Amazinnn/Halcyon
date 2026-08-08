@@ -113,9 +113,11 @@ export const useWorkflowStore = defineStore("workflow", {
     },
     async save(workflow: WorkflowDef): Promise<WorkflowDef> {
       const saved = await invoke<WorkflowDef>("workflow_save", { workflow });
+      // v1.10.5 (#59): refresh the list BEFORE publishing the new id so any
+      // watcher on currentWorkflowId already finds the saved workflow.
+      await this.refreshWorkflows();
       this.currentWorkflowId = saved.id;
       localStorage.setItem(KEY_WF, saved.id);
-      await this.refreshWorkflows();
       await this.refreshRuns(saved.id);
       return saved;
     },

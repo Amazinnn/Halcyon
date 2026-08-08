@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { Handle, Position } from "@vue-flow/core";
-import { NODE_DESC, NODE_LABELS, NODE_OUT_FIELDS } from "../../lib/workflow";
+import { NODE_DESC, NODE_LABELS } from "../../lib/workflow";
 
 const props = defineProps<{
   id: string;
@@ -14,24 +14,24 @@ const status = computed(() => props.data.status ?? "");
 
 const summary = computed(() => {
   switch (kind.value) {
-    case "bubble":
-      return String(p.value.text ?? "");
     case "agent":
       return (
         (p.value.wait === false ? "[不等待] " : "[等待结果] ") +
-        String(p.value.prompt ?? "")
+        String(p.value.prompt ?? "") +
+        (p.value.wait === false ? "" : "（回复显示在对话框与宠物）")
       );
     case "show_window":
       return "打开 " + String(p.value.target ?? "chat");
     case "wait":
-      return "等待 " + String(p.value.seconds ?? 5) + " 秒";
+      return "等待 " + String(p.value.seconds ?? 30) + " 秒";
     case "branch": {
-      const opts = Array.isArray(p.value.options) ? p.value.options : [];
-      return (
-        String(p.value.source ?? "") +
-        " → " +
-        opts.map((_, i) => `选项${i + 1}`).join(" / ")
-      );
+      const condition = p.value.condition === "focus_state" ? "专注状态" : "上游 Agent 槽值";
+      const opts = Array.isArray(p.value.options) ? (p.value.options as unknown[]) : [];
+      const detail =
+        p.value.condition === "focus_state"
+          ? "当状态为「" + String(p.value.focusState ?? "focus") + "」"
+          : opts.map((_, i) => `选项${i + 1}`).join(" / ");
+      return condition + " → " + detail;
     }
     case "focus":
       return "专注 " + String(p.value.seconds ?? 1500) + " 秒";
@@ -39,35 +39,13 @@ const summary = computed(() => {
       return "空闲 " + String(p.value.seconds ?? 300) + " 秒";
     case "ring":
       return "响铃 " + String(p.value.seconds ?? 3) + " 秒";
-    case "if":
-      return (
-        String(p.value.source ?? "") +
-        " " +
-        String(p.value.op ?? "not_empty") +
-        (p.value.value ? " " + p.value.value : "")
-      );
     default:
       return "";
   }
 });
 
-/** {{nodeId.field}} references embedded in the node's text params. */
-const inputRefs = computed(() => {
-  const textParams = ["prompt", "text", "source"];
-  const found = new Set<string>();
-  for (const k of textParams) {
-    const v = String(p.value[k] ?? "");
-    const re = /\{\{\s*([\w.-]+)\s*\}\}/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(v))) found.add(m[1]);
-  }
-  return [...found];
-});
-
-const outFields = computed(() => NODE_OUT_FIELDS[kind.value] ?? []);
-
 const branchOptions = computed(() => {
-  if (kind.value !== "branch") return [];
+  if (kind.value !== "branch" || p.value.condition === "focus_state") return [];
   const opts = Array.isArray(p.value.options) ? (p.value.options as unknown[]) : [];
   return opts.length >= 2 ? opts : [];
 });
@@ -81,13 +59,7 @@ const branchOptions = computed(() => {
       <span class="wf-node-desc">{{ NODE_DESC[kind] ?? "" }}</span>
     </div>
     <div class="wf-node-body">{{ summary || "（未配置）" }}</div>
-    <div v-if="inputRefs.length" class="wf-node-badges">
-      <span v-for="r in inputRefs" :key="r" class="badge ref">{{ r }}</span>
-    </div>
-    <div v-if="outFields.length" class="wf-node-badges">
-      <span v-for="f in outFields" :key="f" class="badge out">{{ f }}</span>
-    </div>
-    <template v-if="kind === 'branch'">
+    <template v-if="kind === 'branch' && p.condition !== 'focus_state'">
       <Handle
         v-for="(_, i) in branchOptions"
         :key="'option' + (i + 1)"
@@ -103,11 +75,11 @@ const branchOptions = computed(() => {
         :style="{ top: ((i + 1) / (branchOptions.length + 1)) * 100 + '%' }"
       >选项{{ i + 1 }}</span>
     </template>
-    <template v-else-if="kind === 'if'">
+    <template v-else-if="kind === 'branch'">
       <Handle type="source" :position="Position.Right" id="true" :style="{ top: '32%' }" />
       <Handle type="source" :position="Position.Right" id="false" :style="{ top: '72%' }" />
-      <span class="h-label t">是</span>
-      <span class="h-label f">否</span>
+      <span class="h-label t">符合</span>
+      <span class="h-label f">不符合</span>
     </template>
     <Handle v-else type="source" :position="Position.Right" id="out" />
   </div>
@@ -131,7 +103,6 @@ const branchOptions = computed(() => {
 .wf-node.focus { border-color: rgba(163, 230, 53, 0.5); }
 .wf-node.idle { border-color: rgba(120, 180, 255, 0.5); }
 .wf-node.ring { border-color: rgba(255, 160, 120, 0.55); }
-.wf-node.if { border-color: rgba(232, 199, 102, 0.6); }
 .wf-node.running { border-color: #4f9dff; box-shadow: 0 0 0 2px rgba(79, 157, 255, 0.25); }
 .wf-node.success { border-color: #2ecc71; }
 .wf-node.failed { border-color: #ff5555; }
@@ -153,20 +124,6 @@ const branchOptions = computed(() => {
   overflow: hidden;
   font-size: 11px;
 }
-.wf-node-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 0 10px 6px;
-}
-.badge {
-  font-size: 9px;
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-family: ui-monospace, Consolas, monospace;
-}
-.badge.ref { background: rgba(120, 180, 255, 0.14); color: #9cc7ff; }
-.badge.out { background: rgba(163, 230, 53, 0.12); color: var(--accent-bright); }
 .h-label {
   position: absolute;
   right: -40px;
