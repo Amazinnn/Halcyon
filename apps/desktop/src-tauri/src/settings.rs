@@ -200,35 +200,47 @@ impl Settings {
         s
     }
 
-    /// v1.10.2 (#36/#38/#41): one-time layout migration for windows whose
-    /// default size changed. Runs once (layout_version 0 -> 1) and is
+    /// v1.10.2 (#36/#38/#41) + v1.10.4 (#51): one-time layout migrations for
+    /// windows whose default size changed. Runs once per version and is
     /// idempotent; user customizations that do not match the old defaults are
     /// left untouched.
     /// Returns true when a migration was applied (caller persists it).
     pub fn migrate_layout(&mut self) -> bool {
-        if self.layout_version.unwrap_or(0) >= 1 {
-            return false;
-        }
-        if let Some(r) = self.grid.get_mut("workflow") {
-            if r.cols == 2 && r.rows == 2 {
-                r.cols = 4;
-                r.rows = 3;
+        let v = self.layout_version.unwrap_or(0);
+        let mut changed = false;
+        if v < 1 {
+            if let Some(r) = self.grid.get_mut("workflow") {
+                if r.cols == 2 && r.rows == 2 {
+                    r.cols = 4;
+                    r.rows = 3;
+                }
             }
-        }
-        if let Some(r) = self.grid.get_mut("music") {
-            if r.cols == 3 && r.rows == 2 {
-                r.cols = 3;
-                r.rows = 3;
+            if let Some(r) = self.grid.get_mut("music") {
+                if r.cols == 3 && r.rows == 2 {
+                    r.cols = 3;
+                    r.rows = 3;
+                }
             }
-        }
-        if let Some(r) = self.grid.get_mut("stats") {
-            if r.cols == 4 && r.rows == 3 {
-                r.cols = 5;
-                r.rows = 4;
+            if let Some(r) = self.grid.get_mut("stats") {
+                if r.cols == 4 && r.rows == 3 {
+                    r.cols = 5;
+                    r.rows = 4;
+                }
             }
+            self.layout_version = Some(1);
+            changed = true;
         }
-        self.layout_version = Some(1);
-        true
+        if v < 2 {
+            if let Some(r) = self.grid.get_mut("workflow") {
+                if r.cols == 4 && r.rows == 3 {
+                    r.cols = 6;
+                    r.rows = 5;
+                }
+            }
+            self.layout_version = Some(2);
+            changed = true;
+        }
+        changed
     }
 
     pub fn save(&self, dir: &Path) -> Result<(), String> {
@@ -262,13 +274,13 @@ mod tests {
             ("stats", GridRect { col: 8, row: 4, cols: 4, rows: 3 }),
         ]);
         s.migrate_layout();
-        assert_eq!(s.grid["workflow"].cols, 4);
-        assert_eq!(s.grid["workflow"].rows, 3);
+        assert_eq!(s.grid["workflow"].cols, 6);
+        assert_eq!(s.grid["workflow"].rows, 5);
         assert_eq!(s.grid["music"].cols, 3);
         assert_eq!(s.grid["music"].rows, 3);
         assert_eq!(s.grid["stats"].cols, 5);
         assert_eq!(s.grid["stats"].rows, 4);
-        assert_eq!(s.layout_version, Some(1));
+        assert_eq!(s.layout_version, Some(2));
     }
 
     #[test]
@@ -279,7 +291,7 @@ mod tests {
         s.grid.insert("workflow".into(), GridRect { col: 1, row: 5, cols: 2, rows: 2 });
         s.migrate_layout();
         assert_eq!(s.grid["workflow"].cols, 2);
-        assert_eq!(s.layout_version, Some(1));
+        assert_eq!(s.layout_version, Some(2));
     }
 
     #[test]
@@ -293,7 +305,7 @@ mod tests {
         assert_eq!(s.grid["workflow"].cols, 3);
         assert_eq!(s.grid["music"].rows, 4);
         assert_eq!(s.grid["stats"].cols, 5);
-        assert_eq!(s.layout_version, Some(1));
+        assert_eq!(s.layout_version, Some(2));
     }
 
     #[test]

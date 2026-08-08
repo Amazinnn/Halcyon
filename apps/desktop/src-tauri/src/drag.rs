@@ -187,11 +187,14 @@ pub fn finalize(app: &AppHandle, label: &str) {
     let Some(w) = app.get_webview_window(label) else { return };
     let pos = w.outer_position().unwrap_or_default();
     let scale = w.scale_factor().unwrap_or(1.0);
+    // v1.10.4 (#50): snap from the client origin so the content lands on the
+    // cell even when the outer rect carries a non-client band.
+    let (co_x, co_y, _, _) = crate::client_geometry(&w);
     let (sw, sh) = *state.screen.lock().unwrap();
     let gm = GridManager { screen_w: sw, screen_h: sh };
     let m = gm.metrics();
-    let col = ((pos.x as f64 / scale) / m.cell_w).round() as usize;
-    let row = ((pos.y as f64 / scale) / m.cell_h).round() as usize;
+    let col = (((pos.x as f64 + co_x as f64) / scale) / m.cell_w).round() as usize;
+    let row = (((pos.y as f64 + co_y as f64) / scale) / m.cell_h).round() as usize;
     let _ = place_window_inner(app, &state, label, col, row);
     // the float was just raised above the topbar; put the capsule back on top
     crate::raise_topbar(app);
@@ -205,6 +208,10 @@ fn poller(
     scale: f64,
     win_w: u32,
     win_h: u32,
+    co_x: i32,
+    co_y: i32,
+    cw: u32,
+    ch: u32,
     stop: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
 ) {
@@ -252,10 +259,10 @@ fn poller(
         {
             last_preview = now;
             let m = GridManager { screen_w: sw, screen_h: sh }.metrics();
-            let fx = (x as f64 / scale) / m.cell_w;
-            let fy = (y as f64 / scale) / m.cell_h;
-            let fw = (win_w as f64 / scale) / m.cell_w;
-            let fh = (win_h as f64 / scale) / m.cell_h;
+            let fx = ((x as f64 + co_x as f64) / scale) / m.cell_w;
+            let fy = ((y as f64 + co_y as f64) / scale) / m.cell_h;
+            let fw = (cw as f64 / scale) / m.cell_w;
+            let fh = (ch as f64 / scale) / m.cell_h;
             let col = fx.round() as usize;
             let row = fy.round() as usize;
             emit_preview(&app, &label, fx, fy, fw, fh, col, row);
@@ -302,6 +309,9 @@ pub fn drag_start(
     let pos = w.outer_position().map_err(|e| format!("outer_position: {e}"))?;
     let scale = w.scale_factor().unwrap_or(1.0);
     let size = w.outer_size().unwrap_or_default();
+    // v1.10.4 (#50): client-area geometry so the brightness gradient tracks
+    // the visible content, not the outer rect.
+    let (co_x, co_y, cw, ch) = crate::client_geometry(&w);
     let Some((cx, cy)) = cursor_phys() else {
         return Err("drag_start: GetCursorPos failed".into());
     };
@@ -331,10 +341,10 @@ pub fn drag_start(
                 "label": label,
                 "rect": current,
                 "floatRect": {
-                    "x": pos.x as f64 / scale / cell_w,
-                    "y": pos.y as f64 / scale / cell_h,
-                    "w": size.width as f64 / scale / cell_w,
-                    "h": size.height as f64 / scale / cell_h,
+                    "x": (pos.x as f64 + co_x as f64) / scale / cell_w,
+                    "y": (pos.y as f64 + co_y as f64) / scale / cell_h,
+                    "w": cw as f64 / scale / cell_w,
+                    "h": ch as f64 / scale / cell_h,
                 },
                 "occupiedCells": occupied,
                 "conflict": false,
@@ -349,7 +359,7 @@ pub fn drag_start(
     let app2 = app.clone();
     let label2 = label.clone();
     let handle = std::thread::spawn(move || {
-        poller(app2, label2, off_x, off_y, scale, size.width, size.height, stop2, fin2)
+        poller(app2, label2, off_x, off_y, scale, size.width, size.height, co_x, co_y, cw, ch, stop2, fin2)
     });
     *state.active_drag.lock().unwrap() = Some(ActiveDrag {
         label,

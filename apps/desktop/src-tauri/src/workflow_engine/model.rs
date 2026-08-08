@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use chrono::TimeZone;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -42,7 +42,7 @@ fn default_true() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct NodeDef {
     pub id: String,
-    pub kind: String, // bubble | agent | show_window | wait | if
+    pub kind: String, // bubble | agent | show_window | wait | branch | focus | idle | ring | if(legacy)
     #[serde(default)]
     pub params: serde_json::Value,
     #[serde(default)]
@@ -57,7 +57,7 @@ pub struct EdgeDef {
     pub id: String,
     pub source: String,
     #[serde(default = "default_out")]
-    pub source_handle: String, // out | true | false
+    pub source_handle: String, // out | true | false | none | option1..optionN
     pub target: String,
 }
 
@@ -176,7 +176,10 @@ pub fn validate_workflow(wf: &WorkflowDef) -> Result<(), String> {
     }
     let mut ids: HashSet<&str> = HashSet::new();
     for n in &wf.nodes {
-        if !matches!(n.kind.as_str(), "bubble" | "agent" | "show_window" | "wait" | "if") {
+        if !matches!(
+            n.kind.as_str(),
+            "bubble" | "agent" | "show_window" | "wait" | "branch" | "focus" | "idle" | "ring" | "if"
+        ) {
             return Err(format!("未知节点类型: {}", n.kind));
         }
         if !ids.insert(n.id.as_str()) {
@@ -190,39 +193,11 @@ pub fn validate_workflow(wf: &WorkflowDef) -> Result<(), String> {
         if !ids.contains(e.target.as_str()) {
             return Err(format!("连线终点不存在: {}", e.target));
         }
-        if e.source == e.target {
-            return Err(format!("连线不能自环: {}", e.id));
-        }
-        if !matches!(e.source_handle.as_str(), "out" | "true" | "false") {
+        let valid_handle = matches!(e.source_handle.as_str(), "out" | "true" | "false" | "none")
+            || e.source_handle.starts_with("option");
+        if !valid_handle {
             return Err(format!("无效连线手柄: {}", e.source_handle));
         }
-    }
-    // cycle detection
-    let mut indeg: HashMap<&str, usize> = ids.iter().map(|i| (*i, 0)).collect();
-    for e in &wf.edges {
-        *indeg.get_mut(e.target.as_str()).unwrap() += 1;
-    }
-    let mut q: VecDeque<&str> = wf
-        .nodes
-        .iter()
-        .filter(|n| indeg.get(n.id.as_str()) == Some(&0))
-        .map(|n| n.id.as_str())
-        .collect();
-    let mut visited = 0usize;
-    while let Some(id) = q.pop_front() {
-        visited += 1;
-        for e in &wf.edges {
-            if e.source == id {
-                let d = indeg.get_mut(e.target.as_str()).unwrap();
-                *d -= 1;
-                if *d == 0 {
-                    q.push_back(e.target.as_str());
-                }
-            }
-        }
-    }
-    if visited != ids.len() {
-        return Err("工作流存在循环连线".into());
     }
     Ok(())
 }
@@ -257,10 +232,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_cycle() {
+    fn validate_allows_cycle_and_self_loop() {
         let mut wf = sample();
         wf.edges.push(EdgeDef { id: "e2".into(), source: "n2".into(), source_handle: "out".into(), target: "n1".into() });
-        assert!(validate_workflow(&wf).is_err());
+        assert!(validate_workflow(&wf).is_ok());
+        let mut wf2 = sample();
+        wf2.edges.push(EdgeDef { id: "e3".into(), source: "n1".into(), source_handle: "out".into(), target: "n1".into() });
+        assert!(validate_workflow(&wf2).is_ok());
     }
 
     #[test]

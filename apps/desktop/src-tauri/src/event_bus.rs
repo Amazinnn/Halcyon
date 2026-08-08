@@ -23,6 +23,8 @@ pub enum CoreEvent {
     FocusStateChanged { state: String, completed: bool },
     /// Supervision alert fired (M4 workflow trigger source, ADR-0012).
     SupervisionAlert { rule: String, app: Option<String>, level: i64, text: String },
+    /// Workflow node system action (focus/idle/ring) for the frontend timer/sound (v1.10.4/ADR-0017).
+    WorkflowSystemAction { action: String, seconds: i64 },
     /// A workflow run changed (workflow window refresh, M4/ADR-0012).
     WorkflowRunChanged {
         workflow_id: String,
@@ -43,6 +45,7 @@ impl CoreEvent {
             CoreEvent::ProbeRecorded { .. } => "probe:recorded",
             CoreEvent::FocusStateChanged { .. } => "focus:core_state",
             CoreEvent::SupervisionAlert { .. } => "supervision:core_alert",
+            CoreEvent::WorkflowSystemAction { .. } => "workflow:system-action",
             CoreEvent::WorkflowRunChanged { .. } => "workflow:runs_changed",
         }
     }
@@ -68,6 +71,9 @@ impl CoreEvent {
             }
             CoreEvent::SupervisionAlert { rule, app, level, text } => {
                 json!({ "rule": rule, "app": app, "level": level, "text": text })
+            }
+            CoreEvent::WorkflowSystemAction { action, seconds } => {
+                json!({ "action": action, "seconds": seconds })
             }
             CoreEvent::WorkflowRunChanged { workflow_id, run_id, status, error } => {
                 json!({ "workflowId": workflow_id, "runId": run_id, "status": status, "error": error })

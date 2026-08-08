@@ -1148,10 +1148,11 @@ fn strip_float_frame(w: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::Foundation::HWND;
+        use windows::Win32::Foundation::RECT;
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
-            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER, WS_DLGFRAME, WS_MAXIMIZEBOX,
-            WS_MINIMIZEBOX, WS_SYSMENU,
+            GetClientRect, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE,
+            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER, WS_DLGFRAME,
+            WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
         };
         if let Ok(hwnd) = w.hwnd() {
             let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
@@ -1162,18 +1163,34 @@ fn strip_float_frame(w: &tauri::WebviewWindow) {
                     | (WS_SYSMENU.0 as isize)
                     | (WS_MINIMIZEBOX.0 as isize)
                     | (WS_MAXIMIZEBOX.0 as isize));
-                let new_style = style & mask;
+                // v1.10.4 (#49): force WS_POPUP so the host window has zero
+                // non-client area, then reset the outer size to the client
+                // size (outer == client, no white system-drawn band).
+                let new_style = (style & mask) | (WS_POPUP.0 as isize);
                 if new_style != style {
                     let _ = SetWindowLongPtrW(hwnd_win, GWL_STYLE, new_style);
-                    let _ = SetWindowPos(
-                        hwnd_win,
-                        None,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-                    );
+                    let mut cr = RECT::default();
+                    if GetClientRect(hwnd_win, &mut cr).is_ok() {
+                        let _ = SetWindowPos(
+                            hwnd_win,
+                            None,
+                            0,
+                            0,
+                            cr.right,
+                            cr.bottom,
+                            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOZORDER,
+                        );
+                    } else {
+                        let _ = SetWindowPos(
+                            hwnd_win,
+                            None,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                        );
+                    }
                 }
             }
         }
@@ -1184,7 +1201,7 @@ fn strip_float_frame(w: &tauri::WebviewWindow) {
 /// v1.10.3.1 (#48): physical offset of the client-area origin from the window
 /// origin (non-client border). Used to position the *content* exactly at the
 /// grid-cell origin even if the host window keeps a non-client frame.
-fn client_origin_offset(w: &tauri::WebviewWindow) -> (i32, i32) {
+pub(crate) fn client_origin_offset(w: &tauri::WebviewWindow) -> (i32, i32) {
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::Foundation::{HWND, POINT, RECT};
@@ -1205,6 +1222,28 @@ fn client_origin_offset(w: &tauri::WebviewWindow) -> (i32, i32) {
         }
     }
     (0, 0)
+}
+
+
+/// v1.10.4 (#50): client-area geometry (origin offset + size, physical px) for
+/// the drag preview so the brightness center tracks the visible content.
+pub(crate) fn client_geometry(w: &tauri::WebviewWindow) -> (i32, i32, u32, u32) {
+    let (ox, oy) = client_origin_offset(w);
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+        if let Ok(hwnd) = w.hwnd() {
+            let hwnd_win = windows::Win32::Foundation::HWND(hwnd.0 as *mut core::ffi::c_void);
+            unsafe {
+                let mut cr = RECT::default();
+                if GetClientRect(hwnd_win, &mut cr).is_ok() {
+                    return (ox, oy, cr.right as u32, cr.bottom as u32);
+                }
+            }
+        }
+    }
+    (ox, oy, 0, 0)
 }
 
 fn initial_float_rect(
@@ -1299,7 +1338,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
     strip_float_frame(&pet);
 
     let (workflow_px, workflow_py, workflow_pw, workflow_ph, workflow_collapsed) =
-        initial_float_rect(&grid, &collapsed, &gm, "workflow", GridRect { col: 4, row: 2, cols: 4, rows: 3 });
+        initial_float_rect(&grid, &collapsed, &gm, "workflow", GridRect { col: 0, row: 2, cols: 6, rows: 5 }); // v1.10.4 (#51) default 6x5
     let workflow = tauri::WebviewWindowBuilder::new(app, "workflow", url.clone())
         .title("工作流")
         .decorations(false)

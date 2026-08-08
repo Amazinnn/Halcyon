@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::event_bus::CoreEvent;
 use crate::storage::{CharacterRow, Store, WorkflowRunRow};
-use crate::workflow_engine::engine::{execute_run, AgentCall, EventSink, RunOutcome, WindowOps};
+use crate::workflow_engine::engine::{execute_run, AgentCall, EventSink, RunOutcome, SystemActions, WindowOps};
 use crate::workflow_engine::model::{
     CharacterInfo, RunStatus, WorkflowDef, guard_matches, next_daily_run, next_interval_run,
     now_ts, validate_workflow,
@@ -343,6 +343,7 @@ impl WorkflowManager {
                     m.as_ref() as &dyn AgentCall,
                     m.as_ref() as &dyn EventSink,
                     m.as_ref() as &dyn WindowOps,
+                    m.as_ref() as &dyn SystemActions,
                     &cancel,
                 )
             } else {
@@ -481,6 +482,36 @@ impl EventSink for WorkflowManager {
 impl WindowOps for WorkflowManager {
     fn show_window(&self, label: &str) -> Result<(), String> {
         crate::restore_window(&self.app, label)
+    }
+}
+
+impl SystemActions for WorkflowManager {
+    fn focus(&self, seconds: i64) -> Result<(), String> {
+        let _ = self.app.state::<AppState>().events_tx.send(CoreEvent::WorkflowSystemAction {
+            action: "focus".into(),
+            seconds,
+        });
+        Ok(())
+    }
+    fn idle(&self, seconds: i64) -> Result<(), String> {
+        let _ = self.app.state::<AppState>().events_tx.send(CoreEvent::WorkflowSystemAction {
+            action: "idle".into(),
+            seconds,
+        });
+        Ok(())
+    }
+    fn ring(&self, seconds: i64) -> Result<(), String> {
+        let _ = self.app.state::<AppState>().events_tx.send(CoreEvent::WorkflowSystemAction {
+            action: "ring".into(),
+            seconds,
+        });
+        Ok(())
+    }
+    fn focus_state(&self) -> String {
+        self.app.state::<AppState>().focus_state.lock().unwrap().clone()
+    }
+    fn now_hhmm(&self) -> String {
+        chrono::Local::now().format("%H:%M").to_string()
     }
 }
 
