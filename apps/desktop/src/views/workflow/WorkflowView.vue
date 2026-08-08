@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { VueFlow, type Edge, type Node, type Connection } from "@vue-flow/core";
+import { MarkerType, VueFlow, type Edge, type Node, type Connection } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
@@ -29,6 +29,8 @@ const copyCharId = ref("");
 const triggerEditor = ref(false);
 const running = ref(false);
 const nodeStatus = ref<Record<string, string>>({});
+// v1.10.5.1 (#66): top-bar save indicator.
+const saveState = ref<"saving" | "saved">("saved");
 const editingId = ref<string | null>(null);
 
 // v1.10.5 (#59): self-originated auto-saves must never trigger a canvas reload.
@@ -102,7 +104,7 @@ function loadDraft(wf: WorkflowDef | null) {
       source: e.source,
       target: e.target,
       sourceHandle: e.sourceHandle || "out",
-      markerEnd: "url(#wf-arrow)",
+      markerEnd: MarkerType.ArrowClosed,
     }));
   } else {
     editingId.value = null;
@@ -124,7 +126,9 @@ function loadDraft(wf: WorkflowDef | null) {
   errorMsg.value = "";
 }
 
-function toDraft(): WorkflowDef {
+function toDraft(): WorkflowDef | null {
+  // v1.10.5.1 (#66): never create invisible orphan data without a role.
+  if (!store.currentCharacterId) return null;
   const base = editingId.value
     ? store.workflows.find((w) => w.id === editingId.value)
     : null;
@@ -155,20 +159,30 @@ function toDraft(): WorkflowDef {
 
 let saveTimer: number | null = null;
 function scheduleAutoSave() {
+  saveState.value = "saving";
   if (saveTimer !== null) window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => void saveNow(), 800);
 }
 async function saveNow() {
   saveTimer = null;
   if (nodes.value.length === 0) return; // empty canvas has nothing to persist
+  const draft = toDraft();
+  if (!draft) {
+    // v1.10.5.1 (#66): no role selected - block the save instead of losing it.
+    errorMsg.value = "请先选择角色再编辑工作流";
+    saveState.value = "saved";
+    return;
+  }
   selfSave = true;
   try {
-    const saved = await store.save(toDraft());
+    const saved = await store.save(draft);
     editingId.value = saved.id;
     if (store.currentWorkflowId !== saved.id) await store.selectWorkflow(saved.id);
     errorMsg.value = "";
+    saveState.value = "saved";
   } catch (e) {
     errorMsg.value = String(e);
+    saveState.value = "saved";
   } finally {
     selfSave = false;
   }
@@ -182,6 +196,8 @@ function flushAutoSave() {
 }
 
 onMounted(async () => {
+  // v1.10.5.1 (#66): flush pending auto-save when the window closes.
+  window.addEventListener("beforeunload", flushAutoSave);
   await store.init();
   const wf = store.workflows.find((w) => w.id === store.currentWorkflowId);
   loadDraft(wf ?? null);
@@ -199,10 +215,8 @@ watch(
 );
 
 onBeforeUnmount(() => {
-  if (saveTimer !== null) {
-    window.clearTimeout(saveTimer);
-    saveTimer = null;
-  }
+  window.removeEventListener("beforeunload", flushAutoSave);
+  flushAutoSave();
 });
 
 // Node/edge edits -> auto-save (v1.10.4 #51: no save button)
@@ -252,7 +266,7 @@ function onConnect(conn: Connection) {
     source: conn.source,
     sourceHandle: conn.sourceHandle ?? "out",
     target: conn.target,
-    markerEnd: "url(#wf-arrow)",
+    markerEnd: MarkerType.ArrowClosed,
   });
 }
 
@@ -430,6 +444,9 @@ function removeOpt(i: number) {
         {{ currentBadge }}
         <span v-if="currentWf && !currentWf.enabled" class="badge-off">已停用</span>
       </button>
+      <span v-if="nodes.length" class="save-state" :class="{ ok: saveState === 'saved' }">
+        {{ saveState === "saved" ? "已保存✓" : "保存中…" }}
+      </span>
       <button class="btn accent" :disabled="!store.currentWorkflowId || running" @click="runCurrent">
         {{ running ? "运行中…" : "运行" }}
       </button>
@@ -556,13 +573,6 @@ function removeOpt(i: number) {
           @node-drag-stop="onNodeDragStop"
         >
           <Background :gap="24" />
-          <svg width="0" height="0">
-            <defs>
-              <marker id="wf-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-                <path d="M0,0 L0,6 L9,3 z" fill="#7fae8f" />
-              </marker>
-            </defs>
-          </svg>
         </VueFlow>
       </div>
       <aside class="wf-inspector">
@@ -766,6 +776,8 @@ function removeOpt(i: number) {
 .ghost:hover { color: var(--text-hi); border-color: var(--accent); }
 .ghost.danger:hover { color: #ff7b72; border-color: #ff7b72; }
 .ghost.off { opacity: 0.5; }
+.save-state { font-size: 10px; color: var(--text-low); white-space: nowrap; }
+.save-state.ok { color: var(--accent); }
 .err { color: #ff7b72; font-size: 11px; }
 .muted { color: var(--text-low); font-size: 11px; }
 .badge-btn {

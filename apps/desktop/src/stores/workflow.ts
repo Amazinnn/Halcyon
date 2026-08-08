@@ -40,22 +40,29 @@ export const useWorkflowStore = defineStore("workflow", {
       await this.refreshCharacters();
     },
     async refreshCharacters() {
-      try {
-        this.characters = await invoke<CharacterRow[]>("characters_list");
-        if (!this.currentCharacterId && this.characters.length) {
-          this.currentCharacterId = this.characters[0].id;
+      // v1.10.5.1 (#66): never trust a transient empty character list — the
+      // Rust side ensures at least the default character exists; retry up to
+      // 3 times (500ms apart) before giving up.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          this.characters = await invoke<CharacterRow[]>("characters_list");
+          if (this.characters.length > 0) break;
+        } catch (e) {
+          console.error("[workflow] characters_list failed", e);
         }
-        if (
-          this.currentCharacterId &&
-          !this.characters.some((c) => c.id === this.currentCharacterId)
-        ) {
-          this.currentCharacterId = this.characters[0]?.id ?? null;
-        }
-        localStorage.setItem(KEY_CHAR, this.currentCharacterId ?? "");
-        await this.refreshWorkflows();
-      } catch (e) {
-        console.error("[workflow] characters_list failed", e);
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
       }
+      if (!this.currentCharacterId && this.characters.length) {
+        this.currentCharacterId = this.characters[0].id;
+      }
+      if (
+        this.currentCharacterId &&
+        !this.characters.some((c) => c.id === this.currentCharacterId)
+      ) {
+        this.currentCharacterId = this.characters[0]?.id ?? null;
+      }
+      localStorage.setItem(KEY_CHAR, this.currentCharacterId ?? "");
+      await this.refreshWorkflows();
     },
     async refreshWorkflows() {
       if (!this.currentCharacterId) return;
