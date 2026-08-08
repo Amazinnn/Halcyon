@@ -702,6 +702,17 @@ impl Store {
         Ok(())
     }
 
+    /// v1.10.5.1 (#66): one-time data recovery - rebind workflows whose
+    /// character_id is empty or points to a missing character to default_id.
+    /// Returns the number of affected rows. Not a compatibility layer (#62).
+    pub fn rebind_orphan_workflows(&self, default_id: &str) -> rusqlite::Result<usize> {
+        let mut stmt = self.conn.prepare(
+            "UPDATE workflows SET character_id = ?1, updated_at = datetime('now','localtime')
+             WHERE character_id = '' OR character_id IS NULL
+                OR NOT EXISTS (SELECT 1 FROM characters WHERE characters.id = workflows.character_id)",
+        )?;
+        stmt.execute([default_id])
+    }
     // ---- workflow runs ----
 
     pub fn insert_workflow_run(
@@ -1076,6 +1087,53 @@ mod tests {
         s.clear_workflow_runs().unwrap();
         assert!(s.list_recent_workflow_runs(10).unwrap().is_empty());
         assert!(s.list_workflow_runs("wf-r", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rebind_orphan_workflows_rebinds_empty_and_missing() {
+        use crate::workflow_engine::model::{NodeDef, WorkflowDef};
+        let s = temp_store();
+        let cid = s.ensure_character("pet-1", "test-pet").unwrap();
+        let mk = |id: &str, c: &str| WorkflowDef {
+            id: id.into(),
+            character_id: c.into(),
+            name: "t".into(),
+            trigger: "manual".into(),
+            schedule_type: None,
+            interval_minutes: None,
+            daily_time: None,
+            guard: "none".into(),
+            nodes: [NodeDef {
+                id: "n1".into(),
+                kind: "wait".into(),
+                params: serde_json::from_str(r#"{"seconds":1}"#).unwrap(),
+                x: 0.0,
+                y: 0.0,
+            }]
+            .to_vec(),
+            edges: Vec::new(),
+            enabled: true,
+            next_run_at: None,
+        };
+        s.save_workflow(&mk("w-empty", "")).unwrap();
+        s.save_workflow(&mk("w-missing", "no-such-char")).unwrap();
+        s.save_workflow(&mk("w-ok", &cid)).unwrap();
+        let n = s.rebind_orphan_workflows(&cid).unwrap();
+        if n != 2 {
+            std::process::exit(101);
+        }
+        if s.get_workflow("w-empty").unwrap().unwrap().character_id != cid {
+            std::process::exit(102);
+        }
+        if s.get_workflow("w-missing").unwrap().unwrap().character_id != cid {
+            std::process::exit(103);
+        }
+        if s.get_workflow("w-ok").unwrap().unwrap().character_id != cid {
+            std::process::exit(104);
+        }
+        if s.rebind_orphan_workflows(&cid).unwrap() != 0 {
+            std::process::exit(105);
+        }
     }
 
     #[test]

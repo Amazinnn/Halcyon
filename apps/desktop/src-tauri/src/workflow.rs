@@ -32,6 +32,20 @@ pub const SCHEDULER_TICK_SEC: u64 = 15;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// v1.10.5.1 (#66): pick the default character for workflows saved without a
+/// role (or orphaned rows being recovered): char-default when present,
+/// otherwise the first ensured character; falls back to char-default.
+pub fn resolve_default_character(chars: &[CharacterRow]) -> String {
+    if chars.iter().any(|c| c.id == "char-default") {
+        "char-default".to_string()
+    } else {
+        chars
+            .first()
+            .map(|c| c.id.clone())
+            .unwrap_or_else(|| "char-default".to_string())
+    }
+}
+
 /// Short unique id (millis + counter) for workflows/runs/characters.
 pub fn new_id() -> String {
     let t = std::time::SystemTime::now()
@@ -84,7 +98,9 @@ impl WorkflowManager {
         let packs = crate::pets::list(&data_dir).unwrap_or_default();
         let mut out = Vec::new();
         {
-            let Ok(store) = self.store.lock() else { return out };
+            // v1.10.5.1 (#66): never silently return an empty character
+            // list on a poisoned lock — recover the guard so defaults are ensured.
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             for p in &packs {
                 if let Ok(id) = store.ensure_character(&p.id, &p.display_name) {
                     if let Ok(Some(c)) = store.get_character(&id) {
@@ -112,6 +128,20 @@ impl WorkflowManager {
 
     pub fn list_characters(&self) -> Vec<CharacterRow> {
         self.ensure_characters()
+    }
+
+    /// v1.10.5.1 (#66): one-time data recovery — rebind workflows whose
+    /// character_id is empty or points to a missing character to the default
+    /// character. Not a compatibility layer (#62): the user explicitly chose
+    /// to recover orphaned data instead of deleting it.
+    pub fn repair_orphan_workflows(&self) {
+        let default_id = resolve_default_character(&self.ensure_characters());
+        let Ok(store) = self.store.lock() else { return };
+        match store.rebind_orphan_workflows(&default_id) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("[workflow] repaired {n} orphan workflow(s) -> {default_id}"),
+            Err(e) => eprintln!("[workflow] repair orphan workflows failed: {e}"),
+        }
     }
 
     // ---- workflows ----
@@ -142,6 +172,11 @@ impl WorkflowManager {
     }
 
     pub fn save_workflow(&self, mut wf: WorkflowDef) -> Result<WorkflowDef, String> {
+        // v1.10.5.1 (#66): a workflow saved without a role must never become
+        // invisible orphan data — bind it to the default character first.
+        if wf.character_id.is_empty() {
+            wf.character_id = resolve_default_character(&self.ensure_characters());
+        }
         validate_workflow(&wf)?;
         if wf.id.is_empty() {
             wf.id = new_id();
@@ -749,6 +784,23 @@ mod tests {
             enabled: true,
             next_run_at: None,
         }
+    }
+
+    #[test]
+    fn resolve_default_character_picks_default_or_first() {
+        use crate::storage::CharacterRow;
+        let mk = |id: &str| CharacterRow {
+            id: id.into(),
+            name: "t".into(),
+            persona: String::new(),
+            pet_pack_id: None,
+        };
+        assert_eq!(
+            resolve_default_character(&[mk("char-default"), mk("char-a")]),
+            "char-default"
+        );
+        assert_eq!(resolve_default_character(&[mk("char-a")]), "char-a");
+        assert_eq!(resolve_default_character(&[]), "char-default");
     }
 
     #[test]

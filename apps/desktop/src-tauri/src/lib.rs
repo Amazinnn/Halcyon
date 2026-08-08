@@ -1698,6 +1698,9 @@ pub fn run() {
                 // v1.10.5 (#62): no backward compatibility — drop workflows
                 // containing removed node kinds at startup.
                 wm.purge_incompatible();
+                // v1.10.5.1 (#66): one-time recovery — rebind orphaned
+                // workflows (empty/missing character) to the default character.
+                wm.repair_orphan_workflows();
                 *app_handle.state::<AppState>().workflow.lock().unwrap() = Some(wm.clone());
                 let wm_tick = wm.clone();
                 std::thread::spawn(move || loop {
