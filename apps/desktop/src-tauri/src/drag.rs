@@ -14,8 +14,12 @@
 //! snap-back, out-of-bounds clamp) and is persisted to settings.json.
 //!
 //! Threading notes (deadlock-safe):
-//! - `WebviewWindow::set_position` posts asynchronously to the main loop, so
-//!   it is safe to call from the poller thread.
+//! - On Windows the poller moves the native HWND directly with
+//!   SetWindowPos(SWP_ASYNCWINDOWPOS) (v1.10.1, #34): it never waits on the
+//!   window thread and skips the WebView2 controller SetBounds synchronous
+//!   COM RPC per tick (root cause of the drag freeze). set_position remains
+//!   only as a fallback and posts asynchronously to the main loop, so it is
+//!   safe to call from the poller thread.
 //! - `outer_position` / `outer_size` / `scale_factor` are synchronous
 //!   window_getter! calls that dispatch to the main thread and WAIT. They must
 //!   only run on the main thread. The poller never calls them (scale/size are
@@ -30,15 +34,16 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
-use windows::Win32::Foundation::POINT;
+use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
 
 use crate::grid::{GridManager, GRID_COLS, GRID_ROWS};
 use crate::settings::GridRect;
 use crate::{occupied_rects, place_window_inner, AppState};
 
-const POLL_MS: u64 = 15;
+const POLL_MS: u64 = 24;
+const PREVIEW_INTERVAL_MS: u64 = 50;
 const GRID_LABELS: [&str; 4] = ["chat", "stats", "music", "pet"];
 
 /// The in-flight drag (serialized in `AppState.active_drag`). Only one drag
@@ -66,6 +71,49 @@ fn lbutton_down() -> bool {
 /// off-screen / at (0,0) on release).
 fn clamp_axis(v: i32, max: i32) -> i32 {
     v.clamp(0, max.max(0))
+}
+
+/// v1.10.1 (#34): move the window by its native HWND so the poller never
+/// triggers the WebView2 controller SetBounds synchronous COM RPC every tick
+/// (root cause of the drag freeze). Returns false when the HWND is not
+/// available, in which case the caller falls back to `set_position`.
+fn move_window_raw(w: &tauri::WebviewWindow, x: i32, y: i32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(hwnd) = w.hwnd() {
+            // tauri links windows 0.61 while we depend on 0.62; convert via
+            // the raw pointer (both HWNDs wrap *mut c_void).
+            let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
+            let res = unsafe {
+                SetWindowPos(
+                    hwnd_win,
+                    None,
+                    x,
+                    y,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+                )
+            };
+            return res.is_ok();
+        }
+        false
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (w, x, y);
+        false
+    }
+}
+
+/// v1.10.1 (#34): grid preview throttling (>=50ms) keeps the full-screen
+/// gradient overlay from being rebuilt on every poll tick.
+fn should_emit_preview(
+    last: std::time::Instant,
+    now: std::time::Instant,
+    interval: Duration,
+) -> bool {
+    now.duration_since(last) >= interval
 }
 
 /// Wait (bounded) for the poller thread to finish. Never blocks forever: the
@@ -160,7 +208,8 @@ fn poller(
     stop: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
 ) {
-    // Background thread: only async-safe calls (set_position posts to the main
+    // Background thread: only async-safe calls (native SetWindowPos with
+    // SWP_ASYNCWINDOWPOS, or the set_position fallback which posts to the main
     // loop; app.emit and the settings/screen Mutexes are thread-safe). No
     // window getters here.
     let (sw, sh) = *app.state::<AppState>().screen.lock().unwrap();
@@ -175,6 +224,7 @@ fn poller(
 
     let mut last = (i32::MAX, i32::MAX);
     let mut moved = false;
+    let mut last_preview = std::time::Instant::now();
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -193,8 +243,14 @@ fn poller(
         moved = true;
         let x = clamp_axis(cx - off_x, max_x);
         let y = clamp_axis(cy - off_y, max_y);
-        let _ = w.set_position(PhysicalPosition::new(x, y));
-        if is_grid {
+        let now = std::time::Instant::now();
+        if !move_window_raw(&w, x, y) {
+            let _ = w.set_position(PhysicalPosition::new(x, y));
+        }
+        if is_grid
+            && should_emit_preview(last_preview, now, Duration::from_millis(PREVIEW_INTERVAL_MS))
+        {
+            last_preview = now;
             let m = GridManager { screen_w: sw, screen_h: sh }.metrics();
             let fx = (x as f64 / scale) / m.cell_w;
             let fy = (y as f64 / scale) / m.cell_h;
@@ -356,5 +412,25 @@ mod tests {
     #[test]
     fn clamp_keeps_inside() {
         assert_eq!(clamp_axis(42, 1000), 42);
+    }
+
+    #[test]
+    fn preview_throttle_blocks_early_tick() {
+        let t0 = std::time::Instant::now();
+        assert!(!should_emit_preview(
+            t0,
+            t0 + Duration::from_millis(10),
+            Duration::from_millis(50)
+        ));
+    }
+
+    #[test]
+    fn preview_throttle_passes_after_interval() {
+        let t0 = std::time::Instant::now();
+        assert!(should_emit_preview(
+            t0,
+            t0 + Duration::from_millis(50),
+            Duration::from_millis(50)
+        ));
     }
 }
