@@ -3,7 +3,11 @@
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**v1.11.1（当前）**：环状工作流执行语义修复 = focus/idle/ring 节点引擎侧阻塞等待（100ms 轮询 cancel，取消立即中断）、顶部「停止」按钮（运行中「运行」↔「停止」互斥，立即 cancel + 复位 UI）、ringFor 单次响铃（防 setTimeout 叠加）+ playChime 时间戳/音量修正（防串音/破音）、屏蔽工作流 focus 倒计时归零触发 focus_end 联动、触发标签「手动」→「保存」；需求 #68 + ADR-0021（根因：环飞快空转 + 无停止入口 + 响铃叠加，系统卡死）。
+**v1.11.3（当前）**：M5 完善轮 = 多 Agent 事件隔离（envelope agentId=character_id）、Agent 崩溃=下次自动重启（去 fallback）、记住上次 Agent、设置页 Agent 管理（删除连带删工作区/打开工作区文件夹）、三开关 provider 层生效（初始短句/思考/最终）、系统级输出纪律注入每次 turn；需求 #69 + ADR-0022。
+
+**v1.11.2**：M5 Agent 看板 MVP = 宠物=Agent 一对一（DB 0007：tool/workspace_dir/session_hash/session_date）、多实例 AgentRuntime（每角色一个 Codex 实例懒构建）、懒生成工作区 + AGENTS.md（身份唯一来源，persona 退役）、每日会话旋转（哈希存 Rust + focus-cli agent session/list 读回看）、聊天顶部 Agent 下拉 + 去 thread 下拉、工作流 Agent 节点三开关 UI、VPN loopback 代理绕过；需求 #65/#67 + ADR-0022。
+
+**v1.11.1**：环状工作流执行语义修复 = focus/idle/ring 节点引擎侧阻塞等待（100ms 轮询 cancel，取消立即中断）、顶部「停止」按钮（运行中「运行」↔「停止」互斥，立即 cancel + 复位 UI）、ringFor 单次响铃（防 setTimeout 叠加）+ playChime 时间戳/音量修正（防串音/破音）、屏蔽工作流 focus 倒计时归零触发 focus_end 联动、触发标签「手动」→「保存」；需求 #68 + ADR-0021（根因：环飞快空转 + 无停止入口 + 响铃叠加，系统卡死）。
 
 **v1.11**：工作流退化为 Agent 日程工具 = 空角色合法化（save 不挂回 / 删 repair_orphan / list 空串=全部含未绑定，孤儿测试数据删库清理）、Agent 节点级目标（节点 `characterId` 参数 + 前端目标Agent下拉）、JSON 文档 + focus-cli `workflow read/create/update/delete --payload`（Agent 只经 CLI 增删改查 JSON，JSON=唯一真相、画布=渲染器）、`workflow:changed` 事件广播、白名单放行 workflow 全部子命令；需求 #67 + ADR-0020（推翻 ADR-0019 §4 孤儿挂回）。
 
