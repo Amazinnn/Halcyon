@@ -1,15 +1,15 @@
 # Focus Desktop 当前状态（压缩交接页）
 
-> 更新：2026-08-08（v1.10.1 修复轮实施中：#34 拖动浮窗卡死）。前序 v1.10（#30/#31/#32/#33）已实现待验收。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
+> 更新：2026-08-08（v1.10.1 修复轮已实现待验收：#34 拖动浮窗卡死；ADR-0013）。前序 v1.10（#30/#31/#32/#33）已实现待验收。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，MIT）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
 
-## 当前版本与已验证清单（v1.9.1 + M4 v1 + v1.10 已实现待验收；v1.10.1 实施中）
+## 当前版本与已验证清单（v1.9.1 + M4 v1 + v1.10 + v1.10.1 已实现待验收）
 
-- v1.10.1（拖动卡死修复轮，实施中，需求 #34）：拖动改原生 HWND 移动（不再每 tick 触发 WebView2 SetBounds）+ grid 预览 50ms 节流 + poll 24ms；hang-detector HUNG 期间每 3s STILL_HUNG 取证；ADR-0013。
+- v1.10.1（拖动卡死修复轮，已实现待验收，需求 #34，ADR-0013）：拖动移动优先原生 SetWindowPos（SWP_ASYNCWINDOWPOS，绕过每 tick WebView2 SetBounds 同步 COM RPC）+ grid 预览 50ms 节流 + poll 24ms；hang-detector HUNG 期间每 3s STILL_HUNG 取证；开发侧受控拖动 2 轮 0 HUNG。
 - v1.10（修复轮，已实现待验收，需求 #30/#31/#32/#33）：工作流入口改到最左侧视图托盘、去掉 + 内部页并清理 internal 卡片（迁移 0006）；快速开关窗口卡死修复（去冗余窗口操作 + 前端防抖 + scripts/hang-detector.ps1 独立检测）；宠物更换失败与 canvas tainted 修复（spritesheet 同源加载 + 淡化 try/catch）；#33 launch-focus.cmd monitor 同步启动 hang-detector（HUNG 抓 minidump，日志 %APPDATA%\com.focusdesktop.app\hang-detector.log）。
 
 - v1.9.1（音乐窗口尺寸化，需求 #24/#25）：右下手柄 3×1~3×4 离散缩放（网格预览/冲突回弹/持久化）；chat/stats/music/pet 禁用原生拉伸（尺寸唯一由网格控制，准则 #23）；行数≥3 才显示播放列表（3 行→4 首可见、1 行→隐藏）；手柄 setPointerCapture 修复、紧凑 3×1 布局不裁切。
