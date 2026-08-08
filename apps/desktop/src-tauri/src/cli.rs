@@ -188,7 +188,9 @@ fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Va
         ["apps", "visible"] => json!({ "apps": crate::apps::list_running_apps() }),
         // M4 workflow engine (ADR-0012): local control only; workflow commands
         // are intentionally NOT in the agent whitelist (anti-loop rule).
-        ["workflow", ..] => match crate::workflow::cli_handle(&app, &parts) {
+        // v1.11 (ADR-0020): Agent is the Boss — workflow CRUD moved into the
+        // whitelist so Agents can schedule themselves (whitelist below).
+        ["workflow", ..] => match crate::workflow::cli_handle(&app, &parts, req.get("payload")) {
             Ok(v) => v,
             Err(e) => json!({ "error": e }),
         },
@@ -203,6 +205,8 @@ fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Va
 
 /// Whitelist enforced only for agent-triggered calls (ADR-0007): exactly the
 /// ADR-0006 command set. `debug` and any future/unknown command are denied.
+/// v1.11 (ADR-0020): `workflow *` is allowed — the Agent manages its own
+/// schedule board (list/read/create/update/delete/run/runs/cancel).
 fn agent_whitelisted(parts: &[&str]) -> bool {
     match parts {
         ["ping"] => true,
@@ -210,6 +214,7 @@ fn agent_whitelisted(parts: &[&str]) -> bool {
         ["stats", "today"] | ["stats", "week"] | ["stats", "sessions"] | ["stats", "dashboard"] => true,
         ["desktop", "layout"] => true,
         ["apps", "now"] | ["apps", "visible"] => true,
+        ["workflow", sub, ..] if ["list", "read", "create", "update", "delete", "run", "runs", "cancel"].contains(sub) => true,
         _ => false,
     }
 }
@@ -299,6 +304,15 @@ mod tests {
         assert!(agent_whitelisted(&["stats", "dashboard"]));
         assert!(agent_whitelisted(&["desktop", "layout"]));
         assert!(agent_whitelisted(&["apps", "visible"]));
+        // v1.11 (ADR-0020): Agent is the Boss — workflow CRUD allowed.
+        assert!(agent_whitelisted(&["workflow", "list"]));
+        assert!(agent_whitelisted(&["workflow", "read", "w-1"]));
+        assert!(agent_whitelisted(&["workflow", "create"]));
+        assert!(agent_whitelisted(&["workflow", "update", "w-1"]));
+        assert!(agent_whitelisted(&["workflow", "delete", "w-1"]));
+        assert!(agent_whitelisted(&["workflow", "run", "w-1"]));
+        assert!(agent_whitelisted(&["workflow", "runs", "w-1"]));
+        assert!(agent_whitelisted(&["workflow", "cancel", "w-1"]));
         assert!(!agent_whitelisted(&["debug", "windows"]));
         assert!(!agent_whitelisted(&["timer", "reset"]));
         assert!(!agent_whitelisted(&["stats", "month"]));

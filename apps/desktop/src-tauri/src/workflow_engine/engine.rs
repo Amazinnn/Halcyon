@@ -23,6 +23,11 @@ pub trait AgentCall: Send + Sync {
         wait: bool,
         cancel: &AtomicBool,
     ) -> Result<Option<(String, String)>, String>;
+
+    /// v1.11 (ADR-0020): resolve a per-node target character by id. Returns
+    /// None when the id is empty or unknown (callers keep the workflow
+    /// character in that case).
+    fn resolve_character(&self, id: &str) -> Option<CharacterInfo>;
 }
 
 pub trait EventSink: Send + Sync {
@@ -266,7 +271,15 @@ fn run_node(
             let prompt = param_str(node, "prompt")?;
             let prompt = resolve_with_system(&prompt, data, system)?;
             let wait = param_bool(node, "wait").unwrap_or(true);
-            match agent.call_one_shot(character, &prompt, wait, cancel) {
+            // v1.11 (ADR-0020): per-node target character overrides the
+            // workflow character; empty/unknown falls back to the workflow one.
+            let target = param_str(node, "characterId").ok().filter(|s| !s.is_empty());
+            let caller = if let Some(id) = target {
+                agent.resolve_character(&id).unwrap_or_else(|| character.clone())
+            } else {
+                character.clone()
+            };
+            match agent.call_one_shot(&caller, &prompt, wait, cancel) {
                 Ok(Some((result, thread_id))) => {
                     // v1.10.5 (ADR-0018): Agent reply is shown to the user —
                     // pet bubble here; chat side comes from the agent thread
@@ -531,6 +544,7 @@ mod tests {
         result: String,
         fail: bool,
         prompts: Mutex<Vec<String>>,
+        targets: Mutex<Vec<String>>,
     }
     impl MockAgent {
         fn new(result: &str) -> Self {
@@ -538,18 +552,28 @@ mod tests {
                 result: result.into(),
                 fail: false,
                 prompts: Mutex::new(vec![]),
+                targets: Mutex::new(vec![]),
             }
         }
     }
     impl AgentCall for MockAgent {
+        fn resolve_character(&self, id: &str) -> Option<CharacterInfo> {
+            if id.is_empty() {
+                None
+            } else {
+                Some(CharacterInfo { id: id.into(), name: id.into(), persona: "p".into() })
+            }
+        }
+
         fn call_one_shot(
             &self,
-            _c: &CharacterInfo,
+            c: &CharacterInfo,
             prompt: &str,
             wait: bool,
             _cancel: &AtomicBool,
         ) -> Result<Option<(String, String)>, String> {
             self.prompts.lock().unwrap().push(prompt.to_string());
+            self.targets.lock().unwrap().push(c.id.clone());
             if self.fail {
                 return Err("agent boom".into());
             }
@@ -618,6 +642,35 @@ mod tests {
         let win = Win { opened: Mutex::new(vec![]) };
         let cancel = AtomicBool::new(false);
         execute_run(w, &char_info(), agent, sink, &win, system, &cancel)
+    }
+
+    #[test]
+    fn agent_node_character_id_overrides_workflow_character() {
+        let agent = MockAgent::new("R");
+        let system = MockSystem::new("idle");
+        // wf character_id is "c" (see wf()); the node targets "char-b".
+        let w = wf(
+            vec![node("a", "agent", json!({ "prompt": "go", "wait": true, "characterId": "char-b" }))],
+            vec![],
+        );
+        let out = run(&w, &agent, &system);
+        assert_eq!(out.status, RunStatus::Success);
+        let targets = agent.targets.lock().unwrap();
+        assert_eq!(*targets, vec!["char-b".to_string()]);
+    }
+
+    #[test]
+    fn agent_node_empty_character_id_keeps_workflow_character() {
+        let agent = MockAgent::new("R");
+        let system = MockSystem::new("idle");
+        let w = wf(
+            vec![node("a", "agent", json!({ "prompt": "go", "wait": true, "characterId": "" }))],
+            vec![],
+        );
+        let out = run(&w, &agent, &system);
+        assert_eq!(out.status, RunStatus::Success);
+        let targets = agent.targets.lock().unwrap();
+        assert_eq!(*targets, vec!["c".to_string()]);
     }
 
     #[test]

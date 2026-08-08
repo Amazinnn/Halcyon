@@ -32,20 +32,6 @@ pub const SCHEDULER_TICK_SEC: u64 = 15;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// v1.10.5.1 (#66): pick the default character for workflows saved without a
-/// role (or orphaned rows being recovered): char-default when present,
-/// otherwise the first ensured character; falls back to char-default.
-pub fn resolve_default_character(chars: &[CharacterRow]) -> String {
-    if chars.iter().any(|c| c.id == "char-default") {
-        "char-default".to_string()
-    } else {
-        chars
-            .first()
-            .map(|c| c.id.clone())
-            .unwrap_or_else(|| "char-default".to_string())
-    }
-}
-
 /// Short unique id (millis + counter) for workflows/runs/characters.
 pub fn new_id() -> String {
     let t = std::time::SystemTime::now()
@@ -130,20 +116,6 @@ impl WorkflowManager {
         self.ensure_characters()
     }
 
-    /// v1.10.5.1 (#66): one-time data recovery — rebind workflows whose
-    /// character_id is empty or points to a missing character to the default
-    /// character. Not a compatibility layer (#62): the user explicitly chose
-    /// to recover orphaned data instead of deleting it.
-    pub fn repair_orphan_workflows(&self) {
-        let default_id = resolve_default_character(&self.ensure_characters());
-        let Ok(store) = self.store.lock() else { return };
-        match store.rebind_orphan_workflows(&default_id) {
-            Ok(0) => {}
-            Ok(n) => eprintln!("[workflow] repaired {n} orphan workflow(s) -> {default_id}"),
-            Err(e) => eprintln!("[workflow] repair orphan workflows failed: {e}"),
-        }
-    }
-
     // ---- workflows ----
 
     /// v1.10.5 (ADR-0018, #62): delete workflows that fail structural
@@ -160,6 +132,8 @@ impl WorkflowManager {
         }
     }
 
+    /// v1.11 (ADR-0020): empty character_id lists all workflows (including
+    /// unbound ones); otherwise filter by character as before.
     pub fn list_workflows(&self, character_id: &str) -> Vec<WorkflowDef> {
         self.purge_incompatible();
         let Ok(store) = self.store.lock() else { return vec![] };
@@ -167,29 +141,32 @@ impl WorkflowManager {
             .list_workflows()
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| w.character_id == character_id)
+            .filter(|w| character_id.is_empty() || w.character_id == character_id)
             .collect()
     }
 
+    /// v1.11 (ADR-0020): empty character_id is a legitimate unbound workflow
+    /// (mechanical schedule tool) — save it as-is, never rebind.
     pub fn save_workflow(&self, mut wf: WorkflowDef) -> Result<WorkflowDef, String> {
-        // v1.10.5.1 (#66): a workflow saved without a role must never become
-        // invisible orphan data — bind it to the default character first.
-        if wf.character_id.is_empty() {
-            wf.character_id = resolve_default_character(&self.ensure_characters());
-        }
         validate_workflow(&wf)?;
+        let created = wf.id.is_empty();
         if wf.id.is_empty() {
             wf.id = new_id();
         }
         wf.next_run_at = compute_next_run(&wf);
         let store = self.store.lock().map_err(|_| "store 锁异常".to_string())?;
         store.save_workflow(&wf).map_err(|e| e.to_string())?;
+        drop(store);
+        self.emit_changed(if created { "created" } else { "updated" }, &wf.id);
         Ok(wf)
     }
 
     pub fn delete_workflow(&self, id: &str) -> Result<(), String> {
         let store = self.store.lock().map_err(|_| "store 锁异常".to_string())?;
-        store.delete_workflow(id).map_err(|e| e.to_string())
+        store.delete_workflow(id).map_err(|e| e.to_string())?;
+        drop(store);
+        self.emit_changed("deleted", id);
+        Ok(())
     }
 
     pub fn get_workflow(&self, id: &str) -> Result<Option<WorkflowDef>, String> {
@@ -349,6 +326,15 @@ impl WorkflowManager {
         });
     }
 
+    /// v1.11 (ADR-0020): broadcast workflow create/update/delete so frontends
+    /// (and later the M5 Agent dashboard) can reload.
+    fn emit_changed(&self, action: &str, workflow_id: &str) {
+        let _ = self.app.state::<AppState>().events_tx.send(CoreEvent::WorkflowChanged {
+            action: action.to_string(),
+            workflow_id: workflow_id.to_string(),
+        });
+    }
+
     /// Recompute + persist next_run_at (used after a guard skip or run).
     fn reschedule(&self, wf: &WorkflowDef) {
         let mut wf = wf.clone();
@@ -447,6 +433,19 @@ pub fn manager(app: &AppHandle) -> Result<Arc<WorkflowManager>, String> {
 // ---------------------------------------------------------------------------
 
 impl AgentCall for WorkflowManager {
+    fn resolve_character(&self, id: &str) -> Option<CharacterInfo> {
+        let store = self.store.lock().ok()?;
+        store
+            .get_character(id)
+            .ok()
+            .flatten()
+            .map(|c: CharacterRow| CharacterInfo {
+                id: c.id,
+                name: c.name,
+                persona: c.persona,
+            })
+    }
+
     fn call_one_shot(
         &self,
         character: &CharacterInfo,
@@ -701,26 +700,43 @@ pub fn workflow_runs_clear(app: tauri::AppHandle) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// Handle ocus-cli workflow ... from cli.rs. Returns a JSON value.
-pub fn cli_handle(app: &AppHandle, parts: &[&str]) -> Result<serde_json::Value, String> {
+pub fn cli_handle(
+    app: &AppHandle,
+    parts: &[&str],
+    payload: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, String> {
     let m = manager(app)?;
     match parts {
+        // v1.11 (ADR-0020): list all workflows incl. unbound (empty
+        // character_id); the Agent-facing view of the schedule board.
         ["workflow", "list"] => {
-            let chars = m.list_characters();
-            let mut workflows = Vec::new();
-            for c in &chars {
-                for w in m.list_workflows(&c.id) {
-                    workflows.push(serde_json::json!({
+            let workflows = m.list_workflows("");
+            let chars: Vec<CharacterRow> = m.list_characters();
+            let name_of = |id: &str| -> String {
+                if id.is_empty() {
+                    return String::new();
+                }
+                chars
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default()
+            };
+            let workflows: Vec<serde_json::Value> = workflows
+                .into_iter()
+                .map(|w| {
+                    serde_json::json!({
                         "id": w.id,
                         "characterId": w.character_id,
-                        "character": c.name,
+                        "character": name_of(&w.character_id),
                         "name": w.name,
                         "trigger": w.trigger,
                         "guard": w.guard,
                         "enabled": w.enabled,
                         "nextRunAt": w.next_run_at,
-                    }));
-                }
-            }
+                    })
+                })
+                .collect();
             Ok(serde_json::json!({ "workflows": workflows }))
         }
         ["workflow", "run", id] => {
@@ -749,8 +765,38 @@ pub fn cli_handle(app: &AppHandle, parts: &[&str]) -> Result<serde_json::Value, 
             m.cancel_workflow(id)?;
             Ok(serde_json::json!({ "cancelled": true }))
         }
+        // v1.11 (ADR-0020): Agent-facing JSON document channel. The workflow
+        // JSON is the single source of truth; the canvas renders it.
+        ["workflow", "read", id] => {
+            let wf = m
+                .get_workflow(id)?
+                .ok_or_else(|| "工作流不存在".to_string())?;
+            serde_json::to_value(&wf).map_err(|e| e.to_string())
+        }
+        ["workflow", "create"] => {
+            let wf = workflow_from_payload(payload)?;
+            let saved = m.save_workflow(wf)?;
+            serde_json::to_value(&saved).map_err(|e| e.to_string())
+        }
+        ["workflow", "update", id] => {
+            let mut wf = workflow_from_payload(payload)?;
+            // The id comes from the URL, not the body (idempotent updates).
+            wf.id = id.to_string();
+            let saved = m.save_workflow(wf)?;
+            serde_json::to_value(&saved).map_err(|e| e.to_string())
+        }
+        ["workflow", "delete", id] => {
+            m.delete_workflow(id)?;
+            Ok(serde_json::json!({ "deleted": true, "id": id }))
+        }
         _ => Err(format!("未知 workflow 子命令: {}", parts.join(" "))),
     }
+}
+
+/// v1.11 (ADR-0020): parse the create/update body as a WorkflowDef JSON.
+fn workflow_from_payload(payload: Option<&serde_json::Value>) -> Result<WorkflowDef, String> {
+    let v = payload.ok_or_else(|| "缺少 --payload（工作流 JSON）".to_string())?;
+    serde_json::from_value(v.clone()).map_err(|e| format!("工作流 JSON 无效: {e}"))
 }
 
 #[cfg(test)]
@@ -787,20 +833,34 @@ mod tests {
     }
 
     #[test]
-    fn resolve_default_character_picks_default_or_first() {
-        use crate::storage::CharacterRow;
-        let mk = |id: &str| CharacterRow {
-            id: id.into(),
-            name: "t".into(),
-            persona: String::new(),
-            pet_pack_id: None,
-        };
-        assert_eq!(
-            resolve_default_character(&[mk("char-default"), mk("char-a")]),
-            "char-default"
-        );
-        assert_eq!(resolve_default_character(&[mk("char-a")]), "char-a");
-        assert_eq!(resolve_default_character(&[]), "char-default");
+    fn workflow_from_payload_parses_camel_case_json() {
+        // v1.11 (ADR-0020): Agent-facing JSON documents use the same camelCase
+        // wire shape as the canvas editor.
+        let v: serde_json::Value = serde_json::json!({
+            "id": "",
+            "characterId": "",
+            "name": "简报",
+            "trigger": "scheduled",
+            "scheduleType": "daily",
+            "dailyTime": "09:00",
+            "guard": "none",
+            "enabled": true,
+            "nodes": [
+                { "id": "n1", "kind": "agent", "params": { "prompt": "写简报", "characterId": "char-a" }, "x": 0, "y": 0 }
+            ],
+            "edges": []
+        });
+        let wf = workflow_from_payload(Some(&v)).unwrap();
+        assert_eq!(wf.name, "简报");
+        assert_eq!(wf.trigger, "scheduled");
+        assert_eq!(wf.nodes[0].params["characterId"], "char-a");
+        assert_eq!(wf.character_id, "");
+    }
+
+    #[test]
+    fn workflow_from_payload_rejects_missing_or_invalid() {
+        assert!(workflow_from_payload(None).is_err());
+        assert!(workflow_from_payload(Some(&serde_json::json!({"nodes": 1}))).is_err());
     }
 
     #[test]

@@ -32,6 +32,12 @@ pub enum CoreEvent {
         status: String,
         error: Option<String>,
     },
+    /// v1.11 (ADR-0020): a workflow was created/updated/deleted (via UI or
+    /// Agent CLI). Frontend reloads the workflow list; M5 listens.
+    WorkflowChanged {
+        action: String,
+        workflow_id: String,
+    },
 }
 
 impl CoreEvent {
@@ -47,6 +53,7 @@ impl CoreEvent {
             CoreEvent::SupervisionAlert { .. } => "supervision:core_alert",
             CoreEvent::WorkflowSystemAction { .. } => "workflow:system-action",
             CoreEvent::WorkflowRunChanged { .. } => "workflow:runs_changed",
+            CoreEvent::WorkflowChanged { .. } => "workflow:changed",
         }
     }
 
@@ -77,6 +84,9 @@ impl CoreEvent {
             }
             CoreEvent::WorkflowRunChanged { workflow_id, run_id, status, error } => {
                 json!({ "workflowId": workflow_id, "runId": run_id, "status": status, "error": error })
+            }
+            CoreEvent::WorkflowChanged { action, workflow_id } => {
+                json!({ "action": action, "workflowId": workflow_id })
             }
         }
     }

@@ -17,6 +17,7 @@ fn main() {
         return;
     }
     let mut agent_thread: Option<String> = None;
+    let mut payload: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--agent-thread" {
@@ -25,6 +26,15 @@ fn main() {
                 args.remove(i);
             } else {
                 eprintln!("[focus-cli] --agent-thread 需要参数");
+                std::process::exit(2);
+            }
+        } else if args[i] == "--payload" {
+            // v1.11 (ADR-0020): JSON body for workflow create/update.
+            if i + 1 < args.len() {
+                payload = Some(args.remove(i + 1));
+                args.remove(i);
+            } else {
+                eprintln!("[focus-cli] --payload 需要 JSON 参数");
                 std::process::exit(2);
             }
         } else {
@@ -74,6 +84,17 @@ fn main() {
     if let Some(tid) = agent_thread {
         req["agentThread"] = serde_json::json!(tid);
     }
+    if let Some(p) = payload {
+        match serde_json::from_str::<serde_json::Value>(&p) {
+            Ok(v) => {
+                req["payload"] = v;
+            }
+            Err(e) => {
+                eprintln!("[focus-cli] --payload 不是合法 JSON: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
     let payload = serde_json::to_vec(&req).unwrap_or_default();
     if stream.write_all(&(payload.len() as u32).to_le_bytes()).is_err()
         || stream.write_all(&payload).is_err()
@@ -111,6 +132,10 @@ fn print_help() {
     println!("  focus-cli desktop layout");
     println!("  focus-cli apps now|visible");
     println!("  focus-cli workflow list|run <id>|runs <id>|cancel <id>");
+    println!("  focus-cli workflow read <id>");
+    println!("  focus-cli workflow create --payload <workflow-json>");
+    println!("  focus-cli workflow update <id> --payload <workflow-json>");
+    println!("  focus-cli workflow delete <id>");
     println!("  focus-cli ping");
     println!("  focus-cli --agent-thread <thread_id> <command>  （Agent 专用：白名单+审计）");
 }

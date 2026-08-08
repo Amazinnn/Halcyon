@@ -600,6 +600,15 @@ function removeOpt(i: number) {
           <template v-if="selectedNode">
             <div class="insp-body">
               <template v-if="selectedNode.data.kind === 'agent'">
+                <label>目标Agent</label>
+                <select
+                  class="sel"
+                  :value="String(sp.characterId ?? '')"
+                  @change="setParam('characterId', ($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="">工作流默认</option>
+                  <option v-for="c in store.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
+                </select>
                 <label>提示词（自动注入角色人格与输出规范）</label>
                 <textarea
                   class="ta"
