@@ -117,6 +117,9 @@ pub struct Settings {
     pub pet_bg_fade: bool,
     #[serde(default)]
     pub music_folder: Option<String>,
+    /// v1.10.2 (#36/#38/#41): bumped after the one-time layout migration.
+    #[serde(default)]
+    pub layout_version: Option<u32>,
 }
 
 fn default_25() -> u32 {
@@ -147,7 +150,7 @@ impl Default for Settings {
     fn default() -> Self {
         let mut grid = HashMap::new();
         grid.insert("chat".into(), GridRect { col: 8, row: 0, cols: 4, rows: 4 });
-        grid.insert("stats".into(), GridRect { col: 8, row: 4, cols: 4, rows: 3 });
+        grid.insert("stats".into(), GridRect { col: 8, row: 4, cols: 5, rows: 4 });
         grid.insert("music".into(), GridRect { col: 8, row: 7, cols: 3, rows: 1 });
         grid.insert("pet".into(), GridRect { col: 11, row: 7, cols: 1, rows: 1 });
         let mut topmost = HashMap::new();
@@ -178,6 +181,7 @@ impl Default for Settings {
         pet_pack_id: None,
         pet_bg_fade: true,
         music_folder: None,
+        layout_version: None,
         }
     }
 }
@@ -185,10 +189,41 @@ impl Default for Settings {
 impl Settings {
     pub fn load(dir: &Path) -> Self {
         let path = dir.join(SETTINGS_FILE);
-        match std::fs::read_to_string(&path) {
+        let mut s = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
             Err(_) => Settings::default(),
+        };
+        s.migrate_layout();
+        s
+    }
+
+    /// v1.10.2 (#36/#38/#41): one-time layout migration for windows whose
+    /// default size changed. Runs once (layout_version 0 -> 1) and is
+    /// idempotent; user customizations that do not match the old defaults are
+    /// left untouched.
+    pub fn migrate_layout(&mut self) {
+        if self.layout_version.unwrap_or(0) >= 1 {
+            return;
         }
+        if let Some(r) = self.grid.get_mut("workflow") {
+            if r.cols == 2 && r.rows == 2 {
+                r.cols = 4;
+                r.rows = 3;
+            }
+        }
+        if let Some(r) = self.grid.get_mut("music") {
+            if r.cols == 3 && r.rows == 2 {
+                r.cols = 3;
+                r.rows = 3;
+            }
+        }
+        if let Some(r) = self.grid.get_mut("stats") {
+            if r.cols == 4 && r.rows == 3 {
+                r.cols = 5;
+                r.rows = 4;
+            }
+        }
+        self.layout_version = Some(1);
     }
 
     pub fn save(&self, dir: &Path) -> Result<(), String> {
@@ -198,5 +233,68 @@ impl Settings {
         std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grid_with(entries: &[(&str, GridRect)]) -> Settings {
+        let mut s = Settings::default();
+        s.grid.clear();
+        for (k, v) in entries {
+            s.grid.insert(k.to_string(), *v);
+        }
+        s
+    }
+
+    #[test]
+    fn layout_migration_resizes_workflow_music_stats() {
+        let mut s = grid_with(&[
+            ("workflow", GridRect { col: 1, row: 5, cols: 2, rows: 2 }),
+            ("music", GridRect { col: 8, row: 7, cols: 3, rows: 2 }),
+            ("stats", GridRect { col: 8, row: 4, cols: 4, rows: 3 }),
+        ]);
+        s.migrate_layout();
+        assert_eq!(s.grid["workflow"].cols, 4);
+        assert_eq!(s.grid["workflow"].rows, 3);
+        assert_eq!(s.grid["music"].cols, 3);
+        assert_eq!(s.grid["music"].rows, 3);
+        assert_eq!(s.grid["stats"].cols, 5);
+        assert_eq!(s.grid["stats"].rows, 4);
+        assert_eq!(s.layout_version, Some(1));
+    }
+
+    #[test]
+    fn layout_migration_idempotent_and_keeps_later_customization() {
+        let mut s = grid_with(&[("workflow", GridRect { col: 1, row: 5, cols: 2, rows: 2 })]);
+        s.migrate_layout();
+        // user later customizes back to 2x2; migration must not re-run
+        s.grid.insert("workflow".into(), GridRect { col: 1, row: 5, cols: 2, rows: 2 });
+        s.migrate_layout();
+        assert_eq!(s.grid["workflow"].cols, 2);
+        assert_eq!(s.layout_version, Some(1));
+    }
+
+    #[test]
+    fn layout_migration_keeps_custom_sizes() {
+        let mut s = grid_with(&[
+            ("workflow", GridRect { col: 3, row: 3, cols: 3, rows: 3 }),
+            ("music", GridRect { col: 0, row: 0, cols: 3, rows: 4 }),
+            ("stats", GridRect { col: 0, row: 0, cols: 5, rows: 3 }),
+        ]);
+        s.migrate_layout();
+        assert_eq!(s.grid["workflow"].cols, 3);
+        assert_eq!(s.grid["music"].rows, 4);
+        assert_eq!(s.grid["stats"].cols, 5);
+        assert_eq!(s.layout_version, Some(1));
+    }
+
+    #[test]
+    fn fresh_defaults_are_new_sizes() {
+        let s = Settings::default();
+        assert_eq!(s.grid["stats"].cols, 5);
+        assert_eq!(s.grid["stats"].rows, 4);
     }
 }

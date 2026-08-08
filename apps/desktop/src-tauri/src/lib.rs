@@ -97,7 +97,12 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
         let same = w.outer_position().map(|p| (p.x, p.y)).ok() == Some((px, py))
             && w.outer_size().map(|s| (s.width, s.height)).ok() == Some((pwp, php));
         if !same {
-            let _ = w.set_position(LogicalPosition::new(x, y));
+            // v1.10.2 (#35, ADR-0014): position changes move the native HWND
+            // (no WebView2 SetBounds RPC per call); size changes still go
+            // through the webview so the renderer relayouts.
+            if !crate::drag::move_window_raw(&w, px, py) {
+                let _ = w.set_position(LogicalPosition::new(x, y));
+            }
             let _ = w.set_size(LogicalSize::new(wpx, hpx));
         }
     }
@@ -654,7 +659,7 @@ pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), 
     let (w, h) = *state.screen.lock().unwrap();
     let gm = GridManager { screen_w: w, screen_h: h };
     let default_rect = if label == "workflow" {
-        GridRect { col: 4, row: 2, cols: 4, rows: 4 }
+        GridRect { col: 4, row: 2, cols: 4, rows: 3 } // v1.10.2 (#36): 4x3
     } else {
         GridRect { col: 0, row: 0, cols: 2, rows: 2 }
     };

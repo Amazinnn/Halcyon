@@ -77,7 +77,7 @@ fn clamp_axis(v: i32, max: i32) -> i32 {
 /// triggers the WebView2 controller SetBounds synchronous COM RPC every tick
 /// (root cause of the drag freeze). Returns false when the HWND is not
 /// available, in which case the caller falls back to `set_position`.
-fn move_window_raw(w: &tauri::WebviewWindow, x: i32, y: i32) -> bool {
+pub(crate) fn move_window_raw(w: &tauri::WebviewWindow, x: i32, y: i32) -> bool {
     #[cfg(target_os = "windows")]
     {
         if let Ok(hwnd) = w.hwnd() {
