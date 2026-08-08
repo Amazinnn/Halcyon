@@ -1,15 +1,15 @@
 # Focus Desktop 当前状态（压缩交接页）
 
-> 更新：2026-08-08（v1.10.2 修复轮实施中：#35 重叠卡死 / #36 工作流 / #37 窗口边框 / #38 音乐尺寸 / #39 缩放粘连 / #40 启动黑窗 / #41 统计页）。前序 v1.10/v1.10.1 已实现待验收。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
+> 更新：2026-08-08（v1.10.2 修复轮已实现待验收：#35–#41；ADR-0014）。前序 v1.10/v1.10.1 已实现待验收。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，MIT）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
 
-## 当前版本与已验证清单（v1.9.1 + M4 v1 + v1.10 + v1.10.1 已实现待验收；v1.10.2 实施中）
+## 当前版本与已验证清单（v1.9.1 + M4 v1 + v1.10 + v1.10.1 + v1.10.2 已实现待验收）
 
-- v1.10.2（体验修复轮 + 重叠卡死彻查，实施中，需求 #35–#41）：#35 重叠卡死受控取证 + position_window 位置操作改原生 HWND（ADR-0014）；#36 工作流默认 4×3 + 布局压缩；#37 根元素同圆角裁剪消除外层框；#38 音乐尺寸 [3×1,3×3,3×4]；#39 桌宠/音乐缩放位移滑块+最近档；#40 launch-focus.vbs 隐藏启动；#41 统计 line+tension 平滑曲线、0/24 刻度、nearest hover、默认 5×4。
+- v1.10.2（体验修复轮 + 重叠卡死彻查，已实现待验收，需求 #35–#41，ADR-0014）：#35 重叠卡死受控取证 + position_window 位置操作改原生 HWND（ADR-0014）；#36 工作流默认 4×3 + 布局压缩；#37 根元素同圆角裁剪消除外层框；#38 音乐尺寸 [3×1,3×3,3×4]；#39 桌宠/音乐缩放位移滑块+最近档；#40 launch-focus.vbs 隐藏启动；#41 统计 line+tension 平滑曲线、0/24 刻度、nearest hover、默认 5×4。开发侧：布局迁移落盘验证通过，重叠复现 3 轮 + 音乐拖动 12s 均 0 HUNG。
 - v1.10.1（拖动卡死修复轮，已实现待验收，需求 #34，ADR-0013）：拖动移动优先原生 SetWindowPos（SWP_ASYNCWINDOWPOS，绕过每 tick WebView2 SetBounds 同步 COM RPC）+ grid 预览 50ms 节流 + poll 24ms；hang-detector HUNG 期间每 3s STILL_HUNG 取证；开发侧受控拖动 2 轮 0 HUNG。
 - v1.10（修复轮，已实现待验收，需求 #30/#31/#32/#33）：工作流入口改到最左侧视图托盘、去掉 + 内部页并清理 internal 卡片（迁移 0006）；快速开关窗口卡死修复（去冗余窗口操作 + 前端防抖 + scripts/hang-detector.ps1 独立检测）；宠物更换失败与 canvas tainted 修复（spritesheet 同源加载 + 淡化 try/catch）；#33 launch-focus.cmd monitor 同步启动 hang-detector（HUNG 抓 minidump，日志 %APPDATA%\com.focusdesktop.app\hang-detector.log）。
 
