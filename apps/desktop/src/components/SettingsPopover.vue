@@ -51,6 +51,7 @@ async function load() {
   whiteText.value = settings.allowedApps.join("\n");
   await agent.refreshStatus();
   agentWorkspace.value = agent.workspaceDir;
+  await refreshAgents();
   await refreshPets();
   musicFolder.value = music.folder ?? (await invoke<string | null>("music_get_folder")) ?? "";
   await workflow.init();
@@ -212,6 +213,39 @@ async function removePet(id: string) {
   }
 }
 
+// M5 (ADR-0022): Agent management — list/delete/open workspace.
+const agentList = ref<{ id: string; name: string }[]>([]);
+const agentError = ref("");
+
+async function refreshAgents() {
+  await agent.refreshCharacters();
+  agentList.value = agent.characters.map((c) => ({ id: c.id, name: c.name }));
+}
+
+async function deleteAgent(id: string) {
+  agentError.value = "";
+  if (!window.confirm("删除该 Agent？将连带删除其工作区目录（含 AGENTS.md 与会话记录）。")) return;
+  try {
+    await invoke("agent_delete", { characterId: id });
+    if (id === agent.characterId) {
+      localStorage.removeItem("focus-agent");
+    }
+    await refreshAgents();
+    void emitEvent("agent:changed", {});
+  } catch (e) {
+    agentError.value = String(e);
+  }
+}
+
+async function openWorkspace(id: string) {
+  agentError.value = "";
+  try {
+    await invoke("agent_open_workspace", { characterId: id });
+  } catch (e) {
+    agentError.value = String(e);
+  }
+}
+
 function fmtRunTime(ts: number): string {
   if (!ts) return "—";
   return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
@@ -369,6 +403,19 @@ onMounted(load);
           {{ settings.petBgFade ? "开" : "关" }}
         </button>
       </div>
+    </section>
+
+    <section class="group">
+      <h4>Agent</h4>
+      <div v-if="agentError" class="err">{{ agentError }}</div>
+      <div v-if="agentList.length" class="pack-list">
+        <div v-for="a in agentList" :key="a.id" class="pack-row">
+          <span class="pack-name" :class="{ active: a.id === agent.characterId }">{{ a.name }}</span>
+          <button class="mini" title="打开工作区（编辑 AGENTS.md）" @click="openWorkspace(a.id)">打开工作区</button>
+          <button class="mini" title="删除（连带删工作区）" @click="deleteAgent(a.id)">删除</button>
+        </div>
+      </div>
+      <div v-else class="row"><span class="label">无 Agent</span></div>
     </section>
 
     <section class="group">

@@ -455,6 +455,52 @@ fn agent_list_skills() -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// M5 (ADR-0022): delete an Agent — remove its workspace dir (AGENTS.md +
+/// any session files) and clear the stored session hash.
+#[tauri::command]
+fn agent_delete(app: tauri::AppHandle, character_id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let ws = {
+        let store = state.store.clone();
+        let s = store.lock().unwrap();
+        s.get_character(&character_id)
+            .ok()
+            .flatten()
+            .and_then(|c| c.workspace_dir)
+    };
+    if let Some(ws) = ws {
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+    {
+        let store = state.store.clone();
+        let s = store.lock().unwrap();
+        let _ = s.update_character_agent(&character_id, None, None, None);
+    }
+    state.agents.lock().unwrap().runtimes.remove(&character_id);
+    Ok(())
+}
+
+/// M5 (ADR-0022): open the Agent's workspace folder in explorer so the user
+/// can edit AGENTS.md directly.
+#[tauri::command]
+fn agent_open_workspace(app: tauri::AppHandle, character_id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let row = {
+        let store = state.store.clone();
+        let s = store.lock().unwrap();
+        s.get_character(&character_id)
+            .ok()
+            .flatten()
+            .ok_or_else(|| "角色不存在".to_string())?
+    };
+    let ws = ensure_agent_workspace(&state, &row)?;
+    std::process::Command::new("explorer.exe")
+        .arg(&ws)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn set_agent_provider(app: tauri::AppHandle, provider: String) -> Result<(), String> {
     let kind = agents::AgentProviderKind::parse(&provider).ok_or("provider 需为 codex 或 mock")?;
@@ -1963,6 +2009,8 @@ pub fn run() {
             agent_send,
             agent_interrupt,
             agent_list_skills,
+            agent_delete,
+            agent_open_workspace,
             set_agent_provider,
             set_agent_workspace_dir,
             pet_import_pack,

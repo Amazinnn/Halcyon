@@ -86,8 +86,13 @@ export const useAgentStore = defineStore("agent", {
       try {
         const chars = await invoke<{ id: string; name: string }[]>("characters_list");
         this.characters = chars;
-        if (chars.length && !this.characters.some((c) => c.id === this.characterId)) {
-          this.selectCharacter(chars[0].id);
+        if (chars.length) {
+          // M5 (ADR-0022): restore the last-selected Agent, else pick first.
+          const saved = localStorage.getItem("focus-agent");
+          const target = saved && chars.some((c) => c.id === saved) ? saved : chars[0].id;
+          if (target !== this.characterId) {
+            await this.selectCharacter(target);
+          }
         }
       } catch (e) {
         console.error("[agent] characters_list failed", e);
@@ -97,6 +102,8 @@ export const useAgentStore = defineStore("agent", {
     async selectCharacter(id: string) {
       if (id === this.characterId) return;
       this.characterId = id;
+      // M5: remember the choice across restarts.
+      localStorage.setItem("focus-agent", id);
       this.sessionId = "";
       this.currentThreadId = null;
       this.messages = [];
