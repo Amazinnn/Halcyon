@@ -1,6 +1,6 @@
 # ADR-0015：浮窗圆角裁剪改原生 SetWindowRgn（v1.10.3，复开 #37/#42）
 
-- 状态：已接受（2026-08-08，v1.10.3 修复轮）
+- 状态：已回退（2026-08-08，v1.10.3.1 修复轮：SetWindowRgn 与 SWCA 毛玻璃合成冲突导致白色轮廓，回退并改用 WebView2 透明背景色 + CSS 圆角裁剪）
 - 关联：需求 #37/#42；ADR-0005（视觉与窗口管理）
 
 ## 背景
@@ -25,3 +25,6 @@ v1.10.2 为消除「web 自带框 + 绘制框」双层纹路（#37），在 `htm
 
 - 新增 `apps/desktop/src-tauri/src/window_rgn.rs`；lib.rs 的 `create_windows` / `position_window` / `resize_window` 接入。
 - CSS `border-radius + overflow:hidden` 保留（双保险，不冲突）。
+## 回退记录（v1.10.3.1）
+
+2026-08-08 用户验收发现：SetWindowRgn 实施后出现「Web 界面白色轮廓」（#48）；同时隐藏创建+后置 show 导致浮窗尺寸膨胀（约 +13px 宽 / +8px 高，音乐多 1 格高），窗口中心与网格格心错位。结论：SetWindowRgn 与 SWCA 毛玻璃/WebView2 透明合成冲突，原生裁剪方案回退。替代方案：WebviewWindowBuilder `.background_color(透明)` 消除 WebView2 默认白底，CSS `border-radius + overflow:hidden` 保留；#46 改构建期初始矩形（折叠窗仍隐藏）。
