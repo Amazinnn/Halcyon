@@ -259,7 +259,7 @@ pub fn ensure_agent_runtime(app: &tauri::AppHandle, character_id: &str) -> Resul
         "mock" => agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx))),
         _ => match agents::codex::find_codex_exe() {
             Some(exe) => {
-                let mut p = agents::codex::CodexProvider::new(tx, exe);
+                let mut p = agents::codex::CodexProvider::new(tx, exe, character_id.to_string());
                 // Restore the current session (same-day) so switching Agents
                 // resumes today's conversation.
                 if let Some(hash) = row.current_session_hash.clone() {

@@ -111,8 +111,9 @@ export const useAgentStore = defineStore("agent", {
       if (this.initialized) return;
       this.initialized = true;
       await listen<AgentEventEnvelope>("agent:event", (e) => {
-        // M5 (ADR-0022): only handle events for the current Agent.
-        if (e.payload.agentId !== "focus-codex" && e.payload.agentId !== this.characterId) return;
+        // M5 (ADR-0022): only handle events whose agentId matches the current
+        // character — other Agents' events never pollute this dialog.
+        if (e.payload.agentId !== this.characterId) return;
         this.lastEvent = e.payload;
         this.handleEvent(e.payload);
       });

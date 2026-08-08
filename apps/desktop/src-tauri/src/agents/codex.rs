@@ -27,10 +27,16 @@ const START_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// State shared between the provider and its stdout reader thread.
 struct Shared {
+    /// M5 (ADR-0022): this provider's agent identity — used in every event
+    /// envelope so the frontend can isolate per-Agent streams.
+    character_id: String,
     session_id: String,
     current_thread: Mutex<Option<String>>,
     current_turn: Mutex<Option<String>>,
     last_message: Mutex<String>,
+    /// M5 (ADR-0022): per-turn display switches + first-delta marker.
+    display: Mutex<crate::workflow_engine::engine::AgentDisplay>,
+    first_delta_sent: Mutex<bool>,
 }
 
 pub struct CodexProvider {
@@ -97,16 +103,19 @@ pub fn install_focus_cli_skill() -> Result<PathBuf, String> {
 
 
 impl CodexProvider {
-    pub fn new(tx: Sender<CoreEvent>, exe_path: PathBuf) -> Self {
-        let session_id = format!("focus-codex-{}", std::process::id());
+    pub fn new(tx: Sender<CoreEvent>, exe_path: PathBuf, character_id: String) -> Self {
+        let session_id = format!("focus-{}-{}", character_id, std::process::id());
         Self {
             tx,
             exe_path,
             shared: Arc::new(Shared {
+                character_id,
                 session_id,
                 current_thread: Mutex::new(None),
                 current_turn: Mutex::new(None),
                 last_message: Mutex::new(String::new()),
+                display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
+                first_delta_sent: Mutex::new(false),
             }),
             child: None,
             stdin: None,
@@ -259,7 +268,7 @@ impl CodexProvider {
     }
 
     fn emit_envelope(&self, event: Value) {
-        let env = super::envelope(AGENT_ID, &self.shared.session_id, event);
+        let env = super::envelope(&self.shared.character_id, &self.shared.session_id, event);
         let _ = self.tx.send(CoreEvent::AgentEvent(env));
     }
 
@@ -441,7 +450,9 @@ fn dispatch_message(
 }
 
 fn emit_envelope(tx: &Sender<CoreEvent>, shared: &Shared, event: Value) {
-    let env = super::envelope(AGENT_ID, &shared.session_id, event);
+    // M5 (ADR-0022): agentId = character_id so the frontend can isolate
+    // per-Agent event streams.
+    let env = super::envelope(&shared.character_id, &shared.session_id, event);
     let _ = tx.send(CoreEvent::AgentEvent(env));
 }
 
@@ -657,10 +668,13 @@ mod tests {
     fn delta_maps_to_schema_valid_envelope() {
         let (tx, _rx) = tokio::sync::broadcast::channel::<CoreEvent>(8);
         let shared = Arc::new(Shared {
+            character_id: "char-test".into(),
             session_id: "s1".into(),
             current_thread: Mutex::new(None),
             current_turn: Mutex::new(None),
             last_message: Mutex::new(String::new()),
+            display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
+            first_delta_sent: Mutex::new(false),
         });
         let mut rx = tx.subscribe();
         handle_agent_delta(
@@ -678,10 +692,13 @@ mod tests {
     fn turn_completed_failed_maps_to_error() {
         let (tx, _rx) = tokio::sync::broadcast::channel::<CoreEvent>(32);
         let shared = Arc::new(Shared {
+            character_id: "char-test".into(),
             session_id: "s1".into(),
             current_thread: Mutex::new(None),
             current_turn: Mutex::new(Some("u1".into())),
             last_message: Mutex::new(String::new()),
+            display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
+            first_delta_sent: Mutex::new(false),
         });
         let (td_tx, _td_rx) = tokio::sync::broadcast::channel::<TurnDone>(16);
         let td = Arc::new(td_tx);
