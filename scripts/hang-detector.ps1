@@ -130,6 +130,7 @@ $dumped = 0
 $maxDumps = 2
 $hungSince = $null
 $secondDumpAt = $null
+$stillAt = $null
 Write-Log ('{0},MONITOR,pid={1} proc={2}' -f (Get-Date -Format 'HH:mm:ss'), $targetPid, $ProcessName)
 while ($true) {
     $wins = @(Get-TopWindows $targetPid)
@@ -148,6 +149,7 @@ while ($true) {
         if ($state -like 'HUNG*') {
             $hungSince = Get-Date
             $secondDumpAt = $hungSince.AddSeconds(3)
+            $stillAt = $hungSince.AddSeconds(3)
             $detail = 'windows=[' + (Describe-Windows $hung) + '] threads=' + (Get-ThreadCount $targetPid)
             if ($dumped -lt $maxDumps) {
                 $dumped++
@@ -170,6 +172,10 @@ while ($true) {
         $dumpPath = Join-Path $DumpDir ($ProcessName + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $dumped + '.dmp')
         $ok = Write-Dump $targetPid $dumpPath
         Write-Log ('{0},{1},windows=[{2}] threads={3} dump={4} dumped={5}/{6}' -f (Get-Date -Format 'HH:mm:ss'), $state, (Describe-Windows $hung), (Get-ThreadCount $targetPid), $(if ($ok) { $dumpPath } else { 'dump-failed' }), $dumped, $maxDumps)
+    } elseif ($state -like 'HUNG*' -and $stillAt -and (Get-Date) -ge $stillAt) {
+        # v1.10.1 (#34): periodic evidence while the hang persists (threads + titles).
+        $stillAt = (Get-Date).AddSeconds(3)
+        Write-Log ('{0},STILL_HUNG,windows=[{1}] threads={2}' -f (Get-Date -Format 'HH:mm:ss'), (Describe-Windows $hung), (Get-ThreadCount $targetPid))
     }
 
     if ($Seconds -gt 0 -and ((Get-Date) - $start).TotalSeconds -ge $Seconds) {
