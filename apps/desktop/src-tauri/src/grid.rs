@@ -74,6 +74,52 @@ impl GridManager {
         }
         Ok(candidate)
     }
+
+    /// v1.10.3 (#45): nearest free slot for a window about to be restored.
+    /// Returns the desired rect (clamped) when it is free, otherwise the free
+    /// position whose top-left is closest (squared Euclidean distance, in
+    /// cells) to the desired top-left. None when every valid position is
+    /// occupied (cannot happen with the current 5-window set on a 12x8 grid).
+    pub fn find_free_slot(
+        &self,
+        label: &str,
+        desired: &GridRect,
+        occupied: &[GridRect],
+    ) -> Option<GridRect> {
+        let mut cols = desired.cols.clamp(1, GRID_COLS);
+        if TEXT_WINDOWS.contains(&label) {
+            cols = cols.max(MIN_TEXT_COLS).min(GRID_COLS);
+        }
+        let rows = desired.rows.clamp(1, GRID_ROWS);
+        let max_col = GRID_COLS - cols;
+        let max_row = GRID_ROWS - rows;
+        let clamped = GridRect {
+            col: desired.col.min(max_col),
+            row: desired.row.min(max_row),
+            cols,
+            rows,
+        };
+        if !occupied.iter().any(|o| overlap(&clamped, o)) {
+            return Some(clamped);
+        }
+        let mut best: Option<(u64, GridRect)> = None;
+        for c in 0..=max_col {
+            for r in 0..=max_row {
+                let cand = GridRect { col: c, row: r, cols, rows };
+                if occupied.iter().any(|o| overlap(&cand, o)) {
+                    continue;
+                }
+                let dc = (c as i64 - desired.col as i64).unsigned_abs();
+                let dr = (r as i64 - desired.row as i64).unsigned_abs();
+                let dist = (dc * dc + dr * dr) as u64;
+                if best.as_ref().map(|(d, _)| dist < *d).unwrap_or(true) {
+                    best = Some((dist, cand));
+                }
+            }
+        }
+        best.map(|(_, r)| r)
+    }
+
 }
 
 pub fn overlap(a: &GridRect, b: &GridRect) -> bool {
@@ -123,6 +169,45 @@ mod tests {
     fn overlap_detection() {
         assert!(overlap(&rect(0, 0, 4, 4), &rect(2, 2, 2, 2)));
         assert!(!overlap(&rect(0, 0, 2, 2), &rect(2, 0, 2, 2)));
+    }
+
+
+    #[test]
+    fn find_free_slot_prefers_desired() {
+        let g = gm();
+        let occupied = [rect(0, 0, 4, 4)];
+        let r = g.find_free_slot("chat", &rect(8, 4, 4, 3), &occupied).unwrap();
+        assert_eq!((r.col, r.row, r.cols, r.rows), (8, 4, 4, 3));
+    }
+
+    #[test]
+    fn find_free_slot_nearest_when_desired_occupied() {
+        let g = gm();
+        // desired at (8,0) is blocked; (4,0) is also blocked so the unique
+        // nearest free slot is (8,4) directly below the desired rect.
+        let occupied = [rect(8, 0, 4, 4), rect(4, 0, 4, 3)];
+        let r = g.find_free_slot("chat", &rect(8, 0, 4, 3), &occupied).unwrap();
+        assert_eq!((r.col, r.row, r.cols, r.rows), (8, 4, 4, 3));
+    }
+
+    #[test]
+    fn find_free_slot_respects_text_min_width() {
+        let g = gm();
+        let r = g.find_free_slot("chat", &rect(0, 0, 1, 4), &[]).unwrap();
+        assert_eq!(r.cols, MIN_TEXT_COLS);
+    }
+
+    #[test]
+    fn find_free_slot_none_when_all_occupied() {
+        let g = gm();
+        // 3x3 windows on cols 0,3,6,9 and rows 0,3,6 cover every 3x3 slot.
+        let mut occupied = Vec::new();
+        for c in (0..GRID_COLS).step_by(3) {
+            for r in (0..GRID_ROWS).step_by(3) {
+                occupied.push(rect(c, r, 3, 3));
+            }
+        }
+        assert!(g.find_free_slot("music", &rect(1, 1, 3, 3), &occupied).is_none());
     }
 
     #[test]

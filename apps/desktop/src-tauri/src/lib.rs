@@ -21,6 +21,7 @@ mod shortcuts;
 mod storage;
 mod supervision;
 mod wallpaper;
+mod window_rgn;
 mod workflow;
 mod workflow_engine;
 
@@ -104,6 +105,7 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
                 let _ = w.set_position(LogicalPosition::new(x, y));
             }
             let _ = w.set_size(LogicalSize::new(wpx, hpx));
+            crate::window_rgn::sync_window_region(&w); // v1.10.3 (#42)
         }
     }
 }
@@ -663,7 +665,22 @@ pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), 
     } else {
         GridRect { col: 0, row: 0, cols: 2, rows: 2 }
     };
-    let rect = state.settings.lock().unwrap().grid.get(label).copied().unwrap_or(default_rect);
+    let mut rect = state.settings.lock().unwrap().grid.get(label).copied().unwrap_or(default_rect);
+    // v1.10.3 (#45): never restore onto a visible window - pick the nearest
+    // free slot when the saved rect overlaps (ADR-0016).
+    {
+        let settings = state.settings.lock().unwrap();
+        let occupied = occupied_rects(&settings, Some(label));
+        if let Some(free) = gm.find_free_slot(label, &rect, &occupied) {
+            if free != rect {
+                drop(settings);
+                let mut s = state.settings.lock().unwrap();
+                s.grid.insert(label.to_string(), free);
+                let _ = s.save(&state.data_dir);
+                rect = free;
+            }
+        }
+    }
     if let Some(win) = app.get_webview_window(label) {
         let _ = win.set_always_on_top(*state.settings.lock().unwrap().topmost.get(label).unwrap_or(&true));
         let _ = win.show();
@@ -1125,50 +1142,60 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .decorations(false)
         .build()?;
 
-    tauri::WebviewWindowBuilder::new(app, "chat", url.clone())
+    let chat = tauri::WebviewWindowBuilder::new(app, "chat", url.clone())
         .title("对话")
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
-        .build()?;
+          .visible(false) // v1.10.3 (#46): reveal after initial layout
+          .build()?;
+    crate::window_rgn::sync_window_region(&chat);
 
-    tauri::WebviewWindowBuilder::new(app, "stats", url.clone())
+    let stats = tauri::WebviewWindowBuilder::new(app, "stats", url.clone())
         .title("统计")
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
-        .build()?;
+          .visible(false) // v1.10.3 (#46): reveal after initial layout
+          .build()?;
+    crate::window_rgn::sync_window_region(&stats);
 
-    tauri::WebviewWindowBuilder::new(app, "music", url.clone())
+    let music = tauri::WebviewWindowBuilder::new(app, "music", url.clone())
         .title("音乐")
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
-        .build()?;
+          .visible(false) // v1.10.3 (#46): reveal after initial layout
+          .build()?;
+    crate::window_rgn::sync_window_region(&music);
 
-    tauri::WebviewWindowBuilder::new(app, "pet", url.clone())
+    let pet = tauri::WebviewWindowBuilder::new(app, "pet", url.clone())
         .title("桌宠")
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
-        .build()?;
+          .visible(false) // v1.10.3 (#46): reveal after initial layout
+          .build()?;
+    crate::window_rgn::sync_window_region(&pet);
 
-    tauri::WebviewWindowBuilder::new(app, "workflow", url.clone())
+    let workflow = tauri::WebviewWindowBuilder::new(app, "workflow", url.clone())
         .title("工作流")
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
-        .build()?;
+          .visible(false) // v1.10.3 (#46): reveal after initial layout
+          .build()?;
+    crate::window_rgn::sync_window_region(&workflow);
 
     let overlay = tauri::WebviewWindowBuilder::new(app, "grid-overlay", url.clone())
         .title("Grid Overlay")
@@ -1303,7 +1330,12 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
             let collapsed = settings.collapsed.contains(&label.to_string());
             if collapsed {
                 let _ = win.hide();
+            } else {
+                // v1.10.3 (#46): floats start hidden; reveal only after the
+                // window has been moved to its saved grid slot.
+                let _ = win.show();
             }
+            crate::window_rgn::sync_window_region(&win); // v1.10.3 (#42)
             emit_visibility(&app.handle(), label, !collapsed);
         }
     }
