@@ -735,10 +735,37 @@ impl Store {
         Ok(())
     }
 
+    /// v1.10.4 (#51): most recent runs across all workflows (settings page).
+    pub fn list_recent_workflow_runs(&self, limit: i64) -> rusqlite::Result<Vec<WorkflowRunRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workflow_id, triggered_by, started_at, finished_at, status, error, node_log
+             FROM workflow_runs ORDER BY started_at DESC, rowid DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| {
+            Ok(WorkflowRunRow {
+                id: r.get(0)?,
+                workflow_id: r.get(1)?,
+                triggered_by: r.get(2)?,
+                started_at: r.get(3)?,
+                finished_at: r.get(4)?,
+                status: r.get(5)?,
+                error: r.get(6)?,
+                node_log: r.get(7)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// v1.10.4 (#51): clear all workflow run history.
+    pub fn clear_workflow_runs(&self) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM workflow_runs", [])?;
+        Ok(())
+    }
+
     pub fn list_workflow_runs(&self, workflow_id: &str, limit: i64) -> rusqlite::Result<Vec<WorkflowRunRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, workflow_id, triggered_by, started_at, finished_at, status, error, node_log
-             FROM workflow_runs WHERE workflow_id = ?1 ORDER BY started_at DESC LIMIT ?2",
+             FROM workflow_runs WHERE workflow_id = ?1 ORDER BY started_at DESC, rowid DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![workflow_id, limit], |r| {
             Ok(WorkflowRunRow {
@@ -1009,6 +1036,46 @@ mod tests {
 
         s.delete_workflow("wf1").unwrap();
         assert!(s.get_workflow("wf1").unwrap().is_none());
+    }
+
+    #[test]
+    fn recent_runs_ordered_and_clear() {
+        use crate::workflow_engine::model::{EdgeDef, NodeDef, WorkflowDef};
+        let s = temp_store();
+        let cid = s.ensure_character("pet-r", "测试宠").unwrap();
+        let wf = WorkflowDef {
+            id: "wf-r".into(),
+            character_id: cid.clone(),
+            name: "定时自检".into(),
+            trigger: "scheduled".into(),
+            schedule_type: Some("interval".into()),
+            interval_minutes: Some(30),
+            daily_time: None,
+            guard: "focusing".into(),
+            nodes: vec![NodeDef {
+                id: "n1".into(),
+                kind: "bubble".into(),
+                params: serde_json::json!({"text":"hi"}),
+                x: 0.0,
+                y: 0.0,
+            }],
+            edges: vec![],
+            enabled: true,
+            next_run_at: None,
+        };
+        s.save_workflow(&wf).unwrap();
+        for i in 0..3 {
+            s.insert_workflow_run(&format!("r{i}"), "wf-r", "schedule").unwrap();
+            s.finish_workflow_run(&format!("r{i}"), "success", None, "[]").unwrap();
+        }
+        let recent = s.list_recent_workflow_runs(2).unwrap();
+        assert_eq!(recent.len(), 2);
+        // newest first
+        assert_eq!(recent[0].id, "r2");
+        assert_eq!(recent[1].id, "r1");
+        s.clear_workflow_runs().unwrap();
+        assert!(s.list_recent_workflow_runs(10).unwrap().is_empty());
+        assert!(s.list_workflow_runs("wf-r", 10).unwrap().is_empty());
     }
 
     #[test]

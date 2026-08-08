@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::event_bus::CoreEvent;
@@ -581,6 +582,60 @@ pub fn workflow_automation_threads(app: tauri::AppHandle) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// v1.10.4 (#51): recent run row with workflow display name (settings page).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentRunRow {
+    pub id: String,
+    pub workflow_id: String,
+    pub workflow_name: String,
+    pub triggered_by: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub status: String,
+    pub error: Option<String>,
+    pub node_log: String,
+}
+
+#[tauri::command]
+pub fn workflow_runs_recent(app: tauri::AppHandle, limit: i64) -> Vec<RecentRunRow> {
+    let Ok(m) = manager(&app) else { return vec![] };
+    let Ok(store) = m.store.lock() else { return vec![] };
+    let Ok(runs) = store.list_recent_workflow_runs(limit) else { return vec![] };
+    let mut names: HashMap<String, String> = HashMap::new();
+    if let Ok(all) = store.list_workflows() {
+        for w in all {
+            names.insert(w.id.clone(), w.name);
+        }
+    }
+    runs.into_iter()
+        .map(|r| RecentRunRow {
+            workflow_name: names
+                .get(&r.workflow_id)
+                .cloned()
+                .unwrap_or_else(|| r.workflow_id.clone()),
+            id: r.id,
+            workflow_id: r.workflow_id,
+            triggered_by: r.triggered_by,
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+            status: r.status,
+            error: r.error,
+            node_log: r.node_log,
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn workflow_runs_clear(app: tauri::AppHandle) -> Result<(), String> {
+    let m = manager(&app)?;
+    let store = m
+        .store
+        .lock()
+        .map_err(|_| "store 锁异常".to_string())?;
+    store.clear_workflow_runs().map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Focus-cli integration (local control plane; NOT in the agent whitelist)
 // ---------------------------------------------------------------------------
@@ -635,5 +690,77 @@ pub fn cli_handle(app: &AppHandle, parts: &[&str]) -> Result<serde_json::Value, 
             Ok(serde_json::json!({ "cancelled": true }))
         }
         _ => Err(format!("未知 workflow 子命令: {}", parts.join(" "))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workflow_engine::model::{EdgeDef, NodeDef, WorkflowDef};
+
+    fn wf(trigger: &str) -> WorkflowDef {
+        WorkflowDef {
+            id: "w".into(),
+            character_id: "c".into(),
+            name: "t".into(),
+            trigger: trigger.into(),
+            schedule_type: None,
+            interval_minutes: None,
+            daily_time: None,
+            guard: "none".into(),
+            nodes: vec![NodeDef {
+                id: "n1".into(),
+                kind: "bubble".into(),
+                params: serde_json::json!({"text":"hi"}),
+                x: 0.0,
+                y: 0.0,
+            }],
+            edges: vec![EdgeDef {
+                id: "e1".into(),
+                source: "n1".into(),
+                source_handle: "out".into(),
+                target: "n1".into(),
+            }],
+            enabled: true,
+            next_run_at: None,
+        }
+    }
+
+    #[test]
+    fn compute_next_run_manual_or_disabled_is_none() {
+        let mut w = wf("manual");
+        assert_eq!(compute_next_run(&w), None);
+        w.trigger = "scheduled".into();
+        w.schedule_type = Some("interval".into());
+        w.interval_minutes = Some(30);
+        w.enabled = false;
+        assert_eq!(compute_next_run(&w), None);
+    }
+
+    #[test]
+    fn compute_next_run_interval_advances_minutes() {
+        let mut w = wf("scheduled");
+        w.schedule_type = Some("interval".into());
+        w.interval_minutes = Some(30);
+        let now = now_ts();
+        let nx = compute_next_run(&w).unwrap();
+        assert!(nx >= now + 30 * 60 - 2 && nx <= now + 30 * 60 + 2);
+    }
+
+    #[test]
+    fn compute_next_run_daily_is_in_future() {
+        let mut w = wf("scheduled");
+        w.schedule_type = Some("daily".into());
+        w.daily_time = Some("23:59".into());
+        let now = now_ts();
+        let nx = compute_next_run(&w).unwrap();
+        assert!(nx > now);
+    }
+
+    #[test]
+    fn compute_next_run_unknown_schedule_is_none() {
+        let mut w = wf("scheduled");
+        w.schedule_type = Some("weekly".into());
+        assert_eq!(compute_next_run(&w), None);
     }
 }

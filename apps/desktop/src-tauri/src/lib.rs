@@ -1829,6 +1829,8 @@ pub fn run() {
             workflow::workflow_runs,
             workflow::workflow_cleanup_threads,
             workflow::workflow_automation_threads,
+            workflow::workflow_runs_recent,
+            workflow::workflow_runs_clear,
             quit_app
         ])
         .run(tauri::generate_context!())
