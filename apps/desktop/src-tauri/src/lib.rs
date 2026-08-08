@@ -11,6 +11,7 @@ mod apps;
 mod cli;
 mod drag;
 mod desktop_lock;
+mod desktop_lock_escapes;
 mod event_bus;
 mod grid;
 mod icons;
@@ -1691,6 +1692,24 @@ pub fn run() {
             "--proxy-bypass-list=<-loopback>",
         );
     }
+    // v1.12 dev-only watchdog mode: restore the desktop if the parent dies.
+    // The watchdog child re-launches this exe with --focus-watchdog <pid>.
+    let mut args = std::env::args();
+    if args.nth(1).as_deref() == Some("--focus-watchdog") {
+        let pid: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        if pid != 0 {
+            unsafe {
+                use windows::Win32::System::Threading::{
+                    OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+                };
+                if let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                    WaitForSingleObject(h, u32::MAX);
+                }
+            }
+            let _ = desktop_lock::unlock_desktop();
+            std::process::exit(0);
+        }
+    }
     // v1.8.1 single-instance guard: a second process must exit immediately so
     // two instances never share the same SQLite DB / settings (which could
     // silently drop writes). The mutex handle lives for the process lifetime
@@ -1966,6 +1985,9 @@ pub fn run() {
             // v1.12: desktop lock Drop guard lives for the process lifetime —
             // normal exit restores taskbar/desktop if locked.
             let _lock_guard = desktop_lock::DesktopLock;
+            // v1.12 dev-only crash defenses (panic hook / watchdog / escape
+            // file). Removed after development — see desktop_lock_escapes.rs.
+            desktop_lock_escapes::install_all();
 
             Ok(())
         })
