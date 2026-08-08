@@ -16,6 +16,12 @@
 
 ## M1：桌宠与桌面壳层（2026-08-08 现状）
 
+### v1.11 工作流退化为 Agent 日程工具（2026-08-08 已实现待验收，需求 #67，ADR-0020）
+- 空角色合法化：save 不挂回 / 删 repair_orphan / list 空串=全部含未绑定；孤儿测试数据删库清理。
+- Agent 节点级目标：节点 `characterId` 参数（含 Agent 节点=必然绑定，节点决定调谁）；前端目标Agent下拉。
+- JSON 文档 + focus-cli `workflow read/create/update/delete --payload`（Agent 只经 CLI 增删改查 JSON，JSON=唯一真相）；`workflow:changed` 事件广播；白名单放行 workflow 全部子命令。
+- 前端列表形态（未绑定工作流入口）M5 再做。
+
 ### v1.10.5.1 修复轮：文档固化 + 三样修复（2026-08-08 已实现待验收，需求 #64–#66，ADR-0019）
 - 存档角色绑定：ensure_characters 永不静默返回空（锁失败 into_inner；无宠物包确保 char-default）；workflow_save 空角色自动挂默认角色；启动 repair_orphan_workflows 孤儿挂回默认角色（一次性找回）；前端刷新空角色重试 3×500ms、toDraft 空角色拦截、保存中/已保存✓ + beforeunload flush。
 - 连线箭头：手写 SVG marker 未渲染 → Vue Flow 原生 MarkerType.ArrowClosed。
@@ -67,7 +73,7 @@
 
 ## 后续里程碑（保持 M2→M7 顺序）
 
-- M2：时间统计 + 本地音乐播放器——**已实现**（v1.8 统计真实化 + v1.9 本地音乐播放器，ADR-0011）；M3：Codex CLI 嵌入（Claudian 式；2026-08-06 已实现垂直切片：对话 + focus-cli 白名单审计 + skills 透传，ADR-0007；plan mode/Diff/终端面板/Claude Code 为后续）；M4：内置工作流引擎（精简 n8n；2026-08-07 方向锁定 #26/#28/#29，v1.10.5 已实现并**冻结不再更新**（#64/#66，ADR-0019），作为日程工具保留 v1.10.5 语义；ADR-0012/0017/0018）；M5：新的 Agent（外部 Agent 驱动的角色循环；2026-08-07 已锁定方向：内核驱动 / 事件+兜底 / 先单角色；Journal/Task 保持外接 skill 不内置；**未实施**；2026-08-08 Agent 概念定稿（#65，ADR-0019）：每宠物↔一个 Agent、共享对话框、切换替换上下文、过去一天存储但 UI 清空，细节 TBD）；后续顺延：监督与软限制、实验性虚拟桌面（C# helper）、多 Agent 生态。
+- M2：时间统计 + 本地音乐播放器——**已实现**（v1.8 统计真实化 + v1.9 本地音乐播放器，ADR-0011）；M3：Codex CLI 嵌入（Claudian 式；2026-08-06 已实现垂直切片：对话 + focus-cli 白名单审计 + skills 透传，ADR-0007；plan mode/Diff/终端面板/Claude Code 为后续）；M4：内置工作流引擎（精简 n8n；2026-08-07 方向锁定 #26/#28/#29，v1.10.5 已实现；2026-08-08 冻结（#64/#66，ADR-0019）并**v1.11 退化为 Agent 日程工具**（ADR-0020：空角色合法化 / Agent 节点级目标 / JSON 文档 + focus-cli CRUD / workflow:changed 事件）；M5：新的 Agent（外部 Agent 驱动的角色循环；2026-08-07 已锁定方向：内核驱动 / 事件+兜底 / 先单角色；Journal/Task 保持外接 skill 不内置；**未实施**；2026-08-08 Agent 概念定稿（#65，ADR-0019）：每宠物↔一个 Agent、共享对话框、切换替换上下文、过去一天存储但 UI 清空；v1.11 已铺后端地基（ADR-0020），细节 TBD）；后续顺延：监督与软限制、实验性虚拟桌面（C# helper）、多 Agent 生态。
 - M1 与 M2 模块边界清晰，可部分并行；M3 依赖 M1 的对话面板可用性。
 
-- M4/M5 方向见 docs/requirements-verbatim.md #26/#27；M4 v1.10.5 已实现并冻结（#64，ADR-0019），M5 Agent 概念已定稿（#65，ADR-0019）待实施。
+- M4/M5 方向见 docs/requirements-verbatim.md #26/#27；M4 已冻结并退化为 Agent 日程工具（#64/#67，ADR-0019/0020），M5 Agent 概念已定稿（#65，ADR-0019）后端地基已铺（#67，ADR-0020）待实施。

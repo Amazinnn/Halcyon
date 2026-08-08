@@ -3,7 +3,9 @@
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**v1.10.5.1（当前）**：修复轮 = 存档角色绑定（ensure_characters 永不静默返回空 / workflow_save 空角色挂默认 / 启动 repair_orphan_workflows 孤儿挂回 / 前端刷新重试与保存状态）、连线箭头改 Vue Flow 原生 MarkerType.ArrowClosed、隐藏数字框 spinner；需求 #64–#66 + ADR-0019（Agent 概念定稿 + 工作流冻结，M5 待实施）。
+**v1.11（当前）**：工作流退化为 Agent 日程工具 = 空角色合法化（save 不挂回 / 删 repair_orphan / list 空串=全部含未绑定，孤儿测试数据删库清理）、Agent 节点级目标（节点 `characterId` 参数 + 前端目标Agent下拉）、JSON 文档 + focus-cli `workflow read/create/update/delete --payload`（Agent 只经 CLI 增删改查 JSON，JSON=唯一真相、画布=渲染器）、`workflow:changed` 事件广播、白名单放行 workflow 全部子命令；需求 #67 + ADR-0020（推翻 ADR-0019 §4 孤儿挂回）。
+
+**v1.10.5.1**：修复轮 = 存档角色绑定、连线箭头改 Vue Flow 原生 MarkerType.ArrowClosed、隐藏数字框 spinner；需求 #64–#66 + ADR-0019（Agent 概念定稿 + 工作流冻结，M5 待实施）。注意：其中「空角色挂默认 / 孤儿挂回」已被 v1.11 推翻。
 
 **v1.10.5**：工作流画布收敛轮 = 7 类节点（移除气泡/IF）、参数面板词条卡片化 + 零变量、Agent=唯一输出通道 + 输出纪律提示词、自动保存竞态修复、绝对不向后兼容（启动 purge 旧工作流）；需求 #59–#63，ADR-0018。
 
