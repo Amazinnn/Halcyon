@@ -492,8 +492,8 @@ function fmtTime(ts: number): string {
 .wf-top {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 6px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--glass-border);
   flex-wrap: wrap;
 }
@@ -540,12 +540,12 @@ function fmtTime(ts: number): string {
   min-height: 0;
 }
 .wf-side {
-  width: 230px;
+  width: 200px;
   border-right: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 8px;
+  padding: 6px;
   overflow-y: auto;
   background: rgba(10, 18, 14, 0.5);
 }
@@ -581,7 +581,7 @@ function fmtTime(ts: number): string {
   max-width: 420px;
 }
 .wf-inspector {
-  width: 250px;
+  width: 220px;
   border-left: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
@@ -627,8 +627,8 @@ textarea.ta { min-height: 64px; resize: vertical; }
 .ref-item.muted { color: var(--text-low); }
 .wf-runs {
   border-top: 1px solid var(--glass-border);
-  padding: 6px 12px;
-  max-height: 120px;
+  padding: 5px 10px;
+  max-height: 100px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;

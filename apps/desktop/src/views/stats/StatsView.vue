@@ -23,17 +23,48 @@ function renderTimeChart() {
     timeChart.update();
     return;
   }
+  // v1.10.2 (#41): smooth line, only "0时"/"24时" ticks, precise nearest hover.
   timeChart = new Chart(tc, {
-    type: "bar",
+    type: "line",
     data: {
       labels: Array.from({ length: 24 }, (_, h) => `${h}时`),
-      datasets: [{ label: "专注分钟", data: d.hours24, backgroundColor: "#a3e635", borderRadius: 3 }],
+      datasets: [
+        {
+          label: "专注分钟",
+          data: d.hours24,
+          borderColor: "#a3e635",
+          backgroundColor: "rgba(163, 230, 53, 0.14)",
+          fill: true,
+          tension: 0.4,
+          borderWidth: 2,
+          pointRadius: 2,
+          pointHoverRadius: 5,
+          pointBackgroundColor: "#a3e635",
+        },
+      ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      scales: { y: { beginAtZero: true, max: 60 } },
-      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: {
+            color: "#5f7363",
+            maxRotation: 0,
+            callback: (_v: string | number, index: number) =>
+              index === 0 ? "0时" : index === 23 ? "24时" : "",
+          },
+        },
+        y: { beginAtZero: true, max: 60, ticks: { color: "#5f7363" } },
+      },
+      interaction: { mode: "nearest", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: { label: (ctx) => `${ctx.label} · ${ctx.parsed.y} 分钟` },
+        },
+      },
     },
   });
 }

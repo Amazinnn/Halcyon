@@ -34,19 +34,23 @@ function onSeek(e: Event) {
   music.seek(Number(el.value) * 1000);
 }
 
-// ---- resize handle (mirrors pet): 3x1 -> 3x2 -> 3x3 -> 3x4 ----
+// ---- resize handle (mirrors pet): v1.10.2 (#38) sizes are 3x1 / 3x3 /
+// 3x4 only (3x2 removed); (#39) sticky slider: target slot = nearest slot to
+// the horizontal drag offset (rounded), small drags stay put. ----
 const SIZES: Array<[number, number]> = [
   [3, 1],
-  [3, 2],
   [3, 3],
   [3, 4],
 ];
+const RESIZE_STEP_PX = 64;
 const rows = ref(3);
 const showList = computed(() => rows.value >= 3);
 let sizeIdx = 0;
+let startSizeIdx = 0;
+let targetSizeIdx = 0;
+let startClientX = 0;
 let resizePointer = -1;
 let resizeChanged = false;
-let dragAccum = 0;
 
 function syncFromBootstrap() {
   void (async () => {
@@ -64,8 +68,8 @@ function syncFromBootstrap() {
   })();
 }
 
-function showResizePreview() {
-  const [cols, rr] = SIZES[sizeIdx];
+function showResizePreview(idx: number) {
+  const [cols, rr] = SIZES[idx];
   void invoke("resize_preview", { label: "music", visible: true, cols, rows: rr }).catch((err) =>
     console.error("[music] resize preview failed", err),
   );
@@ -74,20 +78,23 @@ function showResizePreview() {
 function onResizePointerDown(e: PointerEvent) {
   if (resizePointer !== -1) return;
   resizePointer = e.pointerId;
+  startSizeIdx = sizeIdx;
+  targetSizeIdx = sizeIdx;
   resizeChanged = false;
-  dragAccum = 0;
+  startClientX = e.clientX;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  showResizePreview();
+  showResizePreview(targetSizeIdx);
 }
 
 function onResizePointerMove(e: PointerEvent) {
   if (e.pointerId !== resizePointer) return;
-  dragAccum += Math.abs(e.movementX) + Math.abs(e.movementY);
-  if (dragAccum > 40) {
-    dragAccum = 0;
+  const dx = e.clientX - startClientX;
+  const off = Math.round(dx / RESIZE_STEP_PX);
+  const next = Math.min(SIZES.length - 1, Math.max(0, startSizeIdx + off));
+  if (next !== targetSizeIdx) {
+    targetSizeIdx = next;
     resizeChanged = true;
-    sizeIdx = (sizeIdx + 1) % SIZES.length;
-    showResizePreview();
+    showResizePreview(targetSizeIdx);
   }
 }
 
@@ -96,6 +103,7 @@ async function onResizePointerUp(e: PointerEvent) {
   resizePointer = -1;
   void invoke("resize_preview", { label: "music", visible: false }).catch(() => undefined);
   if (!resizeChanged) return;
+  sizeIdx = targetSizeIdx;
   const [cols, rr] = SIZES[sizeIdx];
   try {
     const rect = await invoke<{ cols: number; rows: number }>("resize_window", {
@@ -106,6 +114,7 @@ async function onResizePointerUp(e: PointerEvent) {
     rows.value = rect.rows;
   } catch (err) {
     console.error("[music] resize rejected", err);
+    sizeIdx = startSizeIdx;
     syncFromBootstrap();
   }
 }
@@ -115,9 +124,11 @@ function onResizeCancel() {
   resizePointer = -1;
   void invoke("resize_preview", { label: "music", visible: false }).catch(() => undefined);
   if (!resizeChanged) return;
+  sizeIdx = targetSizeIdx;
   const [cols, rr] = SIZES[sizeIdx];
   void invoke("resize_window", { label: "music", cols, rows: rr }).catch((err) => {
     console.error("[music] resize rejected", err);
+    sizeIdx = startSizeIdx;
     syncFromBootstrap();
   });
 }

@@ -46,6 +46,14 @@ html.transparent-window #app {
   background: transparent !important;
 }
 
+/* v1.10.2 (#37): clip the page to the same rounded corners as the window
+   containers so the WebView2 page edge never shows a second "frame". */
+html.transparent-window,
+html.transparent-window body {
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
 .num { font-variant-numeric: tabular-nums; }
 
 /* glass card */

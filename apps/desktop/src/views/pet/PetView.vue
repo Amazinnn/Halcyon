@@ -197,15 +197,20 @@ async function refresh() {
   }
 }
 
-// ---- resize handle: 1x1 -> 1x2 -> 2x1 -> 2x2 (preview while held, commit on release) ----
+// ---- resize handle (v1.10.2 #39): sticky slider. Sizes are ordered by
+// area (1x1 < 1x2/2x1 < 2x2); target slot = nearest slot to the horizontal
+// drag offset (rounded), so small drags stay put and big drags can skip
+// intermediate slots. Preview while held, commit on release. ----
 let sizeIdx = 0;
-let prevSizeIdx = 0;
-let dragAccum = 0;
+let startSizeIdx = 0;
+let targetSizeIdx = 0;
+let startClientX = 0;
 let resizePointer = -1;
 let resizeChanged = false;
+const RESIZE_STEP_PX = 64;
 
-function showResizePreview() {
-  const [cols, rows] = SIZES[sizeIdx];
+function showResizePreview(idx: number) {
+  const [cols, rows] = SIZES[idx];
   void invoke("resize_preview", { label: "pet", visible: true, cols, rows }).catch((err) =>
     console.error("[pet] resize preview failed", err),
   );
@@ -214,21 +219,23 @@ function showResizePreview() {
 function onResizePointerDown(e: PointerEvent) {
   if (resizePointer !== -1) return;
   resizePointer = e.pointerId;
-  dragAccum = 0;
+  startSizeIdx = sizeIdx;
+  targetSizeIdx = sizeIdx;
   resizeChanged = false;
-  prevSizeIdx = sizeIdx;
+  startClientX = e.clientX;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  showResizePreview();
+  showResizePreview(targetSizeIdx);
 }
 
 function onResizePointerMove(e: PointerEvent) {
   if (e.pointerId !== resizePointer) return;
-  dragAccum += Math.abs(e.movementX) + Math.abs(e.movementY);
-  if (dragAccum > 40) {
-    dragAccum = 0;
+  const dx = e.clientX - startClientX;
+  const off = Math.round(dx / RESIZE_STEP_PX);
+  const next = Math.min(SIZES.length - 1, Math.max(0, startSizeIdx + off));
+  if (next !== targetSizeIdx) {
+    targetSizeIdx = next;
     resizeChanged = true;
-    sizeIdx = (sizeIdx + 1) % SIZES.length;
-    showResizePreview();
+    showResizePreview(targetSizeIdx);
   }
 }
 
@@ -237,12 +244,13 @@ async function onResizePointerUp(e: PointerEvent) {
   resizePointer = -1;
   void invoke("resize_preview", { label: "pet", visible: false }).catch(() => undefined);
   if (!resizeChanged) return;
+  sizeIdx = targetSizeIdx;
   const [cols, rows] = SIZES[sizeIdx];
   try {
     await invoke("resize_window", { label: "pet", cols, rows });
   } catch (err) {
-    // Conflict: the window stayed at its original size; revert the cycle state.
-    sizeIdx = prevSizeIdx;
+    // Conflict: the window stayed at its original size; revert to the start slot.
+    sizeIdx = startSizeIdx;
     console.error("[pet] resize rejected", err);
   }
 }
@@ -256,9 +264,10 @@ function onResizeCancel() {
   resizePointer = -1;
   void invoke("resize_preview", { label: "pet", visible: false }).catch(() => undefined);
   if (!resizeChanged) return;
+  sizeIdx = targetSizeIdx;
   const [cols, rows] = SIZES[sizeIdx];
   void invoke("resize_window", { label: "pet", cols, rows }).catch((err) => {
-    sizeIdx = prevSizeIdx;
+    sizeIdx = startSizeIdx;
     console.error("[pet] resize rejected", err);
   });
 }
