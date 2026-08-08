@@ -15,6 +15,25 @@ use super::model::{CharacterInfo, NodeDef, NodeLogEntry, RunStatus, WorkflowDef,
 /// One-shot agent invocation. wait=true blocks until the agent turn finishes
 /// and returns (result_text, thread_id); wait=false returns None right
 /// after dispatch (no output for downstream nodes).
+/// M5 (ADR-0022): `display` carries the per-node show switches
+/// (showInitial/showThinking/showResult) so the provider filters events.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AgentDisplay {
+    pub show_initial: bool,
+    pub show_thinking: bool,
+    pub show_result: bool,
+}
+
+impl Default for AgentDisplay {
+    fn default() -> Self {
+        Self {
+            show_initial: true,
+            show_thinking: false,
+            show_result: true,
+        }
+    }
+}
+
 pub trait AgentCall: Send + Sync {
     fn call_one_shot(
         &self,
@@ -22,6 +41,7 @@ pub trait AgentCall: Send + Sync {
         prompt: &str,
         wait: bool,
         cancel: &AtomicBool,
+        display: AgentDisplay,
     ) -> Result<Option<(String, String)>, String>;
 
     /// v1.11 (ADR-0020): resolve a per-node target character by id. Returns
@@ -279,12 +299,21 @@ fn run_node(
             } else {
                 character.clone()
             };
-            match agent.call_one_shot(&caller, &prompt, wait, cancel) {
+            // M5 (ADR-0022): per-node display switches (default on/off/on).
+            let display = AgentDisplay {
+                show_initial: param_bool(node, "showInitial").unwrap_or(true),
+                show_thinking: param_bool(node, "showThinking").unwrap_or(false),
+                show_result: param_bool(node, "showResult").unwrap_or(true),
+            };
+            match agent.call_one_shot(&caller, &prompt, wait, cancel, display) {
                 Ok(Some((result, thread_id))) => {
                     // v1.10.5 (ADR-0018): Agent reply is shown to the user —
                     // pet bubble here; chat side comes from the agent thread
                     // event (one message, line breaks preserved).
-                    events.bubble(&result, "normal");
+                    // M5 (ADR-0022): bubble only when showResult is on.
+                    if display.show_result {
+                        events.bubble(&result, "normal");
+                    }
                     let mut out = json!({ "result": result, "threadId": thread_id, "status": "completed" });
                     // v2 fill-slot: the agent answers a single-choice question;
                     // the slot value is the option contained in the reply, or the
@@ -592,6 +621,7 @@ mod tests {
             prompt: &str,
             wait: bool,
             _cancel: &AtomicBool,
+            _display: AgentDisplay,
         ) -> Result<Option<(String, String)>, String> {
             self.prompts.lock().unwrap().push(prompt.to_string());
             self.targets.lock().unwrap().push(c.id.clone());

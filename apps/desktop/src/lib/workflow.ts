@@ -97,7 +97,17 @@ export const NODE_DESC: Record<string, string> = {
 export function defaultParams(kind: string): Record<string, unknown> {
   switch (kind) {
     case "agent":
-      return { prompt: "", wait: true, timeout: 600, fillOptions: [] as string[] };
+      // M5 (ADR-0022): display switches — showInitial (first short sentence,
+      // on), showThinking (stream, off), showResult (final, on).
+      return {
+        prompt: "",
+        wait: true,
+        timeout: 600,
+        fillOptions: [] as string[],
+        showInitial: true,
+        showThinking: false,
+        showResult: true,
+      };
     case "show_window":
       return { target: "chat" };
     case "wait":

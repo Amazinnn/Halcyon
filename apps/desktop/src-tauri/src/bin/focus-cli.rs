@@ -136,6 +136,8 @@ fn print_help() {
     println!("  focus-cli workflow create --payload <workflow-json>");
     println!("  focus-cli workflow update <id> --payload <workflow-json>");
     println!("  focus-cli workflow delete <id>");
+    println!("  focus-cli agent list");
+    println!("  focus-cli agent session <agent-id>");
     println!("  focus-cli ping");
     println!("  focus-cli --agent-thread <thread_id> <command>  （Agent 专用：白名单+审计）");
 }

@@ -217,6 +217,34 @@ impl Store {
                 [],
             )?;
         }
+
+        // 0007 (M5, ADR-0022): character = Agent — tool carrier, per-Agent
+        // workspace, current session hash + session date (daily rotation).
+        let has0007: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = '0007_character_agent')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has0007 {
+            let cols: Vec<String> = self
+                .conn
+                .prepare("PRAGMA table_info(characters)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .collect::<Result<_, _>>()?;
+            if !cols.iter().any(|c| c == "tool") {
+                self.conn.execute_batch(
+                    "ALTER TABLE characters ADD COLUMN tool TEXT NOT NULL DEFAULT 'codex';
+                     ALTER TABLE characters ADD COLUMN workspace_dir TEXT;
+                     ALTER TABLE characters ADD COLUMN current_session_hash TEXT;
+                     ALTER TABLE characters ADD COLUMN session_date TEXT;",
+                )?;
+            }
+            self.conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (name, applied_at)
+                 VALUES ('0007_character_agent', datetime('now'))",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -563,6 +591,13 @@ pub struct CharacterRow {
     pub name: String,
     pub persona: String,
     pub pet_pack_id: Option<String>,
+    // M5 (ADR-0022): character = Agent. tool = carrier (codex|claude|mock),
+    // workspace_dir = per-Agent workspace (lazy-created), current_session_hash
+    // + session_date drive the daily session rotation.
+    pub tool: String,
+    pub workspace_dir: Option<String>,
+    pub current_session_hash: Option<String>,
+    pub session_date: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -583,7 +618,9 @@ impl Store {
 
     pub fn list_characters(&self) -> rusqlite::Result<Vec<CharacterRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, persona, pet_pack_id FROM characters ORDER BY created_at, id",
+            "SELECT id, name, persona, pet_pack_id, tool, workspace_dir,
+                    current_session_hash, session_date
+             FROM characters ORDER BY created_at, id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(CharacterRow {
@@ -591,6 +628,10 @@ impl Store {
                 name: r.get(1)?,
                 persona: r.get(2)?,
                 pet_pack_id: r.get(3)?,
+                tool: r.get(4)?,
+                workspace_dir: r.get(5)?,
+                current_session_hash: r.get(6)?,
+                session_date: r.get(7)?,
             })
         })?;
         rows.collect()
@@ -598,7 +639,9 @@ impl Store {
 
     pub fn get_character(&self, id: &str) -> rusqlite::Result<Option<CharacterRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, persona, pet_pack_id FROM characters WHERE id = ?1",
+            "SELECT id, name, persona, pet_pack_id, tool, workspace_dir,
+                    current_session_hash, session_date
+             FROM characters WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |r| {
             Ok(CharacterRow {
@@ -606,9 +649,25 @@ impl Store {
                 name: r.get(1)?,
                 persona: r.get(2)?,
                 pet_pack_id: r.get(3)?,
+                tool: r.get(4)?,
+                workspace_dir: r.get(5)?,
+                current_session_hash: r.get(6)?,
+                session_date: r.get(7)?,
             })
         })?;
         rows.next().transpose()
+    }
+
+    /// M5 (ADR-0022): persist the per-Agent session hash + date (daily
+    /// rotation) and the workspace dir after lazy creation.
+    pub fn update_character_agent(&self, id: &str, workspace_dir: Option<&str>, session_hash: Option<&str>, session_date: Option<&str>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE characters SET workspace_dir = ?2, current_session_hash = ?3,
+                    session_date = ?4
+             WHERE id = ?1",
+            params![id, workspace_dir, session_hash, session_date],
+        )?;
+        Ok(())
     }
 
     pub fn insert_character(&self, row: &CharacterRow) -> rusqlite::Result<()> {
@@ -641,6 +700,11 @@ impl Store {
             name: name.to_string(),
             persona,
             pet_pack_id: Some(pet_pack_id.to_string()),
+            // M5 (ADR-0022): defaults — codex carrier, workspace/session lazy.
+            tool: "codex".into(),
+            workspace_dir: None,
+            current_session_hash: None,
+            session_date: None,
         })?;
         Ok(id)
     }
@@ -1129,6 +1193,25 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].character_id, "");
         assert_eq!(s.get_workflow("w-empty").unwrap().unwrap().character_id, "");
+    }
+
+    #[test]
+    fn migration_0007_adds_character_agent_columns() {
+        // M5 (ADR-0022): characters gain tool/workspace_dir/session columns.
+        let s = temp_store();
+        let cid = s.ensure_character("pet-1", "test-pet").unwrap();
+        let c = s.get_character(&cid).unwrap().unwrap();
+        assert_eq!(c.tool, "codex");
+        assert_eq!(c.workspace_dir, None);
+        assert_eq!(c.current_session_hash, None);
+        assert_eq!(c.session_date, None);
+        // Update roundtrips.
+        s.update_character_agent(&cid, Some("C:/ws"), Some("hash-1"), Some("2026-08-08"))
+            .unwrap();
+        let c = s.get_character(&cid).unwrap().unwrap();
+        assert_eq!(c.workspace_dir.as_deref(), Some("C:/ws"));
+        assert_eq!(c.current_session_hash.as_deref(), Some("hash-1"));
+        assert_eq!(c.session_date.as_deref(), Some("2026-08-08"));
     }
 
     #[test]

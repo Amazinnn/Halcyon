@@ -41,7 +41,6 @@ watch(
 onMounted(async () => {
   await agent.init();
   workspaceInput.value = agent.workspaceDir;
-  await agent.refreshThreads();
 });
 
 function send() {
@@ -68,46 +67,26 @@ async function applyWorkspace() {
     agent.pushSystem(`工作区设置失败：${e}`);
   }
 }
-
-async function chooseThread(threadId: string) {
-  if (threadId) await agent.resumeThread(threadId);
-}
-
-function shortPreview(t: { id: string; preview: string }) {
-  const p = t.preview.trim();
-  if (p) return p.length > 32 ? p.slice(0, 32) + "…" : p;
-  return t.id.slice(0, 10);
-}
 </script>
 
 <template>
   <div class="chat-window">
     <WindowHeader :title="agent.characterName" collapsible />
 
-    <div class="status-row">
+    <div class="agent-row">
+      <select class="agent-select" :value="agent.characterId" @change="agent.selectCharacter(($event.target as HTMLSelectElement).value)">
+        <option v-for="c in agent.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
+      </select>
       <span class="badge" :class="agent.provider">
         {{ agent.provider === "mock" && agent.fallback ? "Mock（回退）" : agent.provider === "mock" ? "Mock" : "Codex" }}
       </span>
       <span class="phase" :class="agent.phase">{{ phaseText }}</span>
-      <button class="ghost" @click="agent.newThread()">新建</button>
-      <button class="ghost" @click="agent.refreshThreads()">刷新</button>
+      <button class="ghost" @click="agent.newThread()">新会话</button>
       <button v-if="agent.threads.some((t) => t.automation)" class="ghost" @click="agent.cleanupAutomationThreads()">清理自动化</button>
       <button class="ghost" @click="optionsOpen = !optionsOpen">选项</button>
     </div>
 
     <div v-if="optionsOpen" class="options">
-      <div class="row">
-        <span class="label">Provider</span>
-        <div class="seg">
-          <button :class="{ on: agent.provider === 'codex' }" @click="agent.setProvider('codex')">Codex</button>
-          <button :class="{ on: agent.provider === 'mock' }" @click="agent.setProvider('mock')">Mock</button>
-        </div>
-      </div>
-      <div class="row">
-        <span class="label">工作区</span>
-        <input v-model="workspaceInput" class="text-input" placeholder="agent 工作目录（默认用户主目录）" />
-        <button class="btn" @click="applyWorkspace">应用</button>
-      </div>
       <div class="row wrap">
         <span class="label">技能</span>
         <span v-if="!agent.skills.length" class="muted">未发现 ~/.codex/skills</span>
@@ -117,14 +96,15 @@ function shortPreview(t: { id: string; preview: string }) {
         <span class="label">focus-cli</span>
         <span v-for="q in QUICK" :key="q.label" class="chip" @click="sendQuick(q.text)">{{ q.label }}</span>
       </div>
+      <div class="row">
+        <span class="label">工作区</span>
+        <input v-model="workspaceInput" class="text-input" placeholder="agent 工作目录（默认用户主目录）" />
+        <button class="btn" @click="applyWorkspace">应用</button>
+      </div>
     </div>
 
-    <div v-if="agent.threads.length" class="thread-row">
-      <select class="thread-select" :value="agent.currentThreadId ?? ''" @change="chooseThread(($event.target as HTMLSelectElement).value)">
-        <option value="" disabled>选择历史会话</option>
-        <option v-for="t in agent.threads" :key="t.id" :value="t.id">{{ t.automation ? "〔自动化〕" : "" }}{{ shortPreview(t) }}</option>
-      </select>
-    </div>
+    <!-- M5 (ADR-0022): history sessions are not listed in the UI — the
+         Agent reads its own hash via focus-cli (agent session). -->
 
     <div ref="listRef" class="msg-list">
       <div v-if="agent.messages.length === 0" class="empty">输入消息开始与 Agent 对话…</div>
@@ -163,13 +143,22 @@ function shortPreview(t: { id: string; preview: string }) {
   overflow: hidden;
   box-sizing: border-box;
 }
-.status-row {
+.agent-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--glass-border);
   flex-wrap: wrap;
+}
+.agent-select {
+  border: 1px solid var(--glass-border);
+  background: #101a15;
+  color: var(--text-hi);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  padding: 3px 8px;
+  max-width: 160px;
 }
 .badge {
   font-size: 11px;
@@ -280,19 +269,6 @@ function shortPreview(t: { id: string; preview: string }) {
 .muted {
   color: var(--text-low);
   font-size: 11px;
-}
-.thread-row {
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--glass-border);
-}
-.thread-select {
-  width: 100%;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-sm);
-  padding: 3px 6px;
-  font-size: 11px;
-  background: #101a15;
-  color: var(--text-hi);
 }
 .msg-list {
   flex: 1;

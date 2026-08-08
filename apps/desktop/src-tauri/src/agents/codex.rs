@@ -233,11 +233,14 @@ impl CodexProvider {
     }
 
     fn send_internal(&mut self, thread_id: &str, text: &str) -> Result<(), String> {
+        // M5 (ADR-0022): system-level output discipline injected into every
+        // turn (short newline-separated sentences, no Markdown).
+        let full = format!("{}\n\n{}", super::OUTPUT_DISCIPLINE, text);
         let resp = self.request(
             "turn/start",
             json!({
                 "threadId": thread_id,
-                "input": [{ "type": "text", "text": text }]
+                "input": [{ "type": "text", "text": full }]
             }),
             REQUEST_TIMEOUT,
         )?;

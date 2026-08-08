@@ -194,6 +194,43 @@ fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Va
             Ok(v) => v,
             Err(e) => json!({ "error": e }),
         },
+        // M5 (ADR-0022): Agent-facing session info — the Agent reads its own
+        // current session hash to revisit history as context.
+        ["agent", "session", agent_id] => {
+            let state = app.state::<AppState>();
+            let store = state.store.clone();
+            let Ok(s) = store.lock() else { return json!({ "error": "store locked" }) };
+            match s.get_character(agent_id) {
+                Ok(Some(c)) => json!({
+                    "agentId": c.id,
+                    "sessionHash": c.current_session_hash,
+                    "sessionDate": c.session_date,
+                    "workspaceDir": c.workspace_dir,
+                    "name": c.name,
+                    "tool": c.tool,
+                }),
+                Ok(None) => json!({ "error": format!("角色 {agent_id} 不存在") }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        ["agent", "list"] => {
+            let state = app.state::<AppState>();
+            let store = state.store.clone();
+            let Ok(s) = store.lock() else { return json!({ "error": "store locked" }) };
+            match s.list_characters() {
+                Ok(chars) => json!({
+                    "agents": chars.into_iter().map(|c| serde_json::json!({
+                        "agentId": c.id,
+                        "name": c.name,
+                        "tool": c.tool,
+                        "workspaceDir": c.workspace_dir,
+                        "sessionHash": c.current_session_hash,
+                        "sessionDate": c.session_date,
+                    })).collect::<Vec<_>>()
+                }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
         _ => json!({ "error": format!("unknown command: {cmd}") }),
     };
     if let Some(tid) = agent_thread {
@@ -215,6 +252,8 @@ fn agent_whitelisted(parts: &[&str]) -> bool {
         ["desktop", "layout"] => true,
         ["apps", "now"] | ["apps", "visible"] => true,
         ["workflow", sub, ..] if ["list", "read", "create", "update", "delete", "run", "runs", "cancel"].contains(sub) => true,
+        // M5 (ADR-0022): Agent reads its own session hash / agent list.
+        ["agent", "session", _] | ["agent", "list"] => true,
         _ => false,
     }
 }
@@ -313,6 +352,10 @@ mod tests {
         assert!(agent_whitelisted(&["workflow", "run", "w-1"]));
         assert!(agent_whitelisted(&["workflow", "runs", "w-1"]));
         assert!(agent_whitelisted(&["workflow", "cancel", "w-1"]));
+        // M5 (ADR-0022): agent session/list allowed.
+        assert!(agent_whitelisted(&["agent", "session", "char-1"]));
+        assert!(agent_whitelisted(&["agent", "list"]));
+        assert!(!agent_whitelisted(&["agent", "other"]));
         assert!(!agent_whitelisted(&["debug", "windows"]));
         assert!(!agent_whitelisted(&["timer", "reset"]));
         assert!(!agent_whitelisted(&["stats", "month"]));

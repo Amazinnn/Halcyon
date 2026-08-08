@@ -35,6 +35,7 @@ use tauri::{LogicalPosition, LogicalSize};
 
 use event_bus::CoreEvent;
 use grid::GridManager;
+use agents::AgentProvider;
 use settings::{GridRect, Settings, ShortcutType, Task};
 
 pub struct AppState {
@@ -52,10 +53,13 @@ pub struct AppState {
     /// v1.10: coalescer for raise_topbar (SetWindowPos churn, #31).
     pub last_topbar_raise: Mutex<std::time::Instant>,
     pub events_tx: tokio::sync::broadcast::Sender<CoreEvent>,
-    pub agent: Mutex<agents::AgentRuntime>,
+    /// M5 (ADR-0022): multi-Agent registry — one runtime per character.
+    pub agents: Mutex<agents::AgentRegistry>,
     pub agent_fallback: AtomicBool,
     /// M4 workflow engine app layer (ADR-0012), initialized after the store.
     pub workflow: Mutex<Option<std::sync::Arc<workflow::WorkflowManager>>>,
+    /// M5 (ADR-0022): the shared SQLite store (characters/session hashes).
+    pub store: std::sync::Arc<std::sync::Mutex<storage::Store>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -214,15 +218,10 @@ fn current_workspace_dir(state: &AppState) -> String {
 fn agent_status_view(app: &tauri::AppHandle) -> AgentStatusView {
     let state = app.state::<AppState>();
     let fallback = state.agent_fallback.load(std::sync::atomic::Ordering::Relaxed);
-    let kind = state.agent.lock().unwrap().kind();
     let ws = current_workspace_dir(&state);
-    let exe_path = if kind == agents::AgentProviderKind::Codex {
-        agents::codex::find_codex_exe().map(|p| p.to_string_lossy().to_string())
-    } else {
-        None
-    };
+    let exe_path = agents::codex::find_codex_exe().map(|p| p.to_string_lossy().to_string());
     AgentStatusView {
-        provider: kind.as_str().to_string(),
+        provider: "codex".to_string(),
         fallback,
         ready: !fallback,
         exe_path,
@@ -234,67 +233,101 @@ fn emit_agent_status(app: &tauri::AppHandle) {
     let _ = app.emit("agent:status", agent_status_view(app));
 }
 
-fn rebuild_agent_runtime(app: &tauri::AppHandle) {
+/// M5 (ADR-0022): build (or reuse) the runtime for a character's Agent.
+/// Lazily creates the per-Agent workspace + AGENTS.md when missing.
+/// Returns the runtime (codex or mock fallback).
+pub fn ensure_agent_runtime(app: &tauri::AppHandle, character_id: &str) -> Result<agents::AgentRuntime, String> {
     let state = app.state::<AppState>();
-    let provider = {
-        let s = state.settings.lock().unwrap();
-        s.agent_provider.clone()
+    // Existing runtime?
+    if let Some(rt) = state.agents.lock().unwrap().get(character_id) {
+        return Ok(match rt {
+            agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
+            agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(state.events_tx.clone()))),
+        });
+    }
+    // Character row (must exist — workflow ensures char-default).
+    let row = {
+        let st = app.state::<AppState>().store.clone();
+        let store = st.lock().unwrap();
+        store.get_character(character_id).map_err(|e| e.to_string())?.ok_or_else(|| format!("角色 {character_id} 不存在"))?
     };
+    // Lazily create workspace + AGENTS.md (also persists workspace_dir).
+    ensure_agent_workspace(&state, &row)?;
+    // Build the runtime.
     let tx = state.events_tx.clone();
-    let mut slot = state.agent.lock().unwrap();
-    match provider.as_str() {
-        "mock" => {
-            *slot = agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx)));
-            state.agent_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
+    let rt = match row.tool.as_str() {
+        "mock" => agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx))),
         _ => match agents::codex::find_codex_exe() {
             Some(exe) => {
-                *slot = agents::AgentRuntime::Codex(std::sync::Arc::new(std::sync::Mutex::new(
-                    agents::codex::CodexProvider::new(tx, exe),
-                )));
-                state.agent_fallback.store(false, std::sync::atomic::Ordering::Relaxed);
+                let mut p = agents::codex::CodexProvider::new(tx, exe);
+                // Restore the current session (same-day) so switching Agents
+                // resumes today's conversation.
+                if let Some(hash) = row.current_session_hash.clone() {
+                    if row.session_date.as_deref() == Some(&today_local()) {
+                        let _ = p.resume_thread(&hash);
+                    }
+                }
+                agents::AgentRuntime::Codex(std::sync::Arc::new(std::sync::Mutex::new(p)))
             }
             None => {
-                *slot = agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx)));
                 state.agent_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
+                agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx)))
             }
         },
-    }
+    };
+    state.agents.lock().unwrap().insert(character_id.to_string(), match &rt {
+        agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
+        agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(state.events_tx.clone()))),
+    });
+    Ok(rt)
 }
 
-/// Runs a provider call; when the Codex binary is unavailable at runtime,
-/// swaps the slot to Mock (fallback badge) and retries once (ADR-0007).
-fn with_agent<R>(
+/// M5 (ADR-0022): lazy-create `%USERPROFILE%/Focus-Agents/<agent-id>/AGENTS.md`.
+/// AGENTS.md is the single identity source (persona is retired).
+pub const AGENTS_MD_TEMPLATE: &str = "你是 Focus 桌宠 Agent「{name}」。请用简洁中文短句回答，句间用单个换行分隔；不要使用 Markdown、列表、代码块或长段落；总长度不超过约 200 字；只输出需要直接展示给用户看的内容。\n";
+
+fn ensure_agent_workspace(state: &tauri::State<'_, AppState>, row: &storage::CharacterRow) -> Result<String, String> {
+    let home = user_home();
+    let dir = PathBuf::from(&home).join("Focus-Agents").join(&row.id);
+    if !dir.is_dir() {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建 Agent 工作区失败: {e}"))?;
+        let md = AGENTS_MD_TEMPLATE.replace("{name}", &row.name);
+        std::fs::write(dir.join("AGENTS.md"), md).map_err(|e| format!("写 AGENTS.md 失败: {e}"))?;
+    }
+    let ws = dir.to_string_lossy().to_string();
+    let store = state.store.lock().unwrap();
+    if row.workspace_dir.as_deref() != Some(ws.as_str()) {
+        let _ = store.update_character_agent(&row.id, Some(&ws), row.current_session_hash.as_deref(), row.session_date.as_deref());
+    }
+    Ok(ws)
+}
+
+fn today_local() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Runs a provider call for a specific character's Agent; when the Codex
+/// binary is unavailable at runtime, swaps to Mock (fallback badge) and
+/// retries once (ADR-0007).
+pub fn with_agent_for<R>(
     app: &tauri::AppHandle,
+    character_id: &str,
     mut f: impl FnMut(&agents::AgentRuntime) -> Result<R, String>,
 ) -> Result<R, String> {
-    let state = app.state::<AppState>();
     let mut swapped = false;
     loop {
-        let r = {
-            let slot = state.agent.lock().unwrap();
-            match &*slot {
-                agents::AgentRuntime::Codex(p) => {
-                    let p2 = p.clone();
-                    drop(slot);
-                    let tmp = agents::AgentRuntime::Codex(p2);
-                    f(&tmp)
-                }
-                agents::AgentRuntime::Mock(_) => f(&slot),
-            }
-        };
+        let rt = ensure_agent_runtime(app, character_id)?;
+        let r = f(&rt);
         match r {
             Ok(v) => return Ok(v),
             Err(e) if !swapped => {
-                let kind = state.agent.lock().unwrap().kind();
-                if kind == agents::AgentProviderKind::Codex
-                    && agents::codex::is_unavailable_error(&e)
-                {
+                let state = app.state::<AppState>();
+                let kind = rt.kind();
+                if kind == agents::AgentProviderKind::Codex && agents::codex::is_unavailable_error(&e) {
                     let tx = state.events_tx.clone();
-                    *state.agent.lock().unwrap() =
-                        agents::AgentRuntime::Mock(std::sync::Mutex::new(
-                            agents::mock::MockProvider::new(tx),
-                        ));
+                    *state.agents.lock().unwrap() = agents::AgentRegistry::new(); // drop broken runtimes
+                    let mock = agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx)));
+                    state.agents.lock().unwrap().insert(character_id.to_string(), mock);
                     state.agent_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
                     swapped = true;
                     emit_agent_status(app);
@@ -315,24 +348,67 @@ fn agent_status(app: tauri::AppHandle) -> AgentStatusView {
 #[tauri::command]
 fn agent_start_thread(
     app: tauri::AppHandle,
+    character_id: String,
     initial_message: String,
 ) -> Result<agents::AgentThreadInfo, String> {
+    // M5 (ADR-0022): daily session rotation — a new session hash is created
+    // when the stored session date is not today (or missing).
     let state = app.state::<AppState>();
-    let ws = current_workspace_dir(&state);
-    with_agent(&app, |rt| rt.start_thread(&ws, &initial_message))
+    let today = today_local();
+    let needs_new = {
+        let store = state.store.lock().unwrap();
+        match store.get_character(&character_id) {
+            Ok(Some(c)) => c.current_session_hash.is_none() || c.session_date.as_deref() != Some(today.as_str()),
+            _ => true,
+        }
+    };
+    let rt = ensure_agent_runtime(&app, &character_id)?;
+    let ws = {
+        let store = state.store.lock().unwrap();
+        store.get_character(&character_id).ok().flatten().and_then(|c| c.workspace_dir).unwrap_or_else(user_home)
+    };
+    let info = if needs_new {
+        let info = with_agent_rt(&rt, |r| r.start_thread(&ws, &initial_message))?;
+        let store = state.store.lock().unwrap();
+        let _ = store.update_character_agent(&character_id, None, Some(&info.id), Some(&today));
+        info
+    } else {
+        let hash = state.store.lock().unwrap().get_character(&character_id).ok().flatten().and_then(|c| c.current_session_hash).unwrap_or_default();
+        if hash.is_empty() {
+            let info = with_agent_rt(&rt, |r| r.start_thread(&ws, &initial_message))?;
+            let store = state.store.lock().unwrap();
+            let _ = store.update_character_agent(&character_id, None, Some(&info.id), Some(&today));
+            info
+        } else {
+            with_agent_rt(&rt, |r| r.resume_thread(&hash))?
+        }
+    };
+    Ok(info)
+}
+
+fn with_agent_rt<R>(rt: &agents::AgentRuntime, f: impl FnOnce(&agents::AgentRuntime) -> Result<R, String>) -> Result<R, String> {
+    match rt {
+        agents::AgentRuntime::Codex(p) => {
+            let p2 = p.clone();
+            let tmp = agents::AgentRuntime::Codex(p2);
+            f(&tmp)
+        }
+        agents::AgentRuntime::Mock(_) => f(rt),
+    }
 }
 
 #[tauri::command]
 fn agent_resume_thread(
     app: tauri::AppHandle,
+    character_id: String,
     thread_id: String,
 ) -> Result<agents::AgentThreadInfo, String> {
-    with_agent(&app, |rt| rt.resume_thread(&thread_id))
+    with_agent_for(&app, &character_id, |rt| rt.resume_thread(&thread_id))
 }
 
 #[tauri::command]
-fn agent_list_threads(app: tauri::AppHandle) -> Result<Vec<agents::AgentThreadInfo>, String> {
-    let mut threads = with_agent(&app, |rt| rt.list_threads())?;
+fn agent_list_threads(app: tauri::AppHandle, character_id: String) -> Result<Vec<agents::AgentThreadInfo>, String> {
+    let mut threads = with_agent_for(&app, &character_id, |rt| rt.list_threads())?;
     // ADR-0012: hide cleaned automation threads and badge the rest.
     let hidden: std::collections::HashSet<String> = app
         .state::<AppState>()
@@ -358,13 +434,13 @@ fn agent_list_threads(app: tauri::AppHandle) -> Result<Vec<agents::AgentThreadIn
 }
 
 #[tauri::command]
-fn agent_send(app: tauri::AppHandle, thread_id: String, text: String) -> Result<(), String> {
-    with_agent(&app, |rt| rt.send(&thread_id, &text))
+fn agent_send(app: tauri::AppHandle, character_id: String, thread_id: String, text: String) -> Result<(), String> {
+    with_agent_for(&app, &character_id, |rt| rt.send(&thread_id, &text))
 }
 
 #[tauri::command]
-fn agent_interrupt(app: tauri::AppHandle, thread_id: String) -> Result<(), String> {
-    with_agent(&app, |rt| rt.interrupt(&thread_id))
+fn agent_interrupt(app: tauri::AppHandle, character_id: String, thread_id: String) -> Result<(), String> {
+    with_agent_for(&app, &character_id, |rt| rt.interrupt(&thread_id))
 }
 
 #[tauri::command]
@@ -398,7 +474,9 @@ fn set_agent_provider(app: tauri::AppHandle, provider: String) -> Result<(), Str
         s.agent_provider = kind.as_str().to_string();
         let _ = s.save(&state.data_dir);
     }
-    rebuild_agent_runtime(&app);
+    // M5 (ADR-0022): provider change drops all cached runtimes; new ones are
+    // rebuilt lazily per character on next use.
+    app.state::<AppState>().agents.lock().unwrap().runtimes.clear();
     emit_agent_status(&app);
     Ok(())
 }
@@ -1566,6 +1644,16 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
 // ---------------------------------------------------------------------------
 
 pub fn run() {
+    // v1.11.2: VPN/proxy compatibility — WebView2 (Chromium) routes even
+    // loopback hosts through the system proxy when a VPN/Clash is on, which
+    // breaks the local tauri:// protocol (blank windows). Force loopback to
+    // bypass the proxy before any webview is created.
+    if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--proxy-bypass-list=<-loopback>",
+        );
+    }
     // v1.8.1 single-instance guard: a second process must exit immediately so
     // two instances never share the same SQLite DB / settings (which could
     // silently drop writes). The mutex handle lives for the process lifetime
@@ -1614,6 +1702,11 @@ pub fn run() {
             let legacy_shortcuts = settings.shortcuts.clone();
             let data_dir_clone = data_dir.clone();
             let (events_tx, _boot_rx) = tokio::sync::broadcast::channel::<CoreEvent>(256);
+            // M5 (ADR-0022): open the store BEFORE manage() (AppState holds the
+            // shared Arc; state() must not be called pre-manage).
+            let store_arc = std::sync::Arc::new(Mutex::new(storage::Store::open(
+                &data_dir.join("spike.db"),
+            )?));
             let state = AppState {
                 settings: Mutex::new(settings),
                 data_dir,
@@ -1627,21 +1720,22 @@ pub fn run() {
                 cli_token: Mutex::new(String::new()),
                 last_topbar_raise: Mutex::new(std::time::Instant::now()),
                 events_tx: events_tx.clone(),
-                agent: Mutex::new(agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(
-                    events_tx.clone(),
-                )))),
+                // M5 (ADR-0022): registry starts empty; runtimes are created
+                // per character on first use (lazy).
+                agents: Mutex::new(agents::AgentRegistry::new()),
                 agent_fallback: AtomicBool::new(false),
                 workflow: Mutex::new(None),
+                store: store_arc,
             };
             app.manage(state);
-            rebuild_agent_runtime(&app.handle());
+            // M5 (ADR-0022): no upfront runtime — agents are built lazily per
+            // character on first use (ensure_agent_runtime).
 
             // v1.5: DB store must be managed before the desktop webview calls
             // get_bootstrap on mount (otherwise: state not managed for field
             // `store`, observed as the v1.5 empty-shortcut regression).
-            let store = storage::Store::open(&app.state::<AppState>().data_dir.join("spike.db"))?;
-            store.migrate()?;
-            let store = std::sync::Arc::new(Mutex::new(store));
+            let store = app.state::<AppState>().store.clone();
+            store.lock().unwrap().migrate()?;
             app.manage(store.clone());
             {
                 let store_guard = store.lock().unwrap();

@@ -12,6 +12,12 @@ use serde_json::Value;
 
 pub const AGENT_ID: &str = "focus-codex";
 
+/// M5 (ADR-0022): system-level output discipline — hard-coded, injected into
+/// EVERY agent turn (conversation and workflow calls alike). Short sentences,
+/// newline-separated; no Markdown; short total. The frontend later truncates
+/// pet-bubble sentences at newlines (mechanism deferred).
+pub const OUTPUT_DISCIPLINE: &str = "给用户的输出规范：请用简洁的中文短句回答，句间用单个换行分隔；不要使用 Markdown、列表、代码块或长段落；总长度不超过约 200 字；只输出需要直接展示给用户看的内容。";
+
 /// Embedded AgentEvent schema (v1) so emitted samples can be validated in tests.
 pub const SCHEMA_JSON: &str =
     include_str!("../../../../../packages/event-schema/agent-event.schema.json");
@@ -91,6 +97,29 @@ pub trait AgentProvider: Send + Sync {
 pub enum AgentRuntime {
     Codex(std::sync::Arc<std::sync::Mutex<codex::CodexProvider>>),
     Mock(std::sync::Mutex<mock::MockProvider>),
+}
+
+/// M5 (ADR-0022): multi-Agent registry — one runtime per character (pet).
+/// `char-default` always exists (workflow ensures it); map is empty only
+/// before characters are ensured.
+pub struct AgentRegistry {
+    pub runtimes: std::collections::HashMap<String, AgentRuntime>,
+}
+
+impl AgentRegistry {
+    pub fn new() -> Self {
+        Self {
+            runtimes: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn get(&self, character_id: &str) -> Option<&AgentRuntime> {
+        self.runtimes.get(character_id)
+    }
+
+    pub fn insert(&mut self, character_id: String, rt: AgentRuntime) {
+        self.runtimes.insert(character_id, rt);
+    }
 }
 
 impl AgentRuntime {

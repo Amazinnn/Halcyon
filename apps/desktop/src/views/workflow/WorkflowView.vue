@@ -619,7 +619,7 @@ function removeOpt(i: number) {
                   <option value="">工作流默认</option>
                   <option v-for="c in store.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
                 </select>
-                <label>提示词（自动注入角色人格与输出规范）</label>
+                <label>提示词（身份由 AGENTS.md 提供，输出纪律系统注入）</label>
                 <textarea
                   class="ta"
                   :value="String(sp.prompt ?? '')"
@@ -630,6 +630,18 @@ function removeOpt(i: number) {
                   等待结果（取消则发完即走、不展示）
                 </label>
                 <template v-if="sp.wait !== false">
+                  <label class="check">
+                    <input type="checkbox" :checked="sp.showInitial !== false" @change="setParam('showInitial', ($event.target as HTMLInputElement).checked)" />
+                    初始短句（开工第一句，宠物鲜活）
+                  </label>
+                  <label class="check">
+                    <input type="checkbox" :checked="sp.showThinking === true" @change="setParam('showThinking', ($event.target as HTMLInputElement).checked)" />
+                    思考过程（流式输出进对话框）
+                  </label>
+                  <label class="check">
+                    <input type="checkbox" :checked="sp.showResult !== false" @change="setParam('showResult', ($event.target as HTMLInputElement).checked)" />
+                    最终结果（完成后的答复）
+                  </label>
                   <label>回复会显示在对话框（一条消息）与宠物泡泡</label>
                   <label>超时</label>
                   <div class="chips">

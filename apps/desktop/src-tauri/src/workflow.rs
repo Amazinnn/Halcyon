@@ -13,6 +13,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::event_bus::CoreEvent;
 use crate::storage::{CharacterRow, Store, WorkflowRunRow};
+use crate::agents::{AgentProvider, AgentRuntime};
 use crate::workflow_engine::engine::{execute_run, AgentCall, EventSink, RunOutcome, SystemActions, WindowOps};
 use crate::workflow_engine::model::{
     CharacterInfo, RunStatus, WorkflowDef, guard_matches, next_daily_run, next_interval_run,
@@ -23,10 +24,6 @@ use crate::AppState;
 /// Default wait timeout for a workflow agent node (10 minutes).
 pub const AGENT_TIMEOUT_SEC: u64 = 600;
 
-/// v1.10.5 (ADR-0018, #61): output discipline injected into workflow Agent
-/// calls only — short sentences, single newlines, no Markdown, short total.
-/// Kept as a built-in constant; not user-visible or user-editable.
-pub const OUTPUT_DISCIPLINE_PROMPT: &str = "给用户的输出规范：请用简洁的中文短句回答，句间用单个换行分隔；不要使用 Markdown、列表、代码块或长段落；总长度不超过约 200 字；只输出需要直接展示给用户看的内容。";
 /// Scheduler heartbeat.
 pub const SCHEDULER_TICK_SEC: u64 = 15;
 
@@ -103,6 +100,11 @@ impl WorkflowManager {
                         name: "Focus 助手".into(),
                         persona: "你是 Focus 桌面助手。请用简洁中文回答，围绕帮助用户保持专注、整理任务与状态自检。".into(),
                         pet_pack_id: None,
+                        // M5 (ADR-0022): default Agent = codex carrier.
+                        tool: "codex".into(),
+                        workspace_dir: None,
+                        current_session_hash: None,
+                        session_date: None,
                     };
                     let _ = store.insert_character(&row);
                     out.push(row);
@@ -418,6 +420,12 @@ impl WorkflowManager {
     }
 }
 
+/// Default workspace when a character has none yet (shouldn't happen — the
+/// lazy workspace creation runs before this; defensive fallback).
+fn user_home_default() -> String {
+    std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())
+}
+
 /// Grab the initialized workflow manager from app state.
 pub fn manager(app: &AppHandle) -> Result<Arc<WorkflowManager>, String> {
     app.state::<AppState>()
@@ -452,33 +460,38 @@ impl AgentCall for WorkflowManager {
         prompt: &str,
         wait: bool,
         cancel: &AtomicBool,
+        _display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<Option<(String, String)>, String> {
         let app_state = self.app.state::<AppState>();
-        let workspace = app_state
-            .settings
-            .lock()
-            .unwrap()
-            .agent_workspace_dir
-            .clone()
-            .unwrap_or_else(|| {
-                std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())
-            });
-        let full = if character.persona.trim().is_empty() {
-            format!("{}\n\n{}", OUTPUT_DISCIPLINE_PROMPT, prompt)
-        } else {
-            format!(
-                "{}\n\n{}\n\n{}",
-                character.persona.trim(),
-                OUTPUT_DISCIPLINE_PROMPT,
-                prompt
-            )
-        };
+        // M5 (ADR-0022): output discipline is injected system-wide by the
+        // provider (agents::OUTPUT_DISCIPLINE); the AGENTS.md identity lives
+        // in the workspace — persona is no longer injected here.
+        let full = prompt.to_string();
         let (info, mut rx) = {
-            let agent = app_state.agent.lock().unwrap();
-            let rx = agent
+            // M5 (ADR-0022): per-character Agent runtime (lazy-built; creates
+            // workspace + AGENTS.md on first use). The workspace for this call
+            // is the character's own Focus-Agents/<id>/ dir.
+            let rt = crate::ensure_agent_runtime(&self.app, &character.id)?;
+            let rt = match &rt {
+                AgentRuntime::Codex(p) => AgentRuntime::Codex(p.clone()),
+                AgentRuntime::Mock(_) => AgentRuntime::Mock(std::sync::Mutex::new(crate::agents::mock::MockProvider::new(app_state.events_tx.clone()))),
+            };
+            let rx = rt
                 .subscribe_turn_done()
                 .ok_or_else(|| "Agent 运行时未就绪".to_string())?;
-            let info = agent.start_thread(&workspace, &full)?;
+            let workspace = {
+                let store = self.store.lock().unwrap();
+                store
+                    .get_character(&character.id)
+                    .ok()
+                    .flatten()
+                    .and_then(|c| c.workspace_dir)
+                    .unwrap_or_else(user_home_default)
+            };
+            let info = match &rt {
+                AgentRuntime::Codex(p) => p.lock().unwrap().start_thread(&workspace, &full)?,
+                AgentRuntime::Mock(m) => m.lock().unwrap().start_thread(&workspace, &full)?,
+            };
             if let Ok(s) = self.store.lock() {
                 let _ = s.record_automation_thread(&info.id, &character.id, None);
             }
@@ -490,11 +503,11 @@ impl AgentCall for WorkflowManager {
         let deadline = std::time::Instant::now() + Duration::from_secs(AGENT_TIMEOUT_SEC);
         loop {
             if cancel.load(Ordering::Relaxed) {
-                let _ = self.app.state::<AppState>().agent.lock().unwrap().interrupt(&info.id);
+                let _ = crate::with_agent_for(&self.app, &character.id, |a| a.interrupt(&info.id));
                 return Err("已取消".into());
             }
             if std::time::Instant::now() >= deadline {
-                let _ = self.app.state::<AppState>().agent.lock().unwrap().interrupt(&info.id);
+                let _ = crate::with_agent_for(&self.app, &character.id, |a| a.interrupt(&info.id));
                 return Err("Agent 等待超时（已中断）".into());
             }
             match rx.try_recv() {

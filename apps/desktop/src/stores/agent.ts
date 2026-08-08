@@ -54,8 +54,12 @@ export function stateToAnimation(state: AgentState): string {
 
 export const useAgentStore = defineStore("agent", {
   state: () => ({
+    // M5 (ADR-0022): one Agent per character; the current one is selected
+    // from the dropdown. Messages/session state belong to the current Agent.
+    characterId: "" as string,
+    characters: [] as { id: string; name: string }[],
     agentId: "focus-codex",
-    sessionId: "focus-codex",
+    sessionId: "",
     state: "idle" as AgentState,
     animation: "idle",
     messages: [] as ChatMessage[],
@@ -78,10 +82,37 @@ export const useAgentStore = defineStore("agent", {
     showBubble(text: string, priority = "high") {
       this.bubble = { text, priority, expiresAt: Date.now() + 5000 };
     },
+    async refreshCharacters() {
+      try {
+        const chars = await invoke<{ id: string; name: string }[]>("characters_list");
+        this.characters = chars;
+        if (chars.length && !this.characters.some((c) => c.id === this.characterId)) {
+          this.selectCharacter(chars[0].id);
+        }
+      } catch (e) {
+        console.error("[agent] characters_list failed", e);
+      }
+    },
+    /** M5 (ADR-0022): switch Agent = replace the dialog context immediately. */
+    async selectCharacter(id: string) {
+      if (id === this.characterId) return;
+      this.characterId = id;
+      this.sessionId = "";
+      this.currentThreadId = null;
+      this.messages = [];
+      this.tools = [];
+      this.phase = "idle";
+      const c = this.characters.find((x) => x.id === id);
+      this.characterName = c?.name ?? "对话";
+      // Today's session hash is resumed server-side (lazy runtime build).
+      this.pushSystem(`已切换到 ${this.characterName}`);
+    },
     async init() {
       if (this.initialized) return;
       this.initialized = true;
       await listen<AgentEventEnvelope>("agent:event", (e) => {
+        // M5 (ADR-0022): only handle events for the current Agent.
+        if (e.payload.agentId !== "focus-codex" && e.payload.agentId !== this.characterId) return;
         this.lastEvent = e.payload;
         this.handleEvent(e.payload);
       });
@@ -104,12 +135,7 @@ export const useAgentStore = defineStore("agent", {
       });
       await this.refreshStatus();
       await this.refreshSkills();
-      try {
-        const chars = await invoke<{ id: string; name: string }[]>("characters_list");
-        if (chars.length) this.characterName = chars[0].name;
-      } catch (e) {
-        console.error("[agent] characters_list failed", e);
-      }
+      await this.refreshCharacters();
     },
     async refreshStatus() {
       try {
@@ -130,8 +156,12 @@ export const useAgentStore = defineStore("agent", {
       }
     },
     async refreshThreads() {
+      // M5 (ADR-0022): thread list no longer shown in the UI; kept for
+      // compatibility (automation cleanup).
       try {
-        this.threads = await invoke<AgentThread[]>("agent_list_threads");
+        this.threads = await invoke<AgentThread[]>("agent_list_threads", {
+          characterId: this.characterId,
+        });
       } catch (e) {
         console.error("[agent] agent_list_threads failed", e);
       }
@@ -140,12 +170,12 @@ export const useAgentStore = defineStore("agent", {
       this.phase = "connecting";
       try {
         const info = await invoke<AgentThread>("agent_start_thread", {
+          characterId: this.characterId,
           initialMessage,
         });
         this.currentThreadId = info.id;
         this.sessionId = info.id;
         this.phase = initialMessage.trim() ? "streaming" : "completed";
-        await this.refreshThreads();
         await this.refreshStatus();
       } catch (e) {
         this.phase = "error";
@@ -156,11 +186,13 @@ export const useAgentStore = defineStore("agent", {
     async resumeThread(threadId: string) {
       this.phase = "connecting";
       try {
-        const info = await invoke<AgentThread>("agent_resume_thread", { threadId });
+        const info = await invoke<AgentThread>("agent_resume_thread", {
+          characterId: this.characterId,
+          threadId,
+        });
         this.currentThreadId = info.id;
         this.sessionId = info.id;
         this.phase = "completed";
-        await this.refreshThreads();
       } catch (e) {
         this.phase = "error";
         this.pushSystem(`恢复会话失败：${e}`);
@@ -176,7 +208,11 @@ export const useAgentStore = defineStore("agent", {
       }
       this.phase = "connecting";
       try {
-        await invoke("agent_send", { threadId: this.currentThreadId, text: trimmed });
+        await invoke("agent_send", {
+          characterId: this.characterId,
+          threadId: this.currentThreadId,
+          text: trimmed,
+        });
         this.phase = "streaming";
       } catch (e) {
         this.phase = "error";
@@ -186,7 +222,6 @@ export const useAgentStore = defineStore("agent", {
     async cleanupAutomationThreads() {
       try {
         await invoke("workflow_cleanup_threads");
-        await this.refreshThreads();
       } catch (e) {
         console.error("[agent] workflow_cleanup_threads failed", e);
       }
@@ -194,7 +229,10 @@ export const useAgentStore = defineStore("agent", {
     async interrupt() {
       if (!this.currentThreadId) return;
       try {
-        await invoke("agent_interrupt", { threadId: this.currentThreadId });
+        await invoke("agent_interrupt", {
+          characterId: this.characterId,
+          threadId: this.currentThreadId,
+        });
         this.phase = "idle";
       } catch (e) {
         console.error("[agent] agent_interrupt failed", e);
@@ -210,7 +248,7 @@ export const useAgentStore = defineStore("agent", {
     },
     newThread() {
       this.currentThreadId = null;
-      this.sessionId = "focus-codex";
+      this.sessionId = "";
       this.phase = "idle";
       this.messages = [];
       this.tools = [];
