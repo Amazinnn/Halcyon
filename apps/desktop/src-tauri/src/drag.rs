@@ -44,7 +44,7 @@ use crate::{occupied_rects, place_window_inner, AppState};
 
 const POLL_MS: u64 = 24;
 const PREVIEW_INTERVAL_MS: u64 = 50;
-const GRID_LABELS: [&str; 4] = ["chat", "stats", "music", "pet"];
+const GRID_LABELS: [&str; 5] = ["chat", "stats", "music", "pet", "workflow"]; // v1.10.3.1 (#47)
 
 /// The in-flight drag (serialized in `AppState.active_drag`). Only one drag
 /// runs at a time; a repeated `drag_start` first terminates the previous one.
@@ -422,6 +422,13 @@ mod tests {
             t0 + Duration::from_millis(10),
             Duration::from_millis(50)
         ));
+    }
+
+    #[test]
+    fn grid_labels_cover_all_floats() {
+        for lbl in ["chat", "stats", "music", "pet", "workflow"] {
+            assert!(GRID_LABELS.contains(&lbl), "missing grid preview for {lbl}");
+        }
     }
 
     #[test]
