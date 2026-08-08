@@ -1695,6 +1695,9 @@ pub fn run() {
             {
                 let wm =
                     std::sync::Arc::new(workflow::WorkflowManager::new(app_handle.clone(), store.clone()));
+                // v1.10.5 (#62): no backward compatibility — drop workflows
+                // containing removed node kinds at startup.
+                wm.purge_incompatible();
                 *app_handle.state::<AppState>().workflow.lock().unwrap() = Some(wm.clone());
                 let wm_tick = wm.clone();
                 std::thread::spawn(move || loop {
