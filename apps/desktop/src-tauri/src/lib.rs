@@ -353,15 +353,17 @@ fn agent_start_thread(
         let store = state.store.lock().unwrap();
         store.get_character(&character_id).ok().flatten().and_then(|c| c.workspace_dir).unwrap_or_else(user_home)
     };
+    // M5 (ADR-0022): conversation = full display (stream + result both shown).
+    let display = agents::agent_display_full();
     let info = if needs_new {
-        let info = with_agent_rt(&rt, |r| r.start_thread(&ws, &initial_message))?;
+        let info = with_agent_rt(&rt, |r| r.start_thread(&ws, &initial_message, display))?;
         let store = state.store.lock().unwrap();
         let _ = store.update_character_agent(&character_id, None, Some(&info.id), Some(&today));
         info
     } else {
         let hash = state.store.lock().unwrap().get_character(&character_id).ok().flatten().and_then(|c| c.current_session_hash).unwrap_or_default();
         if hash.is_empty() {
-            let info = with_agent_rt(&rt, |r| r.start_thread(&ws, &initial_message))?;
+            let info = with_agent_rt(&rt, |r| r.start_thread(&ws, &initial_message, display))?;
             let store = state.store.lock().unwrap();
             let _ = store.update_character_agent(&character_id, None, Some(&info.id), Some(&today));
             info
@@ -421,7 +423,9 @@ fn agent_list_threads(app: tauri::AppHandle, character_id: String) -> Result<Vec
 
 #[tauri::command]
 fn agent_send(app: tauri::AppHandle, character_id: String, thread_id: String, text: String) -> Result<(), String> {
-    with_agent_for(&app, &character_id, |rt| rt.send(&thread_id, &text))
+    // M5 (ADR-0022): conversation = full display.
+    let display = agents::agent_display_full();
+    with_agent_for(&app, &character_id, |rt| rt.send(&thread_id, &text, display))
 }
 
 #[tauri::command]

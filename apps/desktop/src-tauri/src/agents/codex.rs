@@ -241,9 +241,11 @@ impl CodexProvider {
         }
     }
 
-    fn send_internal(&mut self, thread_id: &str, text: &str) -> Result<(), String> {
+    fn send_internal(&mut self, thread_id: &str, text: &str, display: crate::workflow_engine::engine::AgentDisplay) -> Result<(), String> {
         // M5 (ADR-0022): system-level output discipline injected into every
         // turn (short newline-separated sentences, no Markdown).
+        *self.shared.display.lock().unwrap() = display;
+        *self.shared.first_delta_sent.lock().unwrap() = false;
         let full = format!("{}\n\n{}", super::OUTPUT_DISCIPLINE, text);
         let resp = self.request(
             "turn/start",
@@ -292,6 +294,7 @@ impl AgentProvider for CodexProvider {
         &mut self,
         workspace_dir: &str,
         initial_message: &str,
+        display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<AgentThreadInfo, String> {
         self.ensure_started()?;
         let mut params = serde_json::Map::new();
@@ -312,7 +315,7 @@ impl AgentProvider for CodexProvider {
         self.write_thread_marker();
         self.emit_envelope(json!({ "type": "session.started" }));
         if !initial_message.trim().is_empty() {
-            self.send_internal(&info.id, initial_message)?;
+            self.send_internal(&info.id, initial_message, display)?;
         }
         Ok(info)
     }
@@ -358,7 +361,7 @@ impl AgentProvider for CodexProvider {
         Ok(data.iter().map(thread_info).collect())
     }
 
-    fn send(&mut self, thread_id: &str, text: &str) -> Result<(), String> {
+    fn send(&mut self, thread_id: &str, text: &str, display: crate::workflow_engine::engine::AgentDisplay) -> Result<(), String> {
         self.ensure_started()?;
         {
             let cur = self.shared.current_thread.lock().unwrap().clone();
@@ -366,7 +369,7 @@ impl AgentProvider for CodexProvider {
                 let _ = self.resume_thread(thread_id)?;
             }
         }
-        self.send_internal(thread_id, text)
+        self.send_internal(thread_id, text, display)
     }
 
     fn interrupt(&mut self, thread_id: &str) -> Result<(), String> {
@@ -505,7 +508,8 @@ fn handle_item_completed(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value
     match item.get("type").and_then(Value::as_str) {
         Some("agentMessage") => {
             if let Some(text) = item.get("text").and_then(Value::as_str) {
-                if !text.trim().is_empty() {
+                // M5 (ADR-0022): final result shown only when showResult is on.
+                if !text.trim().is_empty() && shared.display.lock().unwrap().show_result {
                     emit_envelope(tx, shared, json!({ "type": "message.completed", "text": text }));
                 }
             }
@@ -533,7 +537,16 @@ fn handle_item_completed(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value
 
 fn handle_agent_delta(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value) {
     if let Some(delta) = params.get("delta").and_then(Value::as_str) {
-        if !delta.is_empty() {
+        if delta.is_empty() {
+            return;
+        }
+        // M5 (ADR-0022): first delta = the initial short sentence (showInitial),
+        // later deltas = the thinking stream (showThinking).
+        let display = *shared.display.lock().unwrap();
+        let mut first = shared.first_delta_sent.lock().unwrap();
+        let allow = if !*first { display.show_initial } else { display.show_thinking };
+        *first = true;
+        if allow {
             emit_envelope(tx, shared, json!({ "type": "message.delta", "text": delta }));
         }
     }

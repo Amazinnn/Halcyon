@@ -460,7 +460,7 @@ impl AgentCall for WorkflowManager {
         prompt: &str,
         wait: bool,
         cancel: &AtomicBool,
-        _display: crate::workflow_engine::engine::AgentDisplay,
+        display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<Option<(String, String)>, String> {
         let app_state = self.app.state::<AppState>();
         // M5 (ADR-0022): output discipline is injected system-wide by the
@@ -489,8 +489,8 @@ impl AgentCall for WorkflowManager {
                     .unwrap_or_else(user_home_default)
             };
             let info = match &rt {
-                AgentRuntime::Codex(p) => p.lock().unwrap().start_thread(&workspace, &full)?,
-                AgentRuntime::Mock(m) => m.lock().unwrap().start_thread(&workspace, &full)?,
+                AgentRuntime::Codex(p) => p.lock().unwrap().start_thread(&workspace, &full, display)?,
+                AgentRuntime::Mock(m) => m.lock().unwrap().start_thread(&workspace, &full, display)?,
             };
             if let Ok(s) = self.store.lock() {
                 let _ = s.record_automation_thread(&info.id, &character.id, None);

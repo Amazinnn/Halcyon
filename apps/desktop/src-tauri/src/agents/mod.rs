@@ -12,6 +12,16 @@ use serde_json::Value;
 
 pub const AGENT_ID: &str = "focus-codex";
 
+/// M5 (ADR-0022): full display for direct conversation — initial short
+/// sentence, thinking stream and final result all shown.
+pub fn agent_display_full() -> crate::workflow_engine::engine::AgentDisplay {
+    crate::workflow_engine::engine::AgentDisplay {
+        show_initial: true,
+        show_thinking: true,
+        show_result: true,
+    }
+}
+
 /// M5 (ADR-0022): system-level output discipline — hard-coded, injected into
 /// EVERY agent turn (conversation and workflow calls alike). Short sentences,
 /// newline-separated; no Markdown; short total. The frontend later truncates
@@ -72,6 +82,8 @@ pub struct AgentThreadInfo {
 
 /// Common agent contract implemented by the real (Codex) and mock providers.
 /// Methods are synchronous; streaming events arrive on the core event bus.
+/// M5 (ADR-0022): `display` carries the per-node show switches so the
+/// provider filters events (initial short sentence / stream / final result).
 pub trait AgentProvider: Send + Sync {
 
     /// Create a new thread and start a turn (initial message may be empty).
@@ -79,6 +91,7 @@ pub trait AgentProvider: Send + Sync {
         &mut self,
         workspace_dir: &str,
         initial_message: &str,
+        display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<AgentThreadInfo, String>;
 
     /// Load an existing thread so turns can be appended.
@@ -87,7 +100,7 @@ pub trait AgentProvider: Send + Sync {
     fn list_threads(&mut self) -> Result<Vec<AgentThreadInfo>, String>;
 
     /// Append a user turn to an active thread (streaming events follow).
-    fn send(&mut self, thread_id: &str, text: &str) -> Result<(), String>;
+    fn send(&mut self, thread_id: &str, text: &str, display: crate::workflow_engine::engine::AgentDisplay) -> Result<(), String>;
 
     fn interrupt(&mut self, thread_id: &str) -> Result<(), String>;
 }
@@ -134,10 +147,11 @@ impl AgentRuntime {
         &self,
         workspace_dir: &str,
         initial_message: &str,
+        display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<AgentThreadInfo, String> {
         match self {
-            AgentRuntime::Codex(p) => p.lock().unwrap().start_thread(workspace_dir, initial_message),
-            AgentRuntime::Mock(p) => p.lock().unwrap().start_thread(workspace_dir, initial_message),
+            AgentRuntime::Codex(p) => p.lock().unwrap().start_thread(workspace_dir, initial_message, display),
+            AgentRuntime::Mock(p) => p.lock().unwrap().start_thread(workspace_dir, initial_message, display),
         }
     }
 
@@ -155,10 +169,10 @@ impl AgentRuntime {
         }
     }
 
-    pub fn send(&self, thread_id: &str, text: &str) -> Result<(), String> {
+    pub fn send(&self, thread_id: &str, text: &str, display: crate::workflow_engine::engine::AgentDisplay) -> Result<(), String> {
         match self {
-            AgentRuntime::Codex(p) => p.lock().unwrap().send(thread_id, text),
-            AgentRuntime::Mock(p) => p.lock().unwrap().send(thread_id, text),
+            AgentRuntime::Codex(p) => p.lock().unwrap().send(thread_id, text, display),
+            AgentRuntime::Mock(p) => p.lock().unwrap().send(thread_id, text, display),
         }
     }
 

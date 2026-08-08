@@ -168,6 +168,7 @@ impl AgentProvider for MockProvider {
         &mut self,
         workspace_dir: &str,
         initial_message: &str,
+        _display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<AgentThreadInfo, String> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -192,7 +193,7 @@ impl AgentProvider for MockProvider {
         Ok(Vec::new())
     }
 
-    fn send(&mut self, _thread_id: &str, text: &str) -> Result<(), String> {
+    fn send(&mut self, _thread_id: &str, text: &str, _display: crate::workflow_engine::engine::AgentDisplay) -> Result<(), String> {
         self.emit(reply_cycle(text));
         Ok(())
     }
