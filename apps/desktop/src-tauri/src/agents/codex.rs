@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::Sender;
 
-use super::{AgentProvider, AgentThreadInfo, TurnDone, AGENT_ID};
+use super::{AgentProvider, AgentThreadInfo, TurnDone};
 use crate::event_bus::CoreEvent;
 use crate::agents::mock::state_to_animation;
 

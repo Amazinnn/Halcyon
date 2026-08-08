@@ -257,23 +257,21 @@ pub fn ensure_agent_runtime(app: &tauri::AppHandle, character_id: &str) -> Resul
     let tx = state.events_tx.clone();
     let rt = match row.tool.as_str() {
         "mock" => agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx))),
-        _ => match agents::codex::find_codex_exe() {
-            Some(exe) => {
-                let mut p = agents::codex::CodexProvider::new(tx, exe, character_id.to_string());
-                // Restore the current session (same-day) so switching Agents
-                // resumes today's conversation.
-                if let Some(hash) = row.current_session_hash.clone() {
-                    if row.session_date.as_deref() == Some(&today_local()) {
-                        let _ = p.resume_thread(&hash);
-                    }
+        _ => {
+            // M5 (ADR-0022): no fallback — if Codex is missing, the call
+            // fails with a clear error; next use rebuilds lazily.
+            let exe = agents::codex::find_codex_exe()
+                .ok_or_else(|| "未找到 Codex（%LOCALAPPDATA%/OpenAI/Codex/bin）".to_string())?;
+            let mut p = agents::codex::CodexProvider::new(tx, exe, character_id.to_string());
+            // Restore the current session (same-day) so switching Agents
+            // resumes today's conversation.
+            if let Some(hash) = row.current_session_hash.clone() {
+                if row.session_date.as_deref() == Some(&today_local()) {
+                    let _ = p.resume_thread(&hash);
                 }
-                agents::AgentRuntime::Codex(std::sync::Arc::new(std::sync::Mutex::new(p)))
             }
-            None => {
-                state.agent_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
-                agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx)))
-            }
-        },
+            agents::AgentRuntime::Codex(std::sync::Arc::new(std::sync::Mutex::new(p)))
+        }
     };
     state.agents.lock().unwrap().insert(character_id.to_string(), match &rt {
         agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
@@ -306,38 +304,26 @@ fn today_local() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
-/// Runs a provider call for a specific character's Agent; when the Codex
-/// binary is unavailable at runtime, swaps to Mock (fallback badge) and
-/// retries once (ADR-0007).
+/// Runs a provider call for a specific character's Agent. M5 (ADR-0022):
+/// a dead process just drops this Agent's runtime — the next use rebuilds
+/// it lazily (no fallback, no retry loop).
 pub fn with_agent_for<R>(
     app: &tauri::AppHandle,
     character_id: &str,
-    mut f: impl FnMut(&agents::AgentRuntime) -> Result<R, String>,
+    f: impl FnOnce(&agents::AgentRuntime) -> Result<R, String>,
 ) -> Result<R, String> {
-    let mut swapped = false;
-    loop {
-        let rt = ensure_agent_runtime(app, character_id)?;
-        let r = f(&rt);
-        match r {
-            Ok(v) => return Ok(v),
-            Err(e) if !swapped => {
-                let state = app.state::<AppState>();
-                let kind = rt.kind();
-                if kind == agents::AgentProviderKind::Codex && agents::codex::is_unavailable_error(&e) {
-                    let tx = state.events_tx.clone();
-                    *state.agents.lock().unwrap() = agents::AgentRegistry::new(); // drop broken runtimes
-                    let mock = agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx)));
-                    state.agents.lock().unwrap().insert(character_id.to_string(), mock);
-                    state.agent_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
-                    swapped = true;
-                    emit_agent_status(app);
-                } else {
-                    return Err(e);
-                }
-            }
-            Err(e) => return Err(e),
-        }
+    let rt = ensure_agent_runtime(app, character_id)?;
+    let r = f(&rt);
+    if r.is_err() {
+        // Dead process — drop this Agent's runtime; next use rebuilds.
+        app.state::<AppState>()
+            .agents
+            .lock()
+            .unwrap()
+            .runtimes
+            .remove(character_id);
     }
+    r
 }
 
 #[tauri::command]
