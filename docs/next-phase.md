@@ -16,6 +16,9 @@
 
 ## M1：桌宠与桌面壳层（2026-08-08 现状）
 
+### v1.12 桌面锁后端（2026-08-08 已实现待验收，需求 #70，ADR-0023）
+- 隐藏任务栏+桌面图标+禁键（Win/Alt+Tab/Alt+F4/Ctrl+Esc）；focus-cli desktop lock/unlock/status；六层崩溃检测/逃生（panic hook/Drop/watchdog/focus-cli/逃生文件/explorer 重启）；核心+开发期防御双模块（产品期删防御文件）。UI 触发留给专注模式。
+
 ### v1.11.3 M5 完善轮（2026-08-08 已实现待验收，需求 #69，ADR-0022）
 - 多 Agent 事件隔离（envelope agentId=character_id）；崩溃=下次自动重启（去 fallback）；记住上次 Agent；设置页 Agent 管理（删除连带删工作区/打开工作区文件夹）；三开关 provider 层生效（初始短句/思考/最终）。
 

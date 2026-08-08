@@ -1,13 +1,14 @@
 # Focus Desktop 当前状态（压缩交接页）
 
-> 更新：2026-08-08（v1.11.3 已实现待验收：#69 多 Agent 完善，ADR-0022；v1.11.2（M5 Agent 看板 MVP）已实现待验收；v1.11.1（#68，ADR-0021）已实现待验收；v1.11（#67，ADR-0020）已实现待验收；v1.10.5.1（#64–#66，ADR-0019）已被 v1.11 部分推翻（孤儿挂回→删除）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
+> 更新：2026-08-08（v1.12 已实现待验收：#70 桌面锁后端，ADR-0023；v1.11.3（#69，ADR-0022）已实现待验收；v1.11.2（M5 Agent 看板 MVP）已实现待验收；v1.11.1（#68，ADR-0021）已实现待验收；v1.11（#67，ADR-0020）已实现待验收。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，MIT）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
 
-## 当前版本与已验证清单（v1.11.3 已实现待验收；前序 v1.11.2 及更早已实现待验收）
+## 当前版本与已验证清单（v1.12 已实现待验收；前序 v1.11.3 及更早已实现待验收）
+- v1.12（桌面锁后端，已实现待验收，需求 #70，ADR-0023）：隐藏任务栏（Shell_TrayWnd）+ 桌面图标（Progman）+ 禁键（Win/Alt+Tab/Alt+F4/Ctrl+Esc，低级键盘钩子）；focus-cli `desktop lock/unlock/status`；六层崩溃检测/逃生（panic hook / Drop / watchdog 子进程 / focus-cli / 逃生文件 / explorer 重启）；模块化：核心 desktop_lock.rs（产品保留）+ 开发期防御 desktop_lock_escapes.rs（产品期删一文件移除）；失败不锁 + 尽力解锁。UI 触发留给专注模式。
 - v1.11.3（M5 完善轮，已实现待验收，需求 #69，ADR-0022）：多 Agent 事件隔离（envelope agentId=character_id，前端按当前角色过滤）；Agent 崩溃=下次自动重启（去掉复杂 fallback）；记住上次 Agent（localStorage）；设置页 Agent 管理（列表/删除连带删工作区/打开工作区文件夹）；三开关 provider 层生效（showInitial 首条流式=开工短句 / showThinking 流式 / showResult 最终）；系统级输出纪律注入每次 turn。
 - v1.11.2（M5 Agent 看板 MVP，已实现待验收，需求 #65/#67，ADR-0022）：宠物=Agent 一对一（DB 0007：tool/workspace_dir/session_hash/session_date）；多实例 AgentRuntime（每角色一个 Codex 实例，懒构建）；懒生成工作区 + AGENTS.md（身份唯一来源，persona 退役）；每日会话旋转（哈希存 Rust，Agent 经 focus-cli agent session/list 读回看）；聊天顶部 Agent 下拉 + 去 thread 下拉；工作流 Agent 节点三开关 UI；VPN loopback 代理绕过（--proxy-bypass-list=<-loopback>）。
 - v1.11.1（环状工作流执行语义修复，已实现待验收，需求 #68，ADR-0021）：focus/idle/ring 节点引擎侧阻塞等待（发事件后 sleep 到时长，100ms 轮询 cancel，取消立即中断）；顶部「停止」按钮（立即 cancel + 复位 UI，运行中「运行」↔「停止」互斥）；ringFor 单次响铃（不再 setTimeout 排秒叠加）+ playChime 时间戳/音量修正（防串音/破音）；屏蔽工作流 focus 倒计时归零触发 focus_end 联动（workflowDriven 标记）；触发标签「手动」→「保存」。根因：环飞快空转（focus/idle/ring 不阻塞）+ 无停止入口 + setTimeout 叠加声浪 + 系统卡死。
@@ -69,7 +70,7 @@
 
 ## 文档索引
 
-- 需求原话：docs/requirements-verbatim.md（#1–#69，只追加、不改历史原话）。
-- ADR：docs/decisions/ADR-0001~0022（0012=M4 工作流引擎；0017=工作流 v2；0018=画布收敛；0019=Agent 概念+工作流冻结；0020=工作流退化为 Agent 日程工具；0021=环状工作流执行语义；0022=M5 Agent 看板）。
+- 需求原话：docs/requirements-verbatim.md（#1–#70，只追加、不改历史原话）。
+- ADR：docs/decisions/ADR-0001~0023（0012=M4 工作流引擎；0017=工作流 v2；0018=画布收敛；0019=Agent 概念+工作流冻结；0020=工作流退化为 Agent 日程工具；0021=环状工作流执行语义；0022=M5 Agent 看板；0023=桌面锁）。
 - 设计稿：local-focus-desktop-agent-design-v0.2.md（权威，保持原样、不移动、不改章节编号）。
 - 其它：README.md（版本摘要）、docs/next-phase.md（路线）、docs/architecture/（spike/风险/可行性）。
