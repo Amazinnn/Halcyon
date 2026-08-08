@@ -197,17 +197,22 @@ async function refresh() {
   }
 }
 
-// ---- resize handle (v1.10.2 #39): sticky slider. Sizes are ordered by
-// area (1x1 < 1x2/2x1 < 2x2); target slot = nearest slot to the horizontal
-// drag offset (rounded), so small drags stay put and big drags can skip
-// intermediate slots. Preview while held, commit on release. ----
+// ---- resize handle (v1.10.3 #43): nearest-corner snapping. Sizes are
+// ordered by area (1x1 < 1x2/2x1 < 2x2); the target size is the one whose
+// bottom-right corner is closest to the pointer (Pythagorean distance), so
+// small drags stay put and diagonal drags count. Preview while held, commit
+// on release. ----
 let sizeIdx = 0;
 let startSizeIdx = 0;
 let targetSizeIdx = 0;
-let startClientX = 0;
+let winLeft = 0;
+let winTop = 0;
+let winW = 0;
+let winH = 0;
+let curCols = 1;
+let curRows = 1;
 let resizePointer = -1;
 let resizeChanged = false;
-const RESIZE_STEP_PX = 64;
 
 function showResizePreview(idx: number) {
   const [cols, rows] = SIZES[idx];
@@ -222,18 +227,33 @@ function onResizePointerDown(e: PointerEvent) {
   startSizeIdx = sizeIdx;
   targetSizeIdx = sizeIdx;
   resizeChanged = false;
-  startClientX = e.clientX;
+  const [cc, cr] = SIZES[sizeIdx];
+  curCols = cc;
+  curRows = cr;
+  winLeft = window.screenX;
+  winTop = window.screenY;
+  winW = window.outerWidth;
+  winH = window.outerHeight;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   showResizePreview(targetSizeIdx);
 }
 
 function onResizePointerMove(e: PointerEvent) {
   if (e.pointerId !== resizePointer) return;
-  const dx = e.clientX - startClientX;
-  const off = Math.round(dx / RESIZE_STEP_PX);
-  const next = Math.min(SIZES.length - 1, Math.max(0, startSizeIdx + off));
-  if (next !== targetSizeIdx) {
-    targetSizeIdx = next;
+  let best = targetSizeIdx;
+  let bestDist = Infinity;
+  for (let i = 0; i < SIZES.length; i++) {
+    const [c, r] = SIZES[i];
+    const cx = winLeft + (winW * c) / curCols;
+    const cy = winTop + (winH * r) / curRows;
+    const d = Math.hypot(e.screenX - cx, e.screenY - cy);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  if (best !== targetSizeIdx) {
+    targetSizeIdx = best;
     resizeChanged = true;
     showResizePreview(targetSizeIdx);
   }

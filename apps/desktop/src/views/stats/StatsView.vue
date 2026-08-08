@@ -148,16 +148,18 @@ onUnmounted(() => {
   overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  grid-auto-rows: minmax(86px, auto);
+  grid-auto-rows: minmax(84px, auto);
   grid-auto-flow: dense;
-  gap: 8px;
-  padding: 10px;
+  gap: 10px;
+  padding: 12px;
 }
-.card { padding: 8px 10px; min-width: 0; }
-.card h4 { margin: 0 0 6px; font-size: 11px; color: var(--text-mid); font-weight: 600; }
-.chart-box { position: relative; height: 70px; }
-.big { font-size: 20px; margin: 2px 0; color: var(--accent-bright); }
+.card { padding: 10px 12px; min-width: 0; }
+.card h4 { margin: 0 0 8px; font-size: 12px; color: var(--text-mid); font-weight: 600; letter-spacing: 0.02em; }
+.chart-box { position: relative; height: 72px; }
+.big { font-size: 22px; margin: 4px 0; color: var(--accent-bright); line-height: 1.15; }
 .summary p { margin: 2px 0; font-size: 12px; }
+.sub { font-size: 11px; color: var(--text-low); margin: 2px 0 0; }
+.na { font-size: 11px; color: var(--text-low); margin: 2px 0; }
 .num { color: var(--text-hi); }
 .na { color: var(--text-mid); }
 .sub { font-size: 11px; color: var(--text-mid); }

@@ -34,21 +34,26 @@ function onSeek(e: Event) {
   music.seek(Number(el.value) * 1000);
 }
 
-// ---- resize handle (mirrors pet): v1.10.2 (#38) sizes are 3x1 / 3x3 /
-// 3x4 only (3x2 removed); (#39) sticky slider: target slot = nearest slot to
-// the horizontal drag offset (rounded), small drags stay put. ----
+// ---- resize handle (mirrors pet): v1.10.3 (#43) nearest-corner snapping.
+// Sizes are 3x1 / 3x3 / 3x4 only (3x2 removed, #38). While dragging, the
+// target size is the one whose bottom-right corner is closest to the pointer
+// (Pythagorean distance), so small drags stay put and diagonal drags count.
 const SIZES: Array<[number, number]> = [
   [3, 1],
   [3, 3],
   [3, 4],
 ];
-const RESIZE_STEP_PX = 64;
 const rows = ref(3);
 const showList = computed(() => rows.value >= 3);
 let sizeIdx = 0;
 let startSizeIdx = 0;
 let targetSizeIdx = 0;
-let startClientX = 0;
+let winLeft = 0;
+let winTop = 0;
+let winW = 0;
+let winH = 0;
+let curCols = 1;
+let curRows = 1;
 let resizePointer = -1;
 let resizeChanged = false;
 
@@ -81,18 +86,33 @@ function onResizePointerDown(e: PointerEvent) {
   startSizeIdx = sizeIdx;
   targetSizeIdx = sizeIdx;
   resizeChanged = false;
-  startClientX = e.clientX;
+  const [cc, cr] = SIZES[sizeIdx];
+  curCols = cc;
+  curRows = cr;
+  winLeft = window.screenX;
+  winTop = window.screenY;
+  winW = window.outerWidth;
+  winH = window.outerHeight;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   showResizePreview(targetSizeIdx);
 }
 
 function onResizePointerMove(e: PointerEvent) {
   if (e.pointerId !== resizePointer) return;
-  const dx = e.clientX - startClientX;
-  const off = Math.round(dx / RESIZE_STEP_PX);
-  const next = Math.min(SIZES.length - 1, Math.max(0, startSizeIdx + off));
-  if (next !== targetSizeIdx) {
-    targetSizeIdx = next;
+  let best = targetSizeIdx;
+  let bestDist = Infinity;
+  for (let i = 0; i < SIZES.length; i++) {
+    const [c, r] = SIZES[i];
+    const cx = winLeft + (winW * c) / curCols;
+    const cy = winTop + (winH * r) / curRows;
+    const d = Math.hypot(e.screenX - cx, e.screenY - cy);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  if (best !== targetSizeIdx) {
+    targetSizeIdx = best;
     resizeChanged = true;
     showResizePreview(targetSizeIdx);
   }
@@ -209,7 +229,7 @@ onUnmounted(() => {
       @pointerup="onResizePointerUp"
       @pointercancel="onResizeCancel"
       @lostpointercapture="onResizeCancel"
-      title="长按并拖动调整音乐窗口高度（3×1 / 3×2 / 3×3 / 3×4）"
+      title="拖动调整音乐窗口尺寸（3×1 / 3×3 / 3×4）"
     ></div>
   </div>
 </template>

@@ -252,6 +252,10 @@ async function applyTemplate(t: (typeof WORKFLOW_TEMPLATES)[number]) {
   }
 }
 
+function onTemplateSelect(key: string) {
+  const tpl = WORKFLOW_TEMPLATES.find((x) => x.key === key);
+  if (tpl) void applyTemplate(tpl);
+}
 function startCopy(w: { id: string; characterId: string }, action: "copy" | "move") {
   copyTarget.value = { id: w.id, action };
   const other = store.characters.find((c) => c.id !== w.characterId);
@@ -303,12 +307,13 @@ function fmtTime(ts: number): string {
         <option v-for="c in store.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
       </select>
       <span class="sep" />
-      <button v-for="t in WORKFLOW_TEMPLATES" :key="t.key" class="btn" :title="t.desc" @click="applyTemplate(t)">
-        {{ t.label }}
-      </button>
+      <select class="sel tpl" :value="''" title="从模板创建新工作流" @change="onTemplateSelect(($event.target as HTMLSelectElement).value)">
+        <option value="" disabled>+ 模板…</option>
+        <option v-for="t in WORKFLOW_TEMPLATES" :key="t.key" :value="t.key">{{ t.label }}</option>
+      </select>
       <button class="btn accent" @click="save">保存</button>
       <button class="btn" :disabled="!store.currentWorkflowId" @click="runCurrent">运行</button>
-      <span v-if="dirty" class="dirty">未保存</span>
+      <span v-if="dirty" class="dirty-dot" title="未保存" />
       <span v-if="errorMsg" class="err">{{ errorMsg }}</span>
     </div>
 
@@ -492,8 +497,8 @@ function fmtTime(ts: number): string {
 .wf-top {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 5px;
+  padding: 5px 8px;
   border-bottom: 1px solid var(--glass-border);
   flex-wrap: wrap;
 }
@@ -512,8 +517,8 @@ function fmtTime(ts: number): string {
   background: transparent;
   color: var(--text-mid);
   border-radius: var(--r-sm);
-  font-size: 11px;
-  padding: 3px 10px;
+  font-size: 10px;
+  padding: 2px 8px;
   cursor: pointer;
 }
 .btn:hover { color: var(--text-hi); border-color: var(--accent); }
@@ -525,13 +530,13 @@ function fmtTime(ts: number): string {
   color: var(--text-mid);
   border-radius: var(--r-sm);
   font-size: 10px;
-  padding: 1px 6px;
+  padding: 1px 5px;
   cursor: pointer;
 }
 .ghost:hover { color: var(--text-hi); border-color: var(--accent); }
 .ghost.danger:hover { color: #ff7b72; border-color: #ff7b72; }
 .ghost.off { opacity: 0.5; }
-.dirty { color: #e8c766; font-size: 11px; }
+.dirty-dot { width: 6px; height: 6px; border-radius: 50%; background: #e8c766; display: inline-block; flex-shrink: 0; }
 .err { color: #ff7b72; font-size: 11px; }
 .muted { color: var(--text-low); font-size: 11px; }
 .wf-body {
@@ -540,7 +545,7 @@ function fmtTime(ts: number): string {
   min-height: 0;
 }
 .wf-side {
-  width: 200px;
+  width: 176px;
   border-right: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
@@ -564,10 +569,11 @@ function fmtTime(ts: number): string {
   cursor: pointer;
 }
 .wf-item.on { border-color: var(--accent); background: rgba(163, 230, 53, 0.08); }
+.wf-item:hover .wf-item-ops { opacity: 1; }
 .wf-item-main { display: flex; flex-direction: column; gap: 2px; }
 .wf-name { font-weight: 600; }
 .wf-meta { color: var(--text-low); font-size: 10px; }
-.wf-item-ops { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
+.wf-item-ops { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; opacity: 0; transition: opacity 0.12s; }
 .copy-box { display: flex; gap: 6px; align-items: center; padding: 6px 0; flex-wrap: wrap; }
 .wf-canvas { flex: 1; min-width: 0; position: relative; }
 .wf-palette {
@@ -578,10 +584,10 @@ function fmtTime(ts: number): string {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  max-width: 420px;
+  max-width: 360px;
 }
 .wf-inspector {
-  width: 220px;
+  width: 200px;
   border-left: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
