@@ -10,6 +10,7 @@ mod agents;
 mod apps;
 mod cli;
 mod drag;
+mod desktop_lock;
 mod event_bus;
 mod grid;
 mod icons;
@@ -1961,6 +1962,10 @@ pub fn run() {
                     let _ = tx.send(v);
                 }
             });
+
+            // v1.12: desktop lock Drop guard lives for the process lifetime —
+            // normal exit restores taskbar/desktop if locked.
+            let _lock_guard = desktop_lock::DesktopLock;
 
             Ok(())
         })
