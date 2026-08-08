@@ -16,6 +16,10 @@
 
 ## M1：桌宠与桌面壳层（2026-08-07 现状）
 
+### v1.10.2 体验修复轮 + 重叠卡死彻查（2026-08-08 实施中，需求 #35–#41，ADR-0014）
+- #35：重叠卡死（09:29:20 AppHangB1）受控取证；position_window 位置操作统一原生 HWND。
+- #36 工作流默认 4×3 + 布局压缩；#37 根元素同圆角裁剪（单层框）；#38 音乐尺寸 [3×1,3×3,3×4]；#39 桌宠/音乐缩放位移滑块+最近档；#40 launch-focus.vbs 隐藏启动；#41 统计平滑曲线/0-24 刻度/nearest hover/默认 5×4。
+
 ### v1.10.1 拖动卡死修复轮（2026-08-08 已实现待验收，需求 #34，ADR-0013）
 - 根因：拖动 poller 每 15ms set_position → 主线程 WebView2 SetBounds（同步 COM RPC）+ grid 预览每 15ms 全屏渐变，偶发等待浏览器进程 28s（AppHangB1 已验证）。
 - 修复：拖动移动优先原生 SetWindowPos（SWP_ASYNCWINDOWPOS，绕过 SetBounds）；grid:preview 节流 ≥50ms；POLL_MS 15→24；hang-detector STILL_HUNG 每 3s 取证。开发侧受控拖动 2 轮 0 HUNG。
