@@ -60,6 +60,15 @@ export const useUiStore = defineStore("ui", {
         const st = (e.payload as { status?: string })?.status;
         if (st === "drift" || st === "paused" || st === "ok") this.supervisionStatus = st;
       });
+      // Workflow node system actions (v1.10.4 #51): focus/idle/ring nodes of a
+      // workflow drive the timer/sound from the Rust engine via the event bus.
+      await listen<{ action: string; seconds: number }>("workflow:system-action", (e) => {
+        if (getCurrentWebviewWindow().label !== "desktop") return;
+        const { action, seconds } = e.payload;
+        if (action === "focus") this.startFocusFor(Math.max(1, seconds));
+        else if (action === "idle") this.startRestFor(Math.max(1, seconds));
+        else if (action === "ring") this.ringFor(Math.max(1, seconds));
+      });
       // Agent CLI control plane (v1.5): `focus-cli timer ...` routes through
       // the desktop webview, which runs the action and replies with live state.
       await listen<{ id: number; action: string }>("cli:timer", (e) => {
@@ -99,6 +108,37 @@ export const useUiStore = defineStore("ui", {
       void emit("focus:state_changed", { state: "focus" });
       this.emitTick();
       this._ticker = window.setInterval(() => this.tick(), 1000);
+    },
+    /** v1.10.4 (#51): focus for a custom number of seconds (workflow focus node). */
+    startFocusFor(seconds: number) {
+      this.stopTicker();
+      this.focusState = "focus";
+      this.timerPaused = false;
+      this.phaseDone = false;
+      this.focusRemainingSec = seconds;
+      void emit("focus:state_changed", { state: "focus" });
+      this.emitTick();
+      this._ticker = window.setInterval(() => this.tick(), 1000);
+    },
+    /** v1.10.4 (#51): idle/rest for a custom number of seconds (workflow idle node). */
+    startRestFor(seconds: number) {
+      this.stopTicker();
+      this.focusState = "rest";
+      this.timerPaused = false;
+      this.phaseDone = false;
+      this.restRemainingSec = seconds;
+      void emit("focus:state_changed", { state: "rest", completed: false });
+      this.emitTick();
+      this._ticker = window.setInterval(() => this.tick(), 1000);
+    },
+    /** v1.10.4 (#51): ring N times, once per second (workflow ring node). */
+    ringFor(seconds: number) {
+      if (this.soundEnabled) playChime();
+      for (let i = 1; i < seconds; i++) {
+        window.setTimeout(() => {
+          if (this.soundEnabled) playChime();
+        }, i * 1000);
+      }
     },
     startRest(completed: boolean) {
       this.stopTicker();

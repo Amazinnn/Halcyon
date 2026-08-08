@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { VueFlow, type Edge, type Node, type Connection } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import "@vue-flow/core/dist/style.css";
@@ -8,11 +8,14 @@ import FlowNode from "./FlowNode.vue";
 import WindowHeader from "../../components/WindowHeader.vue";
 import { useWorkflowStore } from "../../stores/workflow";
 import {
-  GUARD_LABELS,
+  NODE_DESC,
+  NODE_KINDS,
   NODE_LABELS,
+  NODE_OUT_FIELDS,
   TRIGGER_LABELS,
-  WORKFLOW_TEMPLATES,
+  defaultParams,
   emptyWorkflow,
+  triggerBadge,
   type WorkflowDef,
 } from "../../lib/workflow";
 
@@ -23,81 +26,112 @@ const edges = ref<any[]>([]);
 const selectedNodeId = ref<string | null>(null);
 const activeParam = ref("");
 const refMenu = ref(false);
-const dirty = ref(false);
 const errorMsg = ref("");
 const copyTarget = ref<{ id: string; action: "copy" | "move" } | null>(null);
 const copyCharId = ref("");
+const triggerEditor = ref(false);
+const running = ref(false);
+const nodeStatus = ref<Record<string, string>>({});
+const editingId = ref<string | null>(null);
 
 const nodeTypes = { workflow: FlowNode as any };
 
 const selectedNode = computed(() =>
   (nodes.value.find((n) => n.id === selectedNodeId.value) as any) ?? null,
 );
-
 const sp = computed(() => ((selectedNode.value as any)?.data?.params ?? {}) as Record<string, unknown>);
 
-const outFields: Record<string, string[]> = {
-  agent: ["result", "threadId", "status"],
-  if: ["matched"],
-  wait: ["elapsedSec"],
-  bubble: ["text"],
-  show_window: ["opened"],
-};
+const meta = ref({
+  name: "新工作流",
+  trigger: "manual" as string,
+  scheduleType: null as string | null,
+  intervalMinutes: null as number | null,
+  dailyTime: null as string | null,
+  guard: "none" as string,
+});
+
+const currentWf = computed(() =>
+  store.workflows.find((w) => w.id === store.currentWorkflowId) ?? null,
+);
+const currentName = computed(() =>
+  currentWf.value ? currentWf.value.name : meta.value.name,
+);
+const currentBadge = computed(() => {
+  if (currentWf.value) return triggerBadge(currentWf.value);
+  return TRIGGER_LABELS[meta.value.trigger] ?? meta.value.trigger;
+});
 
 const refCandidates = computed(() => {
   if (!selectedNode.value) return [];
   const list: { nodeId: string; field: string }[] = [];
   for (const n of nodes.value) {
     if (n.id === selectedNode.value.id) continue;
-    for (const f of outFields[n.data.kind as string] ?? []) {
+    for (const f of NODE_OUT_FIELDS[n.data.kind as string] ?? []) {
       list.push({ nodeId: n.id, field: f });
     }
   }
   return list;
 });
 
-function defaultParams(kind: string): Record<string, unknown> {
-  switch (kind) {
-    case "bubble":
-      return { text: "", priority: "normal" };
-    case "agent":
-      return { prompt: "", wait: true };
-    case "show_window":
-      return { target: "chat" };
-    case "wait":
-      return { seconds: 5 };
-    case "if":
-      return { source: "", op: "not_empty", value: "" };
-    default:
-      return {};
+function loadDraft(wf: WorkflowDef | null) {
+  if (wf) {
+    editingId.value = wf.id;
+    meta.value = {
+      name: wf.name,
+      trigger: wf.trigger,
+      scheduleType: wf.scheduleType ?? null,
+      intervalMinutes: wf.intervalMinutes ?? null,
+      dailyTime: wf.dailyTime ?? null,
+      guard: wf.guard,
+    };
+    nodes.value = wf.nodes.map((n) => ({
+      id: n.id,
+      type: "workflow",
+      position: { x: n.x, y: n.y },
+      data: { kind: n.kind, params: { ...n.params }, status: "" },
+    }));
+    edges.value = wf.edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      sourceHandle: e.sourceHandle || "out",
+      markerEnd: "url(#wf-arrow)",
+    }));
+  } else {
+    editingId.value = null;
+    meta.value = {
+      name: "新工作流",
+      trigger: "manual",
+      scheduleType: null,
+      intervalMinutes: null,
+      dailyTime: null,
+      guard: "none",
+    };
+    nodes.value = [];
+    edges.value = [];
   }
-}
-
-function loadDraft(wf: WorkflowDef) {
-  nodes.value = wf.nodes.map((n) => ({
-    id: n.id,
-    type: "workflow",
-    position: { x: n.x, y: n.y },
-    data: { kind: n.kind, params: { ...n.params } },
-  }));
-  edges.value = wf.edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    sourceHandle: e.sourceHandle || "out",
-  }));
   selectedNodeId.value = null;
   activeParam.value = "";
   refMenu.value = false;
-  dirty.value = false;
+  triggerEditor.value = false;
+  nodeStatus.value = {};
+  running.value = false;
   errorMsg.value = "";
 }
 
 function toDraft(): WorkflowDef {
-  const base = store.workflows.find((w) => w.id === store.currentWorkflowId);
+  const base = editingId.value
+    ? store.workflows.find((w) => w.id === editingId.value)
+    : null;
   const draft: WorkflowDef = base
     ? JSON.parse(JSON.stringify(base))
     : emptyWorkflow(store.currentCharacterId ?? "");
+  draft.name = meta.value.name.trim() || "新工作流";
+  draft.trigger = meta.value.trigger;
+  draft.scheduleType = meta.value.scheduleType;
+  draft.intervalMinutes = meta.value.intervalMinutes;
+  draft.dailyTime = meta.value.dailyTime;
+  draft.guard = meta.value.guard;
   draft.nodes = nodes.value.map((n) => ({
     id: n.id,
     kind: String(n.data.kind),
@@ -114,25 +148,94 @@ function toDraft(): WorkflowDef {
   return draft;
 }
 
+let saveTimer: number | null = null;
+function scheduleAutoSave() {
+  if (saveTimer !== null) window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => void saveNow(), 800);
+}
+async function saveNow() {
+  saveTimer = null;
+  if (nodes.value.length === 0) return; // empty canvas has nothing to persist
+  try {
+    const saved = await store.save(toDraft());
+    editingId.value = saved.id;
+    if (store.currentWorkflowId !== saved.id) await store.selectWorkflow(saved.id);
+    errorMsg.value = "";
+  } catch (e) {
+    errorMsg.value = String(e);
+  }
+}
+function flushAutoSave() {
+  if (saveTimer !== null) {
+    window.clearTimeout(saveTimer);
+    saveTimer = null;
+    void saveNow();
+  }
+}
+
 onMounted(async () => {
   await store.init();
-  if (store.currentWorkflowId) {
-    const wf = store.workflows.find((w) => w.id === store.currentWorkflowId);
-    if (wf) loadDraft(wf);
-  } else if (store.currentCharacterId) {
-    loadDraft(emptyWorkflow(store.currentCharacterId));
-  }
+  const wf = store.workflows.find((w) => w.id === store.currentWorkflowId);
+  loadDraft(wf ?? null);
 });
 
 watch(
   () => [store.currentCharacterId, store.currentWorkflowId] as const,
-  () => {
-    if (dirty.value) return; // keep the in-progress edit until save/reset
-    const wf = store.workflows.find((w) => w.id === store.currentWorkflowId);
-    if (wf) loadDraft(wf);
-    else if (store.currentCharacterId) loadDraft(emptyWorkflow(store.currentCharacterId));
+  ([, wfId]) => {
+    // Skip reload when the change came from our own auto-save (keeps the
+    // in-progress selection/typing intact).
+    if (wfId === editingId.value) return;
+    const wf = store.workflows.find((w) => w.id === wfId);
+    loadDraft(wf ?? null);
   },
 );
+
+onBeforeUnmount(() => {
+  if (saveTimer !== null) {
+    window.clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+});
+
+// Node/edge edits -> auto-save (v1.10.4 #51: no save button)
+watch(
+  () => [nodes.value.length, edges.value.length] as const,
+  () => scheduleAutoSave(),
+);
+watch(
+  () => nodes.value.map((n) => n.position.x + "," + n.position.y).join("|"),
+  () => scheduleAutoSave(),
+);
+
+// Latest run result -> per-node status colors
+watch(
+  () => (store.runs[0] ? store.runs[0].id + ":" + store.runs[0].status : ""),
+  () => {
+    const latest = store.runs[0];
+    if (!latest) return;
+    const map: Record<string, string> = {};
+    try {
+      const log = JSON.parse(latest.nodeLog || "[]") as {
+        nodeId: string;
+        status: string;
+      }[];
+      for (const l of log) {
+        map[l.nodeId] =
+          l.status === "ok" ? "success" : l.status === "failed" ? "failed" : "skipped";
+      }
+    } catch {
+      /* ignore malformed log */
+    }
+    nodeStatus.value = map;
+    running.value = false;
+  },
+);
+
+function syncNodeStatus() {
+  for (const n of nodes.value) {
+    n.data.status = nodeStatus.value[n.id] ?? "";
+  }
+}
 
 function onConnect(conn: Connection) {
   if (!conn.source || !conn.target) return;
@@ -141,8 +244,8 @@ function onConnect(conn: Connection) {
     source: conn.source,
     sourceHandle: conn.sourceHandle ?? "out",
     target: conn.target,
+    markerEnd: "url(#wf-arrow)",
   });
-  dirty.value = true;
 }
 
 function onNodeClick(ev: { node: Node }) {
@@ -158,26 +261,25 @@ function onPaneClick() {
 
 function onEdgeClick(ev: { edge: Edge }) {
   edges.value = edges.value.filter((e) => e.id !== ev.edge.id);
-  dirty.value = true;
 }
 
-function onNodeDrag() {
-  dirty.value = true;
+function onNodeDragStop() {
+  syncNodeStatus();
+  scheduleAutoSave();
 }
 
 function addNode(kind: string) {
   const len = nodes.value.length;
   const n: Node = {
-    id: "n" + Date.now(),
+    id: "n" + Date.now() + "-" + len,
     type: "workflow",
-    position: { x: 60 + (len % 4) * 230, y: 60 + Math.floor(len / 4) * 150 },
-    data: { kind, params: defaultParams(kind) },
+    position: { x: 60 + (len % 4) * 240, y: 60 + Math.floor(len / 4) * 160 },
+    data: { kind, params: defaultParams(kind), status: "" },
   };
   nodes.value.push(n);
   selectedNodeId.value = n.id;
   activeParam.value = "";
   refMenu.value = false;
-  dirty.value = true;
 }
 
 function removeSelectedNode() {
@@ -186,14 +288,19 @@ function removeSelectedNode() {
   nodes.value = nodes.value.filter((n) => n.id !== id);
   edges.value = edges.value.filter((e) => e.source !== id && e.target !== id);
   selectedNodeId.value = null;
-  dirty.value = true;
 }
 
 function setParam(key: string, value: unknown) {
   const n = selectedNode.value;
   if (!n) return;
   (n.data.params as Record<string, unknown>)[key] = value;
-  dirty.value = true;
+  syncNodeStatus();
+  scheduleAutoSave();
+}
+
+function setMeta(key: string, value: unknown) {
+  (meta.value as Record<string, unknown>)[key] = value;
+  scheduleAutoSave();
 }
 
 function insertRef(nodeId: string, field: string) {
@@ -203,59 +310,39 @@ function insertRef(nodeId: string, field: string) {
   refMenu.value = false;
 }
 
-async function save() {
-  try {
-    const saved = await store.save(toDraft());
-    dirty.value = false;
-    errorMsg.value = "";
-    await store.selectWorkflow(saved.id);
-    const wf = store.workflows.find((w) => w.id === saved.id);
-    if (wf) loadDraft(wf);
-  } catch (e) {
-    errorMsg.value = String(e);
-  }
+function insertSystem(token: string) {
+  if (!selectedNode.value || !activeParam.value) return;
+  const cur = String((selectedNode.value.data.params as Record<string, unknown>)[activeParam.value] ?? "");
+  setParam(activeParam.value, cur + "{{" + token + "}}");
+  refMenu.value = false;
 }
 
 async function runCurrent() {
   if (!store.currentWorkflowId) return;
   try {
+    running.value = true;
+    nodeStatus.value = {};
+    for (const n of nodes.value) n.data.status = "running";
     await store.run(store.currentWorkflowId);
   } catch (e) {
     errorMsg.value = String(e);
+    running.value = false;
+    syncNodeStatus();
   }
 }
 
-async function applyTemplate(t: (typeof WORKFLOW_TEMPLATES)[number]) {
+async function applyTrigger() {
+  triggerEditor.value = false;
+  scheduleAutoSave();
+}
+
+function newDraft() {
+  flushAutoSave();
   if (!store.currentCharacterId) return;
-  const spec = t.build();
-  const wf: WorkflowDef = {
-    id: "",
-    characterId: store.currentCharacterId,
-    name: spec.name,
-    trigger: spec.trigger,
-    scheduleType: spec.scheduleType ?? null,
-    intervalMinutes: spec.intervalMinutes ?? null,
-    dailyTime: spec.dailyTime ?? null,
-    guard: spec.guard,
-    nodes: spec.nodes,
-    edges: spec.edges,
-    enabled: true,
-    nextRunAt: null,
-  };
-  try {
-    const saved = await store.save(wf);
-    await store.selectWorkflow(saved.id);
-    const savedWf = store.workflows.find((w) => w.id === saved.id);
-    if (savedWf) loadDraft(savedWf);
-  } catch (e) {
-    errorMsg.value = String(e);
-  }
+  void store.selectWorkflow(null);
+  loadDraft(null);
 }
 
-function onTemplateSelect(key: string) {
-  const tpl = WORKFLOW_TEMPLATES.find((x) => x.key === key);
-  if (tpl) void applyTemplate(tpl);
-}
 function startCopy(w: { id: string; characterId: string }, action: "copy" | "move") {
   copyTarget.value = { id: w.id, action };
   const other = store.characters.find((c) => c.id !== w.characterId);
@@ -281,22 +368,38 @@ async function toggleEnabled(w: { id: string; enabled: boolean }) {
   }
 }
 
-function newDraft() {
-  if (!store.currentCharacterId) return;
-  loadDraft(emptyWorkflow(store.currentCharacterId));
-  void store.selectWorkflow(null);
+async function removeWorkflow(w: { id: string; name: string }) {
+  if (!window.confirm(`删除工作流「${w.name}」？`)) return;
+  try {
+    await store.remove(w.id);
+    if (store.currentWorkflowId === null) loadDraft(null);
+  } catch (e) {
+    errorMsg.value = String(e);
+  }
 }
 
-function fmtTime(ts: number): string {
-  if (!ts) return "—";
-  const d = new Date(ts * 1000);
-  return d.toLocaleTimeString("zh-CN", { hour12: false });
+
+function fillOptionsText(): string {
+  const a = Array.isArray(sp.value.fillOptions) ? (sp.value.fillOptions as string[]) : [];
+  return a.join("\n");
+}
+function setFillOptions(text: string) {
+  const a = text.split("\n").map((s) => s.trim()).filter(Boolean);
+  setParam("fillOptions", a);
+}
+function branchOptionsText(): string {
+  const a = Array.isArray(sp.value.options) ? (sp.value.options as string[]) : [];
+  return a.join("\n");
+}
+function setBranchOptions(text: string) {
+  const a = text.split("\n").map((s) => s.trim()).filter(Boolean);
+  setParam("options", a.length >= 2 ? a : ["专注", "分心"]);
 }
 </script>
 
 <template>
   <div class="wf-window">
-    <WindowHeader title="工作流" collapsible />
+    <WindowHeader :title="currentName" collapsible />
     <div class="wf-top">
       <span class="label">角色</span>
       <select
@@ -307,23 +410,68 @@ function fmtTime(ts: number): string {
         <option v-for="c in store.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
       </select>
       <span class="sep" />
-      <select class="sel tpl" :value="''" title="从模板创建新工作流" @change="onTemplateSelect(($event.target as HTMLSelectElement).value)">
-        <option value="" disabled>+ 模板…</option>
-        <option v-for="t in WORKFLOW_TEMPLATES" :key="t.key" :value="t.key">{{ t.label }}</option>
-      </select>
-      <button class="btn accent" @click="save">保存</button>
-      <button class="btn" :disabled="!store.currentWorkflowId" @click="runCurrent">运行</button>
-      <span v-if="dirty" class="dirty-dot" title="未保存" />
+      <button class="badge-btn" :class="{ on: currentWf }" @click="triggerEditor = !triggerEditor">
+        {{ currentBadge }}
+        <span v-if="currentWf && !currentWf.enabled" class="badge-off">已停用</span>
+      </button>
+      <button class="btn accent" :disabled="!store.currentWorkflowId || running" @click="runCurrent">
+        {{ running ? "运行中…" : "运行" }}
+      </button>
       <span v-if="errorMsg" class="err">{{ errorMsg }}</span>
+    </div>
+
+    <div v-if="triggerEditor" class="trigger-box">
+      <div class="tr-row">
+        <span class="label">触发</span>
+        <select class="sel" :value="meta.trigger" @change="setMeta('trigger', ($event.target as HTMLSelectElement).value)">
+          <option value="manual">手动</option>
+          <option value="scheduled">定时</option>
+          <option value="focus_end">专注结束</option>
+          <option value="supervision_alert">监督告警</option>
+        </select>
+      </div>
+      <template v-if="meta.trigger === 'scheduled'">
+        <div class="tr-row">
+          <span class="label">方式</span>
+          <select class="sel" :value="meta.scheduleType ?? 'interval'" @change="setMeta('scheduleType', ($event.target as HTMLSelectElement).value)">
+            <option value="interval">间隔</option>
+            <option value="daily">每日</option>
+          </select>
+        </div>
+        <div v-if="meta.scheduleType === 'interval'" class="tr-row">
+          <span class="label">每</span>
+          <input class="ta num" type="number" min="1" :value="meta.intervalMinutes ?? 30"
+            @change="setMeta('intervalMinutes', Number(($event.target as HTMLInputElement).value) || 30)" />
+          <span class="label">分钟</span>
+        </div>
+        <div v-else class="tr-row">
+          <span class="label">时间</span>
+          <input class="ta" type="time" :value="meta.dailyTime ?? '09:00'"
+            @change="setMeta('dailyTime', ($event.target as HTMLInputElement).value || '09:00')" />
+        </div>
+      </template>
+      <div class="tr-row">
+        <span class="label">守卫</span>
+        <select class="sel" :value="meta.guard" @change="setMeta('guard', ($event.target as HTMLSelectElement).value)">
+          <option value="none">无</option>
+          <option value="focusing">仅专注中</option>
+          <option value="resting">仅休息中</option>
+          <option value="idle">仅空闲中</option>
+        </select>
+      </div>
+      <div class="tr-row">
+        <button class="btn accent" @click="applyTrigger">完成</button>
+        <button class="btn" @click="triggerEditor = false">取消</button>
+      </div>
     </div>
 
     <div class="wf-body">
       <aside class="wf-side">
         <div class="side-head">
           <span>工作流</span>
-          <button class="btn" @click="newDraft">新建</button>
+          <button class="btn accent" @click="newDraft">+ 新建</button>
         </div>
-        <div v-if="!store.workflows.length" class="muted">还没有工作流，用上方模板或「新建」开始</div>
+        <div v-if="!store.workflows.length" class="muted">还没有工作流，点「+ 新建」创建</div>
         <div
           v-for="w in store.workflows"
           :key="w.id"
@@ -333,7 +481,7 @@ function fmtTime(ts: number): string {
         >
           <div class="wf-item-main">
             <span class="wf-name">{{ w.name }}</span>
-            <span class="wf-meta">{{ TRIGGER_LABELS[w.trigger] }} · {{ GUARD_LABELS[w.guard] ?? w.guard }}</span>
+            <span class="wf-meta">{{ triggerBadge(w) }}</span>
           </div>
           <div class="wf-item-ops">
             <button class="ghost" :class="{ off: !w.enabled }" @click.stop="toggleEnabled(w)">{{ w.enabled ? "开" : "关" }}</button>
@@ -341,7 +489,7 @@ function fmtTime(ts: number): string {
             <button class="ghost" @click.stop="void store.cancel(w.id)">停</button>
             <button class="ghost" @click.stop="startCopy(w, 'copy')">复制</button>
             <button class="ghost" @click.stop="startCopy(w, 'move')">迁移</button>
-            <button class="ghost danger" @click.stop="void store.remove(w.id)">删</button>
+            <button class="ghost danger" @click.stop="removeWorkflow(w)">删</button>
           </div>
         </div>
         <div v-if="copyTarget" class="copy-box">
@@ -354,10 +502,11 @@ function fmtTime(ts: number): string {
       </aside>
 
       <div class="wf-canvas">
-        <div class="wf-palette">
-          <button v-for="k in ['bubble', 'agent', 'show_window', 'wait', 'if']" :key="k" class="btn" @click="addNode(k)">
-            +{{ NODE_LABELS[k] }}
-          </button>
+        <div v-if="!nodes.length" class="empty-guide">
+          <div class="eg-title">空白画布</div>
+          <div class="eg-step">1. 从右侧「动作库」点击添加节点</div>
+          <div class="eg-step">2. 从节点右侧圆点拖出连线（分支可连多个出口）</div>
+          <div class="eg-step">3. 点击顶部「运行」手动触发，或设置定时/事件触发</div>
         </div>
         <VueFlow
           v-model:nodes="nodes"
@@ -370,116 +519,140 @@ function fmtTime(ts: number): string {
           @node-click="onNodeClick"
           @pane-click="onPaneClick"
           @edge-click="onEdgeClick"
-          @node-drag-stop="onNodeDrag"
+          @node-drag-stop="onNodeDragStop"
         >
           <Background :gap="24" />
+          <svg width="0" height="0">
+            <defs>
+              <marker id="wf-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                <path d="M0,0 L0,6 L9,3 z" fill="#7fae8f" />
+              </marker>
+            </defs>
+          </svg>
         </VueFlow>
       </div>
 
       <aside class="wf-inspector">
-        <template v-if="selectedNode">
+        <div class="insp-section">
+          <div class="insp-head">动作库</div>
+          <div class="palette">
+            <button
+              v-for="k in [...NODE_KINDS]"
+              :key="k"
+              class="pal-item"
+              :title="NODE_DESC[k]"
+              @click="addNode(k)"
+            >
+              <span class="pal-name">{{ NODE_LABELS[k] }}</span>
+              <span class="pal-desc">{{ NODE_DESC[k] }}</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="insp-section">
           <div class="insp-head">
-            <span>{{ NODE_LABELS[String(selectedNode.data.kind)] }}</span>
-            <button class="ghost danger" @click="removeSelectedNode">删除节点</button>
+            <span>{{ selectedNode ? NODE_LABELS[String(selectedNode.data.kind)] : "节点参数" }}</span>
+            <button v-if="selectedNode" class="ghost danger" @click="removeSelectedNode">删除</button>
           </div>
-          <div class="insp-body">
-            <template v-if="selectedNode.data.kind === 'bubble'">
-              <label>气泡文本</label>
-              <textarea
-                class="ta"
-                :value="String(sp.text ?? '')"
-                @focus="activeParam = 'text'; refMenu = true"
-                @input="setParam('text', ($event.target as HTMLTextAreaElement).value)"
-              />
-              <label>优先级</label>
-              <select class="sel" :value="String(sp.priority ?? 'normal')" @change="setParam('priority', ($event.target as HTMLSelectElement).value)">
-                <option value="normal">normal</option>
-                <option value="high">high</option>
-                <option value="critical">critical</option>
-              </select>
-            </template>
-            <template v-else-if="selectedNode.data.kind === 'agent'">
-              <label>提示词（自动注入角色 agents.md 人格）</label>
-              <textarea
-                class="ta"
-                :value="String(sp.prompt ?? '')"
-                @focus="activeParam = 'prompt'; refMenu = true"
-                @input="setParam('prompt', ($event.target as HTMLTextAreaElement).value)"
-              />
-              <label class="check">
-                <input type="checkbox" :checked="sp.wait !== false" @change="setParam('wait', ($event.target as HTMLInputElement).checked)" />
-                等待结果（取消则发完即走、无输出）
-              </label>
-            </template>
-            <template v-else-if="selectedNode.data.kind === 'show_window'">
-              <label>目标窗口</label>
-              <select class="sel" :value="String(sp.target ?? 'chat')" @change="setParam('target', ($event.target as HTMLSelectElement).value)">
-                <option value="chat">对话</option>
-                <option value="stats">统计</option>
-                <option value="music">音乐</option>
-                <option value="workflow">工作流</option>
-              </select>
-            </template>
-            <template v-else-if="selectedNode.data.kind === 'wait'">
-              <label>等待秒数（1–3600）</label>
-              <input
-                type="number"
-                class="ta"
-                min="1"
-                max="3600"
-                :value="Number(sp.seconds ?? 5)"
-                @input="setParam('seconds', Number(($event.target as HTMLInputElement).value) || 1)"
-              />
-            </template>
-            <template v-else-if="selectedNode.data.kind === 'if'">
-              <label>判断来源（可引用前序输出）</label>
-              <input
-                class="ta"
-                :value="String(sp.source ?? '')"
-                @focus="activeParam = 'source'; refMenu = true"
-                @input="setParam('source', ($event.target as HTMLInputElement).value)"
-              />
-              <label>运算</label>
-              <select class="sel" :value="String(sp.op ?? 'not_empty')" @change="setParam('op', ($event.target as HTMLSelectElement).value)">
-                <option value="not_empty">非空</option>
-                <option value="contains">包含</option>
-                <option value="equals">等于</option>
-              </select>
-              <template v-if="sp.op !== 'not_empty'">
-                <label>比较值</label>
-                <input class="ta" :value="String(sp.value ?? '')" @input="setParam('value', ($event.target as HTMLInputElement).value)" />
+          <template v-if="selectedNode">
+            <div class="insp-body">
+              <template v-if="selectedNode.data.kind === 'bubble'">
+                <label>气泡文本</label>
+                <textarea class="ta" :value="String(sp.text ?? '')"
+                  @focus="activeParam = 'text'; refMenu = true"
+                  @input="setParam('text', ($event.target as HTMLTextAreaElement).value)" />
+                <label>优先级</label>
+                <select class="sel" :value="String(sp.priority ?? 'normal')" @change="setParam('priority', ($event.target as HTMLSelectElement).value)">
+                  <option value="normal">normal</option>
+                  <option value="high">high</option>
+                  <option value="critical">critical</option>
+                </select>
               </template>
-            </template>
 
-            <div v-if="refMenu" class="ref-menu">
-              <div class="ref-title">插入引用（{{ activeParam }}）</div>
-              <button v-for="r in refCandidates" :key="r.nodeId + r.field" class="ref-item" @click="insertRef(r.nodeId, r.field)">
-                {{ r.nodeId }}.{{ r.field }}
-              </button>
-              <div v-if="!refCandidates.length" class="ref-item muted">没有可引用的前序节点输出</div>
+              <template v-else-if="selectedNode.data.kind === 'agent'">
+                <label>提示词（自动注入角色 agents.md 人格）</label>
+                <textarea class="ta" :value="String(sp.prompt ?? '')"
+                  @focus="activeParam = 'prompt'; refMenu = true"
+                  @input="setParam('prompt', ($event.target as HTMLTextAreaElement).value)" />
+                <label class="check">
+                  <input type="checkbox" :checked="sp.wait !== false" @change="setParam('wait', ($event.target as HTMLInputElement).checked)" />
+                  等待结果（取消则发完即走、无输出）
+                </label>
+                <label>填空槽候选项（每行一个；留空=自由填空）</label>
+                <textarea class="ta" rows="3" :value="fillOptionsText()" @input="setFillOptions(($event.target as HTMLTextAreaElement).value)" />
+                <label>超时秒数（默认 600）</label>
+                <input class="ta num" type="number" min="10" :value="Number(sp.timeout ?? 600)"
+                  @change="setParam('timeout', Number(($event.target as HTMLInputElement).value) || 600)" />
+              </template>
+
+              <template v-else-if="selectedNode.data.kind === 'show_window'">
+                <label>目标窗口</label>
+                <select class="sel" :value="String(sp.target ?? 'chat')" @change="setParam('target', ($event.target as HTMLSelectElement).value)">
+                  <option value="chat">对话</option>
+                  <option value="stats">统计</option>
+                  <option value="music">音乐</option>
+                  <option value="workflow">工作流</option>
+                </select>
+              </template>
+
+              <template v-else-if="selectedNode.data.kind === 'wait'">
+                <label>等待秒数（1–3600）</label>
+                <input class="ta num" type="number" min="1" max="3600" :value="Number(sp.seconds ?? 5)"
+                  @change="setParam('seconds', Number(($event.target as HTMLInputElement).value) || 1)" />
+              </template>
+
+              <template v-else-if="selectedNode.data.kind === 'branch'">
+                <label>判断来源（可引用 <span v-pre>{{node.field}}</span> / <span v-pre>{{system.focus_state}}</span>）</label>
+                <input class="ta" :value="String(sp.source ?? '')"
+                  @focus="activeParam = 'source'; refMenu = true"
+                  @input="setParam('source', ($event.target as HTMLInputElement).value)" />
+                <label>选项（每行一个，≥2；命中「选项N」出口，都不命中则流程停在此节点）</label>
+                <textarea class="ta" rows="3" :value="branchOptionsText()" @input="setBranchOptions(($event.target as HTMLTextAreaElement).value)" />
+              </template>
+
+              <template v-else-if="selectedNode.data.kind === 'focus' || selectedNode.data.kind === 'idle' || selectedNode.data.kind === 'ring'">
+                <label>秒数（focus/idle ≤3600，ring ≤120）</label>
+                <input class="ta num" type="number" min="1" :value="Number(sp.seconds ?? (selectedNode.data.kind === 'ring' ? 3 : 1500))"
+                  @change="setParam('seconds', Number(($event.target as HTMLInputElement).value) || 1)" />
+              </template>
+
+              <template v-else-if="selectedNode.data.kind === 'if'">
+                <label>判断来源</label>
+                <input class="ta" :value="String(sp.source ?? '')"
+                  @focus="activeParam = 'source'; refMenu = true"
+                  @input="setParam('source', ($event.target as HTMLInputElement).value)" />
+                <label>运算</label>
+                <select class="sel" :value="String(sp.op ?? 'not_empty')" @change="setParam('op', ($event.target as HTMLSelectElement).value)">
+                  <option value="not_empty">非空</option>
+                  <option value="contains">包含</option>
+                  <option value="equals">等于</option>
+                </select>
+                <template v-if="sp.op !== 'not_empty'">
+                  <label>比较值</label>
+                  <input class="ta" :value="String(sp.value ?? '')" @input="setParam('value', ($event.target as HTMLInputElement).value)" />
+                </template>
+              </template>
+
+              <div v-if="refMenu" class="ref-menu">
+                <div class="ref-title">插入引用（{{ activeParam }}）</div>
+                <button v-for="r in refCandidates" :key="r.nodeId + r.field" class="ref-item" @click="insertRef(r.nodeId, r.field)">
+                  {{ r.nodeId }}.{{ r.field }}
+                </button>
+                <div class="ref-title">系统字段</div>
+                <button class="ref-item" @click="insertSystem('system.focus_state')">system.focus_state</button>
+                <button class="ref-item" @click="insertSystem('system.time')">system.time</button>
+                <div v-if="!refCandidates.length" class="ref-item muted">没有可引用的前序节点输出</div>
+              </div>
             </div>
-          </div>
-        </template>
-        <template v-else>
-          <div class="insp-empty">选中节点编辑参数</div>
-        </template>
+          </template>
+          <div v-else class="insp-empty">选择画布中的节点编辑参数</div>
+        </div>
       </aside>
-    </div>
-
-    <div class="wf-runs">
-      <div class="runs-head">
-        <span>运行记录（{{ store.currentWorkflowId ? store.runs.length : 0 }}）</span>
-      </div>
-      <div v-if="!store.runs.length" class="muted">尚无运行记录（可用 focus-cli workflow run 触发）</div>
-      <div v-for="r in store.runs.slice(0, 8)" :key="r.id" class="run-item">
-        <span class="run-status" :class="r.status">{{ r.status }}</span>
-        <span class="run-by">{{ r.triggeredBy }}</span>
-        <span class="run-time">{{ fmtTime(r.startedAt) }}</span>
-        <span v-if="r.error" class="run-err" :title="r.error">{{ r.error }}</span>
-      </div>
     </div>
   </div>
 </template>
+
+
 
 <style scoped>
 .wf-window {
@@ -497,12 +670,12 @@ function fmtTime(ts: number): string {
 .wf-top {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   padding: 5px 8px;
   border-bottom: 1px solid var(--glass-border);
   flex-wrap: wrap;
 }
-.label { color: var(--text-low); }
+.label { color: var(--text-low); font-size: 11px; }
 .sep { flex: 1; }
 .sel {
   border: 1px solid var(--glass-border);
@@ -536,16 +709,35 @@ function fmtTime(ts: number): string {
 .ghost:hover { color: var(--text-hi); border-color: var(--accent); }
 .ghost.danger:hover { color: #ff7b72; border-color: #ff7b72; }
 .ghost.off { opacity: 0.5; }
-.dirty-dot { width: 6px; height: 6px; border-radius: 50%; background: #e8c766; display: inline-block; flex-shrink: 0; }
 .err { color: #ff7b72; font-size: 11px; }
 .muted { color: var(--text-low); font-size: 11px; }
+.badge-btn {
+  border: 1px solid var(--glass-border);
+  background: rgba(10, 18, 14, 0.6);
+  color: var(--text-mid);
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.badge-btn:hover, .badge-btn.on { border-color: var(--accent); color: var(--accent-bright); }
+.badge-off { margin-left: 6px; color: #ff7b72; }
+.trigger-box {
+  border-bottom: 1px solid var(--glass-border);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(10, 18, 14, 0.6);
+}
+.tr-row { display: flex; align-items: center; gap: 8px; }
 .wf-body {
   flex: 1;
   display: flex;
   min-height: 0;
 }
 .wf-side {
-  width: 176px;
+  width: 150px;
   border-right: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
@@ -553,6 +745,7 @@ function fmtTime(ts: number): string {
   padding: 6px;
   overflow-y: auto;
   background: rgba(10, 18, 14, 0.5);
+  flex-shrink: 0;
 }
 .side-head {
   display: flex;
@@ -571,38 +764,68 @@ function fmtTime(ts: number): string {
 .wf-item.on { border-color: var(--accent); background: rgba(163, 230, 53, 0.08); }
 .wf-item:hover .wf-item-ops { opacity: 1; }
 .wf-item-main { display: flex; flex-direction: column; gap: 2px; }
-.wf-name { font-weight: 600; }
-.wf-meta { color: var(--text-low); font-size: 10px; }
-.wf-item-ops { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; opacity: 0; transition: opacity 0.12s; }
-.copy-box { display: flex; gap: 6px; align-items: center; padding: 6px 0; flex-wrap: wrap; }
+.wf-name { font-weight: 600; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-meta { color: var(--text-low); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-item-ops { display: flex; gap: 3px; margin-top: 4px; flex-wrap: wrap; opacity: 0; transition: opacity 0.12s; }
+.copy-box { display: flex; gap: 4px; align-items: center; padding: 6px 0; flex-wrap: wrap; }
 .wf-canvas { flex: 1; min-width: 0; position: relative; }
-.wf-palette {
+.empty-guide {
   position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 10;
+  inset: 20px;
+  z-index: 5;
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  max-width: 360px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  pointer-events: none;
+  color: var(--text-low);
+  background: rgba(8, 14, 11, 0.35);
+  border: 1px dashed var(--glass-border);
+  border-radius: var(--r-md);
 }
+.eg-title { font-size: 14px; font-weight: 700; color: var(--text-mid); }
+.eg-step { font-size: 11px; }
 .wf-inspector {
-  width: 200px;
+  width: 210px;
   border-left: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
   background: rgba(10, 18, 14, 0.5);
   overflow-y: auto;
+  flex-shrink: 0;
 }
+.insp-section { border-bottom: 1px solid var(--glass-border); }
 .insp-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 8px;
-  border-bottom: 1px solid var(--glass-border);
   font-weight: 700;
   color: var(--accent-bright);
+  font-size: 12px;
 }
+.palette {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 0 8px 10px;
+}
+.pal-item {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-sm);
+  background: rgba(10, 18, 14, 0.6);
+  color: var(--text-mid);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  text-align: left;
+}
+.pal-item:hover { border-color: var(--accent); color: var(--text-hi); }
+.pal-name { font-weight: 600; font-size: 11px; color: var(--accent-bright); }
+.pal-desc { font-size: 9px; color: var(--text-low); }
 .insp-body { padding: 10px; display: flex; flex-direction: column; gap: 6px; }
 .insp-body label { color: var(--text-low); font-size: 11px; }
 .insp-body label.check { display: flex; align-items: center; gap: 6px; color: var(--text-mid); cursor: pointer; }
@@ -611,13 +834,14 @@ function fmtTime(ts: number): string {
   border: 1px solid var(--glass-border);
   border-radius: var(--r-sm);
   padding: 5px 8px;
-  font-size: 12px;
+  font-size: 11px;
   background: #101a15;
   color: var(--text-hi);
   box-sizing: border-box;
   font-family: inherit;
 }
-textarea.ta { min-height: 64px; resize: vertical; }
+textarea.ta { min-height: 56px; resize: vertical; }
+.ta.num { width: 90px; }
 .insp-empty { padding: 14px; color: var(--text-low); }
 .ref-menu { border: 1px solid var(--glass-border); border-radius: var(--r-sm); padding: 6px; display: flex; flex-direction: column; gap: 4px; }
 .ref-title { color: var(--text-low); font-size: 10px; }
@@ -631,21 +855,4 @@ textarea.ta { min-height: 64px; resize: vertical; }
   padding: 2px 0;
 }
 .ref-item.muted { color: var(--text-low); }
-.wf-runs {
-  border-top: 1px solid var(--glass-border);
-  padding: 5px 10px;
-  max-height: 100px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.runs-head { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-low); }
-.run-item { display: flex; gap: 8px; align-items: center; font-size: 11px; }
-.run-status { border-radius: var(--r-pill); padding: 1px 8px; background: #183624; color: var(--accent-bright); }
-.run-status.failed, .run-status.error { background: #4a1d1d; color: #ffb4ae; }
-.run-status.skipped, .run-status.cancelled { background: #3a3318; color: #e8c766; }
-.run-by { color: var(--text-mid); }
-.run-time { color: var(--text-low); }
-.run-err { color: #ff7b72; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 </style>

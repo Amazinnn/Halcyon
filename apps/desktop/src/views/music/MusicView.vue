@@ -11,6 +11,7 @@ const MODE_LABEL: Record<PlayMode, string> = {
   list: "列表",
   loop: "循环",
   single: "单曲",
+  random: "随机",
 };
 
 const current = computed(() => music.current);

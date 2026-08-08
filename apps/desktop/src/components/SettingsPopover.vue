@@ -6,12 +6,14 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore } from "../stores/settings";
 import { useAgentStore } from "../stores/agent";
 import { useMusicStore } from "../stores/music";
+import { useWorkflowStore } from "../stores/workflow";
 import AppIcon from "./AppIcon.vue";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const settings = useSettingsStore();
 const agent = useAgentStore();
 const music = useMusicStore();
+const workflow = useWorkflowStore();
 const agentWorkspace = ref("");
 const petInfo = ref<{ id: string; displayName: string; description: string } | null>(null);
 const pets = ref<{ id: string; displayName: string; description: string }[]>([]);
@@ -51,6 +53,8 @@ async function load() {
   agentWorkspace.value = agent.workspaceDir;
   await refreshPets();
   musicFolder.value = music.folder ?? (await invoke<string | null>("music_get_folder")) ?? "";
+  await workflow.init();
+  await workflow.refreshRecentRuns(20);
 }
 
 async function pickWallpaper() {
@@ -206,6 +210,16 @@ async function removePet(id: string) {
   } catch (e) {
     petError.value = String(e);
   }
+}
+
+function fmtRunTime(ts: number): string {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
+}
+
+async function clearRuns() {
+  if (!window.confirm("清空全部工作流运行记录？")) return;
+  await workflow.clearRuns();
 }
 
 onMounted(load);
@@ -369,6 +383,25 @@ onMounted(load);
     </section>
 
     <section class="group">
+      <h4>运行记录</h4>
+      <div v-if="!workflow.recentRuns.length" class="row">
+        <span class="label">暂无工作流运行记录</span>
+      </div>
+      <div v-else class="run-list">
+        <div v-for="r in workflow.recentRuns.slice(0, 12)" :key="r.id" class="run-row">
+          <div class="run-main">
+            <span class="run-name" :title="r.workflowName">{{ r.workflowName }}</span>
+            <span class="run-meta">{{ r.triggeredBy }} · {{ fmtRunTime(r.startedAt) }}</span>
+          </div>
+          <span class="run-status" :class="r.status">{{ r.status }}</span>
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn" @click="clearRuns">清空记录</button>
+      </div>
+    </section>
+
+    <section class="group">
       <h4>Agent</h4>
       <div class="row">
         <span class="label">Provider</span>
@@ -461,6 +494,19 @@ onMounted(load);
 .ta { width: 100%; resize: vertical; }
 .unit { font-size: 11px; color: var(--text-low); }
 .folder-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-list { display: flex; flex-direction: column; gap: 3px; max-height: 180px; overflow-y: auto; }
+.run-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 3px 6px; border-radius: var(--r-sm); background: var(--glass-strong);
+}
+.run-main { display: flex; flex-direction: column; min-width: 0; }
+.run-name { font-size: 11px; color: var(--text-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-meta { font-size: 9px; color: var(--text-low); }
+.run-status { font-size: 10px; padding: 1px 6px; border-radius: var(--r-pill); }
+.run-status.success { color: #2ecc71; background: rgba(46, 204, 113, 0.12); }
+.run-status.failed { color: #ff5555; background: rgba(255, 85, 85, 0.12); }
+.run-status.cancelled { color: #e8c766; background: rgba(232, 199, 102, 0.12); }
+.run-status.skipped, .run-status.running { color: var(--text-low); background: rgba(255, 255, 255, 0.06); }
 .app-list {
   max-height: 180px;
   overflow-y: auto;

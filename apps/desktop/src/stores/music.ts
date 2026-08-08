@@ -9,7 +9,7 @@ export interface Track {
   album: string | null;
 }
 
-export type PlayMode = "list" | "loop" | "single";
+export type PlayMode = "list" | "loop" | "single" | "random";
 
 export const useMusicStore = defineStore("music", {
   state: () => ({
@@ -113,7 +113,19 @@ export const useMusicStore = defineStore("music", {
     },
     async next() {
       if (this.tracks.length === 0) return;
+      if (this.mode === "random") {
+        await this.playTrack(this.randomNextIndex());
+        return;
+      }
       await this.playTrack((this.currentIndex + 1) % this.tracks.length);
+    },
+    /** v1.10.4 (#53): random index != current (repeats only when 1 track). */
+    randomNextIndex(): number {
+      const n = this.tracks.length;
+      if (n <= 1) return 0;
+      let idx = Math.floor(Math.random() * n);
+      if (idx === this.currentIndex) idx = (idx + 1) % n;
+      return idx;
     },
     async prev() {
       if (this.tracks.length === 0) return;
@@ -127,7 +139,7 @@ export const useMusicStore = defineStore("music", {
       a.currentTime = Math.min(max, Math.max(0, ms / 1000));
     },
     cycleMode() {
-      const order: PlayMode[] = ["list", "loop", "single"];
+      const order: PlayMode[] = ["list", "loop", "single", "random"];
       this.mode = order[(order.indexOf(this.mode) + 1) % order.length];
     },
     onEnded() {
@@ -136,6 +148,10 @@ export const useMusicStore = defineStore("music", {
       if (this.mode === "single") {
         a.currentTime = 0;
         void a.play();
+        return;
+      }
+      if (this.mode === "random") {
+        void this.playTrack(this.randomNextIndex());
         return;
       }
       if (this.currentIndex < this.tracks.length - 1) {
