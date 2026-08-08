@@ -193,7 +193,10 @@ impl Settings {
             Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
             Err(_) => Settings::default(),
         };
-        s.migrate_layout();
+        if s.migrate_layout() {
+            // persist immediately so the migrated layout survives restarts
+            let _ = s.save(dir);
+        }
         s
     }
 
@@ -201,9 +204,10 @@ impl Settings {
     /// default size changed. Runs once (layout_version 0 -> 1) and is
     /// idempotent; user customizations that do not match the old defaults are
     /// left untouched.
-    pub fn migrate_layout(&mut self) {
+    /// Returns true when a migration was applied (caller persists it).
+    pub fn migrate_layout(&mut self) -> bool {
         if self.layout_version.unwrap_or(0) >= 1 {
-            return;
+            return false;
         }
         if let Some(r) = self.grid.get_mut("workflow") {
             if r.cols == 2 && r.rows == 2 {
@@ -224,6 +228,7 @@ impl Settings {
             }
         }
         self.layout_version = Some(1);
+        true
     }
 
     pub fn save(&self, dir: &Path) -> Result<(), String> {
