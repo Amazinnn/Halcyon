@@ -1,6 +1,6 @@
 # Focus Desktop 当前状态（压缩交接页）
 
-> 更新：2026-08-08（v1.10.5 实施中：#59–#63，ADR-0018；前序 v1.10.4（#49–#58，ADR-0017）已实现待验收）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
+> 更新：2026-08-08（v1.10.5 已实现待验收：#59–#63，ADR-0018；前序 v1.10.4（#49–#58，ADR-0017）已实现待验收）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 
 ## 项目一句话
