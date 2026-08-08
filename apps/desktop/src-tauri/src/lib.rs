@@ -1682,15 +1682,23 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
 // ---------------------------------------------------------------------------
 
 pub fn run() {
-    // v1.11.2: VPN/proxy compatibility — WebView2 (Chromium) routes even
-    // loopback hosts through the system proxy when a VPN/Clash is on, which
-    // breaks the local tauri:// protocol (blank windows). Force loopback to
-    // bypass the proxy before any webview is created.
-    if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
-        std::env::set_var(
-            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            "--proxy-bypass-list=<-loopback>",
-        );
+    // v1.11.2/v1.12.1: VPN/proxy compatibility — WebView2 (Chromium) routes
+    // even loopback hosts through the system proxy when a VPN/Clash is on,
+    // breaking the local tauri:// protocol (blank windows). MERGE into any
+    // pre-existing WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS (e.g. a debug port)
+    // instead of skipping when one exists — the old `if is_none()` let an
+    // existing env var disable the bypass entirely.
+    let bypass = "--proxy-bypass-list=<-loopback>";
+    match std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") {
+        Some(existing) => {
+            let mut val = existing.to_string_lossy().to_string();
+            if !val.contains("proxy-bypass-list") {
+                val.push(' ');
+                val.push_str(bypass);
+            }
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", val);
+        }
+        None => std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", bypass),
     }
     // v1.12 dev-only watchdog mode: restore the desktop if the parent dies.
     // The watchdog child re-launches this exe with --focus-watchdog <pid>.
