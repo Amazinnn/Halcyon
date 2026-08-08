@@ -35,6 +35,10 @@ export const useUiStore = defineStore("ui", {
     supervisionStatus: "ok" as SupervisionStatus,
     focusSubtitle: "保持节奏，阳光会照到每一片叶子",
     _ticker: null as number | null,
+    // v1.11.1: set while a workflow focus/idle node drives the timer, so its
+    // countdown ending must NOT fire the focus_end workflow trigger (that
+    // would cascade workflow runs unexpectedly).
+    workflowDriven: false,
   }),
   getters: {
     focusMinutes(): number {
@@ -65,9 +69,18 @@ export const useUiStore = defineStore("ui", {
       await listen<{ action: string; seconds: number }>("workflow:system-action", (e) => {
         if (getCurrentWebviewWindow().label !== "desktop") return;
         const { action, seconds } = e.payload;
-        if (action === "focus") this.startFocusFor(Math.max(1, seconds));
-        else if (action === "idle") this.startRestFor(Math.max(1, seconds));
-        else if (action === "ring") this.ringFor(Math.max(1, seconds));
+        if (action === "focus") {
+          // v1.11.1: mark the timer as workflow-driven so its countdown end
+          // never fires the focus_end workflow trigger.
+          this.workflowDriven = true;
+          this.startFocusFor(Math.max(1, seconds));
+        } else if (action === "idle") {
+          this.workflowDriven = true;
+          this.startRestFor(Math.max(1, seconds));
+        } else if (action === "ring") {
+          // v1.11.1: ring once — the engine blocks for the duration.
+          this.ringFor(Math.max(1, seconds));
+        }
       });
       // Agent CLI control plane (v1.5): `focus-cli timer ...` routes through
       // the desktop webview, which runs the action and replies with live state.
@@ -100,6 +113,7 @@ export const useUiStore = defineStore("ui", {
       });
     },
     startFocus() {
+      this.workflowDriven = false;
       this.stopTicker();
       this.focusState = "focus";
       this.timerPaused = false;
@@ -131,16 +145,15 @@ export const useUiStore = defineStore("ui", {
       this.emitTick();
       this._ticker = window.setInterval(() => this.tick(), 1000);
     },
-    /** v1.10.4 (#51): ring N times, once per second (workflow ring node). */
+    /** v1.10.4 (#51): ring N times, once per second (workflow ring node).
+     *  v1.11.1: the engine now blocks for the ring duration, so this only
+     *  rings once per ring node execution — no setTimeout stacking. */
     ringFor(seconds: number) {
       if (this.soundEnabled) playChime();
-      for (let i = 1; i < seconds; i++) {
-        window.setTimeout(() => {
-          if (this.soundEnabled) playChime();
-        }, i * 1000);
-      }
+      void seconds;
     },
     startRest(completed: boolean) {
+      this.workflowDriven = false;
       this.stopTicker();
       this.focusState = "rest";
       this.timerPaused = false;
@@ -157,7 +170,9 @@ export const useUiStore = defineStore("ui", {
         if (this.focusRemainingSec <= 0) {
           this.onPhaseChime();
           window.setTimeout(() => void this.loadTodaySummary(), 600);
-          this.startRest(true);
+          // v1.11.1: a workflow-driven focus countdown ending restarts the
+          // timer state but must not fire the focus_end workflow trigger.
+          this.startRest(this.workflowDriven ? false : true);
           return;
         }
         this.emitTick();

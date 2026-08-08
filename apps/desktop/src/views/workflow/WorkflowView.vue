@@ -344,6 +344,15 @@ async function runCurrent() {
   }
 }
 
+// v1.11.1: manual stop — cancel the engine run immediately and reset the UI
+// state (running flag + node status) without waiting for a runs_changed event.
+function stopCurrent() {
+  if (!store.currentWorkflowId) return;
+  void store.cancel(store.currentWorkflowId);
+  running.value = false;
+  for (const n of nodes.value) n.data.status = "";
+}
+
 async function applyTrigger() {
   triggerEditor.value = false;
   scheduleAutoSave();
@@ -447,8 +456,9 @@ function removeOpt(i: number) {
       <span v-if="nodes.length" class="save-state" :class="{ ok: saveState === 'saved' }">
         {{ saveState === "saved" ? "已保存✓" : "保存中…" }}
       </span>
-      <button class="btn accent" :disabled="!store.currentWorkflowId || running" @click="runCurrent">
-        {{ running ? "运行中…" : "运行" }}
+      <button v-if="running" class="btn danger" @click="stopCurrent">停止</button>
+      <button v-else class="btn accent" :disabled="!store.currentWorkflowId" @click="runCurrent">
+        运行
       </button>
       <span v-if="errorMsg" class="err">{{ errorMsg }}</span>
     </div>
@@ -457,7 +467,7 @@ function removeOpt(i: number) {
       <div class="tr-row">
         <span class="label">触发</span>
         <select class="sel" :value="meta.trigger" @change="setMeta('trigger', ($event.target as HTMLSelectElement).value)">
-          <option value="manual">手动</option>
+          <option value="manual">保存</option>
           <option value="scheduled">定时</option>
           <option value="focus_end">专注结束</option>
           <option value="supervision_alert">监督告警</option>
@@ -785,6 +795,8 @@ function removeOpt(i: number) {
 .ghost:hover { color: var(--text-hi); border-color: var(--accent); }
 .ghost.danger:hover { color: #ff7b72; border-color: #ff7b72; }
 .ghost.off { opacity: 0.5; }
+.btn.danger { background: #b23c3c; border-color: #b23c3c; color: #fff; }
+.btn.danger:hover { background: #c94f4f; }
 .save-state { font-size: 10px; color: var(--text-low); white-space: nowrap; }
 .save-state.ok { color: var(--accent); }
 .err { color: #ff7b72; font-size: 11px; }

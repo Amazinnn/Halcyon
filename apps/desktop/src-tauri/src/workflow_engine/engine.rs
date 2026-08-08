@@ -368,20 +368,41 @@ fn run_node(
         "focus" => {
             let secs = param_i64(node, "seconds").unwrap_or(1).clamp(1, 3600);
             system.focus(secs)?;
+            // v1.11.1: block until the countdown finishes (or cancel), so a
+            // workflow loop matches real time instead of spinning.
+            sleep_wait(secs, cancel)?;
             Ok((json!({ "completed": true, "elapsedSec": secs }), "out".into()))
         }
         "idle" => {
             let secs = param_i64(node, "seconds").unwrap_or(1).clamp(1, 3600);
             system.idle(secs)?;
+            // v1.11.1: same blocking wait as focus (root cause of the endless
+            // ring loop: idle returned instantly and the cycle spun).
+            sleep_wait(secs, cancel)?;
             Ok((json!({ "completed": true, "elapsedSec": secs }), "out".into()))
         }
         "ring" => {
             let secs = param_i64(node, "seconds").unwrap_or(1).clamp(1, 120);
             system.ring(secs)?;
+            // v1.11.1: ring for the requested duration; cancel stops it.
+            sleep_wait(secs, cancel)?;
             Ok((json!({ "played": true, "seconds": secs }), "out".into()))
         }
         other => Err(format!("未知节点类型: {other}")),
     }
+}
+
+/// v1.11.1: sleep for `secs` seconds, polling the cancel flag every 100ms so
+/// long-running workflow nodes (focus/idle/ring) stop promptly on cancel.
+fn sleep_wait(secs: i64, cancel: &AtomicBool) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(secs as u64);
+    while Instant::now() < deadline {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("已取消".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
 }
 
 fn param_str(node: &NodeDef, key: &str) -> Result<String, String> {
@@ -846,15 +867,15 @@ mod tests {
         let system = MockSystem::new("idle");
         let w = wf(
             vec![
-                node("f", "focus", json!({ "seconds": 1500 })),
-                node("i", "idle", json!({ "seconds": 60 })),
-                node("r", "ring", json!({ "seconds": 3 })),
+                node("f", "focus", json!({ "seconds": 1 })),
+                node("i", "idle", json!({ "seconds": 1 })),
+                node("r", "ring", json!({ "seconds": 1 })),
             ],
             vec![edge("f", "out", "i"), edge("i", "out", "r")],
         );
         let out = run(&w, &agent, &system);
         assert_eq!(out.status, RunStatus::Success);
-        assert_eq!(system.calls(), (vec![1500], vec![60], vec![3]));
+        assert_eq!(system.calls(), (vec![1], vec![1], vec![1]));
     }
 
     #[test]
@@ -904,6 +925,22 @@ mod tests {
         let w = wf(vec![node("w", "wait", json!({ "seconds": 5 }))], vec![]);
         let out = execute_run(&w, &char_info(), &agent, &sink, &win, &system, &cancel);
         assert_eq!(out.status, RunStatus::Cancelled);
+    }
+
+    #[test]
+    fn focus_idle_ring_block_and_cancel() {
+        // v1.11.1: focus/idle/ring block until the duration elapses; a set
+        // cancel flag interrupts them immediately (Cancelled).
+        let cancel = AtomicBool::new(true);
+        let agent = MockAgent::new("x");
+        let system = MockSystem::new("idle");
+        let sink = Sink { bubbles: Mutex::new(vec![]) };
+        let win = Win { opened: Mutex::new(vec![]) };
+        for kind in ["focus", "idle", "ring"] {
+            let w = wf(vec![node("f", kind, json!({ "seconds": 60 }))], vec![]);
+            let out = execute_run(&w, &char_info(), &agent, &sink, &win, &system, &cancel);
+            assert_eq!(out.status, RunStatus::Cancelled, "{kind} should cancel");
+        }
     }
 
     #[test]

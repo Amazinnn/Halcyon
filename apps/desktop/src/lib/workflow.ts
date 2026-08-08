@@ -133,7 +133,8 @@ export function emptyWorkflow(characterId: string, name = "新工作流"): Workf
 }
 
 export const TRIGGER_LABELS: Record<string, string> = {
-  manual: "手动",
+  // v1.11.1: "manual" reads as a save toggle to the user — label it 保存.
+  manual: "保存",
   scheduled: "定时",
   focus_end: "专注结束",
   supervision_alert: "监督告警",
