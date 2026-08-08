@@ -16,6 +16,10 @@
 
 ## M1：桌宠与桌面壳层（2026-08-07 现状）
 
+### v1.10.1 拖动卡死修复轮（2026-08-08 实施中，需求 #34，ADR-0013）
+- 根因：拖动 poller 每 15ms set_position → 主线程 WebView2 SetBounds（同步 COM RPC）+ grid 预览每 15ms 全屏渐变，偶发等待浏览器进程 28s（AppHangB1 已验证）。
+- 修复：拖动移动优先原生 SetWindowPos（SWP_ASYNCWINDOWPOS，绕过 SetBounds）；grid:preview 节流 ≥50ms；POLL_MS 15→24；hang-detector STILL_HUNG 每 3s 取证。
+
 ### v1.10 修复轮（2026-08-08 已实现待验收，需求 #30/#31/#32/#33）
 - 工作流入口：移到最左侧视图托盘；+ 菜单移除「内部页」；迁移 0006 清理 internal 卡片。
 - 快速开关窗口卡死：去冗余窗口操作（restore/collapse/topmost/raise/position 去重与节流）+ 前端 150ms 防抖 + `scripts/hang-detector.ps1` 独立检测。

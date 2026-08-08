@@ -43,3 +43,4 @@
 | 31 | 2026-08-08 | 如果频繁打开/多次点击窗口会触发整个Focus卡死，然后我必须结束该进程，这个问题必须彻底修复！ | 已实现（待验收）（v1.10：去冗余窗口操作 + 前端防抖 + hang-detector 回归 + launch-focus.cmd monitor） |
 | 32 | 2026-08-08 | 设置里面点击宠物栏打算更换宠物，宠物更换失败，且桌宠图标的地方出现：SecurityError Failed to execute 'getImageData' on 'CanvasRenderingContext2D': The canvas has been tainted by cross-origin data. | 已实现（待验收）（v1.10：spritesheet 改同源加载 + 淡化 try/catch） |
 | 33 | 2026-08-08 | 我建议你在launch-focus.cmd里面添加一个启动检测脚本的命令，来同步检测是否触发卡死及其原因。 | 已实现（待验收）（v1.10：launch-focus.cmd monitor 同步启动 hang-detector；HUNG 时抓 minidump + 窗口标题/句柄，恢复时记录时长） |
+| 34 | 2026-08-08 | 刚才又出现卡死了，具体是在移动内部页那四个窗口的时候……彻查！！！ | 实施中（v1.10.1：拖动改原生 HWND 移动 + grid 预览 50ms 节流 + poll 24ms + hang-detector STILL_HUNG 取证） |
