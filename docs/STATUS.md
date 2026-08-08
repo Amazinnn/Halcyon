@@ -1,13 +1,14 @@
 # Focus Desktop 当前状态（压缩交接页）
 
-> 更新：2026-08-08（v1.11 已实现待验收：#67 + 空角色合法化 + Agent 节点级目标 + JSON 文档/CLI，ADR-0020；v1.10.5.1（#64–#66，ADR-0019）已被 v1.11 部分推翻（孤儿挂回→删除）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
+> 更新：2026-08-08（v1.11.1 已实现待验收：#68 环状工作流修复，ADR-0021；v1.11（#67，ADR-0020）已实现待验收；v1.10.5.1（#64–#66，ADR-0019）已被 v1.11 部分推翻（孤儿挂回→删除）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，MIT）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
 
-## 当前版本与已验证清单（v1.11 已实现待验收；前序 v1.10.5.1 及更早已实现待验收）
+## 当前版本与已验证清单（v1.11.1 已实现待验收；前序 v1.11/v1.10.5.1 及更早已实现待验收）
+- v1.11.1（环状工作流执行语义修复，已实现待验收，需求 #68，ADR-0021）：focus/idle/ring 节点引擎侧阻塞等待（发事件后 sleep 到时长，100ms 轮询 cancel，取消立即中断）；顶部「停止」按钮（立即 cancel + 复位 UI，运行中「运行」↔「停止」互斥）；ringFor 单次响铃（不再 setTimeout 排秒叠加）+ playChime 时间戳/音量修正（防串音/破音）；屏蔽工作流 focus 倒计时归零触发 focus_end 联动（workflowDriven 标记）；触发标签「手动」→「保存」。根因：环飞快空转（focus/idle/ring 不阻塞）+ 无停止入口 + setTimeout 叠加声浪 + 系统卡死。
 - v1.11（工作流退化为 Agent 日程工具，已实现待验收，需求 #67，ADR-0020）：空角色合法化（save 不挂回 / 删 repair_orphan / list 空串=全部含未绑定）；Agent 节点级目标（节点 `characterId` 参数 + 前端目标Agent下拉，含 Agent 节点=必然绑定）；JSON 文档 + focus-cli `workflow read/create/update/delete --payload`（Agent 只经 CLI 增删改查 JSON，JSON=唯一真相、画布=渲染器）；`workflow:changed` 事件广播；白名单放行 workflow 全部子命令（Agent=Boss）；孤儿测试数据删库清理（#62 不向后兼容）。推翻 ADR-0019 §4（孤儿挂回）。前端列表形态 M5 再做。
 - v1.10.5.1（修复轮，已实现待验收，需求 #64–#66 + 三样修复，ADR-0019）：存档角色绑定、连线箭头改 Vue Flow 原生 MarkerType.ArrowClosed、隐藏数字框 spinner。注意：v1.10.5.1 的「空角色挂默认 / 孤儿挂回」部分已被 v1.11 推翻（改空角色合法化）。
 - v1.10.5（工作流画布收敛轮，已实现待验收，需求 #59–#63，ADR-0018）：7 类节点（移除气泡/IF）；参数面板词条卡片化 + 零变量（{{}} 仅引擎内部）；Agent=唯一展示通道（返回即展示对话框一条消息 + 宠物泡泡，输出纪律提示词）；自动保存竞态修复（save 先刷新列表再改 id + selfSave）；启动 purge 不兼容旧工作流（绝对不向后兼容 #62）。
@@ -60,13 +61,13 @@
 - M1 剩余：系统托盘（可做）；全局快捷键绑定**暂缓**（需求 #19，开发完成前不绑）。Agent 状态模拟器完善。
 - M2：统计真实化（v1.8）已实现；本地音乐播放器（v1.9）已实现。
 - M3 剩余：plan mode / Diff / 终端面板 / Claude Code 接入。
-- M4：内置工作流引擎（精简 n8n）——2026-08-07 方向锁定（#26/#28/#29），v1.10.5 已收敛为 7 类节点并实现（ADR-0012/0017/0018）；2026-08-08 起冻结不再更新（#64，ADR-0019），**2026-08-08 v1.11 退化为 Agent 日程工具**（ADR-0020：空角色合法化 / 节点级目标 / JSON 文档+CLI 通道）。
+- M4：内置工作流引擎（精简 n8n）——2026-08-07 方向锁定（#26/#28/#29），v1.10.5 已收敛为 7 类节点并实现（ADR-0012/0017/0018）；2026-08-08 起冻结不再更新（#64，ADR-0019），**v1.11 退化为 Agent 日程工具**（ADR-0020：空角色合法化 / 节点级目标 / JSON 文档+CLI 通道），**v1.11.1 修复环状执行语义**（ADR-0021：focus/idle/ring 阻塞 + 停止按钮 + 响铃正确性）。
 - M5：新的 Agent（外部 Agent 驱动的角色循环）——2026-08-07 已锁定方向（#27）：内核驱动 / 事件+兜底 / 先单角色；Journal/Task 全家桶保持外接 skill 不内置；**未实施**。2026-08-08 Agent 概念定稿（#65，ADR-0019）：每宠物↔一个 Agent、共享对话框、切换替换上下文、过去一天上下文存储但 UI 清空；v1.11 已铺后端地基（JSON 文档 + focus-cli CRUD + workflow:changed 事件 + 节点级角色，ADR-0020），细节 TBD。
 - 悬而未决：图标区是否恢复拖动（当前为居中 2×5 固定）；多屏验证；毛玻璃在部分驱动下透明性（FOCUS_NO_ACRYLIC=1 降级开关）。
 
 ## 文档索引
 
-- 需求原话：docs/requirements-verbatim.md（#1–#67，只追加、不改历史原话）。
-- ADR：docs/decisions/ADR-0001~0020（0012=M4 工作流引擎；0017=工作流 v2；0018=画布收敛；0019=Agent 概念+工作流冻结；0020=工作流退化为 Agent 日程工具）。
+- 需求原话：docs/requirements-verbatim.md（#1–#68，只追加、不改历史原话）。
+- ADR：docs/decisions/ADR-0001~0021（0012=M4 工作流引擎；0017=工作流 v2；0018=画布收敛；0019=Agent 概念+工作流冻结；0020=工作流退化为 Agent 日程工具；0021=环状工作流执行语义）。
 - 设计稿：local-focus-desktop-agent-design-v0.2.md（权威，保持原样、不移动、不改章节编号）。
 - 其它：README.md（版本摘要）、docs/next-phase.md（路线）、docs/architecture/（spike/风险/可行性）。
