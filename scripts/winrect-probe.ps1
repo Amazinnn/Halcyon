@@ -20,18 +20,24 @@ public static class WinRectProbe {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT r);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int max);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
-  public class WinInfo { public int L, T, R, B; public string Title; public int W { get { return R - L; } } public int H { get { return B - T; } } }
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT pt);
+  public class WinInfo { public int L, T, R, B, CL, CT, CR, CB, CLSX, CLSY; public string Title; public int W { get { return R - L; } } public int H { get { return B - T; } } public int CW { get { return CR - CL; } } public int CH { get { return CB - CT; } } }
   public static List<WinInfo> List(uint pid) {
     var res = new List<WinInfo>();
     EnumWindows((h, l) => {
       uint p; GetWindowThreadProcessId(h, out p);
       if (p == pid && IsWindowVisible(h)) {
         RECT r; GetWindowRect(h, out r);
+        RECT cr; GetClientRect(h, out cr);
         var sb = new StringBuilder(256);
         GetWindowText(h, sb, 256);
-        res.Add(new WinInfo { L = r.Left, T = r.Top, R = r.Right, B = r.Bottom, Title = sb.ToString() });
+        POINT co = new POINT();
+        ClientToScreen(h, ref co);
+        res.Add(new WinInfo { L = r.Left, T = r.Top, R = r.Right, B = r.Bottom, CL = cr.Left, CT = cr.Top, CR = cr.Right, CB = cr.Bottom, CLSX = co.X, CLSY = co.Y, Title = sb.ToString() });
       }
       return true;
     }, IntPtr.Zero);
@@ -88,18 +94,19 @@ foreach ($label in $labels) {
     $fail = 1
     continue
   }
-  $dx = $best.L - $ex
-  $dy = $best.T - $ey
-  $dw = $best.W - $ew
-  $dh = $best.H - $eh
-  $acx = $best.L + $best.W / 2.0
-  $acy = $best.T + $best.H / 2.0
+  # content (client) rect must sit exactly on the grid cell
+  $dx = $best.CLSX - $ex
+  $dy = $best.CLSY - $ey
+  $dw = $best.CW - $ew
+  $dh = $best.CH - $eh
+  $acx = $best.CLSX + $best.CW / 2.0
+  $acy = $best.CLSY + $best.CH / 2.0
   $cdx = $acx - $ecx
   $cdy = $acy - $ecy
   $ok = ([Math]::Abs($dx) -le 1) -and ([Math]::Abs($dy) -le 1) -and ([Math]::Abs($dw) -le 1) -and ([Math]::Abs($dh) -le 1) -and ([Math]::Abs($cdx) -le 1) -and ([Math]::Abs($cdy) -le 1)
   if (-not $ok) { $fail = 1 }
   $verdict = $(if ($ok) { 'OK' } else { 'FAIL' })
-  Write-Output ("{0}: {1}  actual=({2},{3} {4}x{5}) expected=({6:N1},{7:N1} {8:N1}x{9:N1}) diff=(x{10:+0;-0} y{11:+0;-0} w{12:+0;-0} h{13:+0;-0}) center=(dx{14:+0.0;-0.0} dy{15:+0.0;-0.0})" -f $label, $verdict, $best.L, $best.T, $best.W, $best.H, $ex, $ey, $ew, $eh, $dx, $dy, $dw, $dh, $cdx, $cdy)
+  Write-Output ("{0}: {1}  clientOrigin=({2},{3} {4}x{5}) outer=({6},{7} {8}x{9}) expected=({10:N1},{11:N1} {12:N1}x{13:N1}) diff=(x{14:+0;-0} y{15:+0;-0} w{16:+0;-0} h{17:+0;-0}) center=(dx{18:+0.0;-0.0} dy{19:+0.0;-0.0})" -f $label, $verdict, $best.CLSX, $best.CLSY, $best.CW, $best.CH, $best.L, $best.T, $best.W, $best.H, $ex, $ey, $ew, $eh, $dx, $dy, $dw, $dh, $cdx, $cdy)
 }
 Write-Output ("RESULT: " + $(if ($fail -eq 0) { 'PASS' } else { 'FAIL' }))
 exit $fail

@@ -94,14 +94,19 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
         let scale = w.scale_factor().unwrap_or(1.0);
         let (px, py) = ((x * scale).round() as i32, (y * scale).round() as i32);
         let (pwp, php) = ((wpx * scale).round() as u32, (hpx * scale).round() as u32);
-        let same = w.outer_position().map(|p| (p.x, p.y)).ok() == Some((px, py))
+        // v1.10.3.1 (#48): position the *client* origin at the grid-cell
+        // origin so the visible content is centered on the cell even when
+        // the host window keeps a non-client frame (ncdelta ~15x9).
+        let (ox, oy) = client_origin_offset(&w);
+        let (cx, cy) = (px - ox, py - oy);
+        let same = w.outer_position().map(|p| (p.x, p.y)).ok() == Some((cx, cy))
             && w.outer_size().map(|s| (s.width, s.height)).ok() == Some((pwp, php));
         if !same {
             // v1.10.2 (#35, ADR-0014): position changes move the native HWND
             // (no WebView2 SetBounds RPC per call); size changes still go
             // through the webview so the renderer relayouts.
-            if !crate::drag::move_window_raw(&w, px, py) {
-                let _ = w.set_position(LogicalPosition::new(x, y));
+            if !crate::drag::move_window_raw(&w, cx, cy) {
+                let _ = w.set_position(LogicalPosition::new(x - ox as f64 / scale, y - oy as f64 / scale));
             }
             let _ = w.set_size(LogicalSize::new(wpx, hpx));
         }
@@ -1133,6 +1138,75 @@ fn quit_app(app: tauri::AppHandle) {
 
 
 /// v1.10.3.1 (#46): physical initial rect for a float at its saved grid slot.
+
+/// v1.10.3.1 (#48): strip WS_BORDER|WS_DLGFRAME from float windows. tauri's
+/// decorations(false) still leaves caption-style bits on the host window, so
+/// the outer rect is ~15x9px larger than the client (grid) size and the
+/// content center drifts from the grid-cell center. Removing them makes
+/// outer == client and the window exactly matches its grid rect.
+fn strip_float_frame(w: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
+            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER, WS_DLGFRAME, WS_MAXIMIZEBOX,
+            WS_MINIMIZEBOX, WS_SYSMENU,
+        };
+        if let Ok(hwnd) = w.hwnd() {
+            let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
+            unsafe {
+                let style = GetWindowLongPtrW(hwnd_win, GWL_STYLE);
+                let mask = !((WS_BORDER.0 as isize)
+                    | (WS_DLGFRAME.0 as isize)
+                    | (WS_SYSMENU.0 as isize)
+                    | (WS_MINIMIZEBOX.0 as isize)
+                    | (WS_MAXIMIZEBOX.0 as isize));
+                let new_style = style & mask;
+                if new_style != style {
+                    let _ = SetWindowLongPtrW(hwnd_win, GWL_STYLE, new_style);
+                    let _ = SetWindowPos(
+                        hwnd_win,
+                        None,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                    );
+                }
+            }
+        }
+    }
+}
+
+
+/// v1.10.3.1 (#48): physical offset of the client-area origin from the window
+/// origin (non-client border). Used to position the *content* exactly at the
+/// grid-cell origin even if the host window keeps a non-client frame.
+fn client_origin_offset(w: &tauri::WebviewWindow) -> (i32, i32) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::{HWND, POINT, RECT};
+        use windows::Win32::Graphics::Gdi::ClientToScreen;
+        use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
+        if let Ok(hwnd) = w.hwnd() {
+            let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
+            unsafe {
+                let mut wr = RECT::default();
+                let mut cr = RECT::default();
+                if GetWindowRect(hwnd_win, &mut wr).is_ok() && GetClientRect(hwnd_win, &mut cr).is_ok() {
+                    let mut pt = POINT { x: cr.left, y: cr.top };
+                    if ClientToScreen(hwnd_win, &mut pt).as_bool() {
+                        return (pt.x - wr.left, pt.y - wr.top);
+                    }
+                }
+            }
+        }
+    }
+    (0, 0)
+}
+
 fn initial_float_rect(
     grid: &std::collections::HashMap<String, GridRect>,
     collapsed: &[String],
@@ -1172,8 +1246,9 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(chat_px, chat_py)
         .inner_size(chat_pw, chat_ph)
-        .visible(!chat_collapsed) // v1.10.3.1 (#46)
+                        .visible(!chat_collapsed) // v1.10.3.1 (#46)
         .build()?;
+    strip_float_frame(&chat);
 
     let (stats_px, stats_py, stats_pw, stats_ph, stats_collapsed) =
         initial_float_rect(&grid, &collapsed, &gm, "stats", GridRect { col: 0, row: 0, cols: 2, rows: 2 });
@@ -1187,8 +1262,9 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(stats_px, stats_py)
         .inner_size(stats_pw, stats_ph)
-        .visible(!stats_collapsed) // v1.10.3.1 (#46)
+                        .visible(!stats_collapsed) // v1.10.3.1 (#46)
         .build()?;
+    strip_float_frame(&stats);
 
     let (music_px, music_py, music_pw, music_ph, music_collapsed) =
         initial_float_rect(&grid, &collapsed, &gm, "music", GridRect { col: 0, row: 0, cols: 2, rows: 2 });
@@ -1202,8 +1278,9 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(music_px, music_py)
         .inner_size(music_pw, music_ph)
-        .visible(!music_collapsed) // v1.10.3.1 (#46)
+                        .visible(!music_collapsed) // v1.10.3.1 (#46)
         .build()?;
+    strip_float_frame(&music);
 
     let (pet_px, pet_py, pet_pw, pet_ph, pet_collapsed) =
         initial_float_rect(&grid, &collapsed, &gm, "pet", GridRect { col: 0, row: 0, cols: 2, rows: 2 });
@@ -1217,8 +1294,9 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(pet_px, pet_py)
         .inner_size(pet_pw, pet_ph)
-        .visible(!pet_collapsed) // v1.10.3.1 (#46)
+                        .visible(!pet_collapsed) // v1.10.3.1 (#46)
         .build()?;
+    strip_float_frame(&pet);
 
     let (workflow_px, workflow_py, workflow_pw, workflow_ph, workflow_collapsed) =
         initial_float_rect(&grid, &collapsed, &gm, "workflow", GridRect { col: 4, row: 2, cols: 4, rows: 3 });
@@ -1232,8 +1310,9 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(workflow_px, workflow_py)
         .inner_size(workflow_pw, workflow_ph)
-        .visible(!workflow_collapsed) // v1.10.3.1 (#46)
+                        .visible(!workflow_collapsed) // v1.10.3.1 (#46)
         .build()?;
+    strip_float_frame(&workflow);
 
     let overlay = tauri::WebviewWindowBuilder::new(app, "grid-overlay", url.clone())
         .title("Grid Overlay")
