@@ -1143,16 +1143,57 @@ fn quit_app(app: tauri::AppHandle) {
 /// decorations(false) still leaves caption-style bits on the host window, so
 /// the outer rect is ~15x9px larger than the client (grid) size and the
 /// content center drifts from the grid-cell center. Removing them makes
-/// outer == client and the window exactly matches its grid rect.
+/// Original window procs saved when `strip_float_frame` subclasses a float
+/// window (keyed by HWND). Messages we do not handle are chained to them.
+static SUBCLASS_ORIGINALS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<isize, isize>>> =
+    std::sync::OnceLock::new();
+
+/// v1.10.4 (#49): float-window subclass. Windows 10/11 keeps a 13x8px
+/// invisible non-client band (SM_CXSIZEFRAME) around borderless top-level
+/// windows; it is painted with the default white background and shows up as
+/// the "white web page edge". Returning 0 from WM_NCCALCSIZE makes the client
+/// area equal to the full window, and WM_ERASEBKGND -> 1 stops white flashes.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn float_wnd_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::UI::WindowsAndMessaging::{CallWindowProcW, DefWindowProcW, WNDPROC};
+    const WM_NCCALCSIZE: u32 = 0x0083;
+    const WM_ERASEBKGND: u32 = 0x0014;
+    if msg == WM_NCCALCSIZE {
+        return LRESULT(0);
+    }
+    if msg == WM_ERASEBKGND {
+        return LRESULT(1);
+    }
+    let original: WNDPROC = SUBCLASS_ORIGINALS
+        .get()
+        .and_then(|m| m.lock().ok())
+        .and_then(|m| m.get(&(hwnd.0 as isize)).copied())
+        .map(|p| std::mem::transmute::<isize, WNDPROC>(p))
+        .unwrap_or(None);
+    if let Some(orig) = original {
+        CallWindowProcW(Some(orig), hwnd, msg, wparam, lparam)
+    } else {
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
+
+/// Strip the system frame from a float window so that outer == client and the
+/// window exactly matches its grid rect (no white edge, #49).
 fn strip_float_frame(w: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::Foundation::RECT;
+        use windows::Win32::Foundation::{HWND, POINT, RECT};
+        use windows::Win32::Graphics::Gdi::ClientToScreen;
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetClientRect, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE,
-            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER, WS_DLGFRAME,
-            WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+            GetClientRect, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWLP_WNDPROC,
+            GWL_STYLE, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER,
+            WS_DLGFRAME, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
         };
         if let Ok(hwnd) = w.hwnd() {
             let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
@@ -1163,34 +1204,61 @@ fn strip_float_frame(w: &tauri::WebviewWindow) {
                     | (WS_SYSMENU.0 as isize)
                     | (WS_MINIMIZEBOX.0 as isize)
                     | (WS_MAXIMIZEBOX.0 as isize));
-                // v1.10.4 (#49): force WS_POPUP so the host window has zero
-                // non-client area, then reset the outer size to the client
-                // size (outer == client, no white system-drawn band).
+                // v1.10.4 (#49): force WS_POPUP so no caption/edge styles remain.
                 let new_style = (style & mask) | (WS_POPUP.0 as isize);
                 if new_style != style {
                     let _ = SetWindowLongPtrW(hwnd_win, GWL_STYLE, new_style);
-                    let mut cr = RECT::default();
-                    if GetClientRect(hwnd_win, &mut cr).is_ok() {
-                        let _ = SetWindowPos(
-                            hwnd_win,
-                            None,
-                            0,
-                            0,
-                            cr.right,
-                            cr.bottom,
-                            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOZORDER,
-                        );
-                    } else {
-                        let _ = SetWindowPos(
-                            hwnd_win,
-                            None,
-                            0,
-                            0,
-                            0,
-                            0,
-                            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-                        );
-                    }
+                }
+                // Capture the desired content rect (client origin + client size,
+                // already aligned to the grid) BEFORE installing the subclass:
+                // after WM_NCCALCSIZE returns 0 the client equals the full
+                // window, so we re-apply this rect as the window rect.
+                let mut cr = RECT::default();
+                let mut pt = POINT { x: 0, y: 0 };
+                let desired = if GetClientRect(hwnd_win, &mut cr).is_ok()
+                    && ClientToScreen(hwnd_win, &mut pt).as_bool()
+                {
+                    Some((pt.x, pt.y, cr.right, cr.bottom))
+                } else {
+                    None
+                };
+                // Install the no-non-client subclass (keeps working for every
+                // subsequent move/resize because it lives on the HWND).
+                let original = GetWindowLongPtrW(hwnd_win, GWLP_WNDPROC);
+                let proc_ptr: unsafe extern "system" fn(
+                    windows::Win32::Foundation::HWND,
+                    u32,
+                    windows::Win32::Foundation::WPARAM,
+                    windows::Win32::Foundation::LPARAM,
+                ) -> windows::Win32::Foundation::LRESULT = float_wnd_proc;
+                let _ = SetWindowLongPtrW(hwnd_win, GWLP_WNDPROC, proc_ptr as isize);
+                if original != 0 {
+                    SUBCLASS_ORIGINALS
+                        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+                        .lock()
+                        .unwrap()
+                        .insert(hwnd.0 as isize, original);
+                }
+                if let Some((x, y, w, h)) = desired {
+                    let _ = SetWindowPos(
+                        hwnd_win,
+                        None,
+                        x,
+                        y,
+                        w,
+                        h,
+                        SWP_FRAMECHANGED | SWP_NOZORDER,
+                    );
+                } else {
+                    let _ = SetWindowPos(
+                        hwnd_win,
+                        None,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                    );
                 }
             }
         }
