@@ -1,4 +1,5 @@
-# winrect-probe.ps1 - objective grid-alignment probe for Focus Desktop (v1.10.3.1, #48).
+# winrect-probe.ps1 - objective grid-alignment probe for Focus Desktop (v1.10.4, #48/#49).
+# v1.10.4: also checks ncdelta (outer frame - client area <= 1px, white-edge #49).
 # Prints each float window's actual rect vs expected rect (from settings.json)
 # and checks the window center against the grid-cell center.
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\winrect-probe.ps1
@@ -103,10 +104,14 @@ foreach ($label in $labels) {
   $acy = $best.CLSY + $best.CH / 2.0
   $cdx = $acx - $ecx
   $cdy = $acy - $ecy
-  $ok = ([Math]::Abs($dx) -le 1) -and ([Math]::Abs($dy) -le 1) -and ([Math]::Abs($dw) -le 1) -and ([Math]::Abs($dh) -le 1) -and ([Math]::Abs($cdx) -le 1) -and ([Math]::Abs($cdy) -le 1)
+  # v1.10.4 (#49): non-client delta = outer frame - client area; WS_POPUP
+  # floats must have no visible white frame around the WebView content.
+  $ncw = $best.W - $best.CW
+  $nch = $best.H - $best.CH
+  $ok = ([Math]::Abs($dx) -le 1) -and ([Math]::Abs($dy) -le 1) -and ([Math]::Abs($dw) -le 1) -and ([Math]::Abs($dh) -le 1) -and ([Math]::Abs($cdx) -le 1) -and ([Math]::Abs($cdy) -le 1) -and ([Math]::Abs($ncw) -le 1) -and ([Math]::Abs($nch) -le 1)
   if (-not $ok) { $fail = 1 }
   $verdict = $(if ($ok) { 'OK' } else { 'FAIL' })
-  Write-Output ("{0}: {1}  clientOrigin=({2},{3} {4}x{5}) outer=({6},{7} {8}x{9}) expected=({10:N1},{11:N1} {12:N1}x{13:N1}) diff=(x{14:+0;-0} y{15:+0;-0} w{16:+0;-0} h{17:+0;-0}) center=(dx{18:+0.0;-0.0} dy{19:+0.0;-0.0})" -f $label, $verdict, $best.CLSX, $best.CLSY, $best.CW, $best.CH, $best.L, $best.T, $best.W, $best.H, $ex, $ey, $ew, $eh, $dx, $dy, $dw, $dh, $cdx, $cdy)
+  Write-Output ("{0}: {1}  clientOrigin=({2},{3} {4}x{5}) outer=({6},{7} {8}x{9}) expected=({10:N1},{11:N1} {12:N1}x{13:N1}) diff=(x{14:+0;-0} y{15:+0;-0} w{16:+0;-0} h{17:+0;-0}) center=(dx{18:+0.0;-0.0} dy{19:+0.0;-0.0}) ncdelta=(w{20:+0;-0} h{21:+0;-0})" -f $label, $verdict, $best.CLSX, $best.CLSY, $best.CW, $best.CH, $best.L, $best.T, $best.W, $best.H, $ex, $ey, $ew, $eh, $dx, $dy, $dw, $dh, $cdx, $cdy, $ncw, $nch)
 }
 Write-Output ("RESULT: " + $(if ($fail -eq 0) { 'PASS' } else { 'FAIL' }))
 exit $fail
