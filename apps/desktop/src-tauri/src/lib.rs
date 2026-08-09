@@ -1937,15 +1937,23 @@ pub fn run() {
         let pid: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         if pid != 0 {
             unsafe {
-                use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+                use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
                 use windows::Win32::System::Threading::{
                     OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+                    PROCESS_SYNCHRONIZE,
                 };
-                if let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                // PROCESS_SYNCHRONIZE is required for WaitForSingleObject on a process
+                // handle; PROCESS_QUERY_LIMITED_INFORMATION alone yields
+                // WAIT_FAILED on modern Windows and the watchdog would exit
+                // before the parent actually dies.
+                let access = PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION;
+                if let Ok(h) = OpenProcess(access, false, pid) {
                     loop {
-                        // WAIT_TIMEOUT = parent still alive; else dead.
-                        let r = WaitForSingleObject(h, 0);
-                        if r != WAIT_TIMEOUT {
+                        // WAIT_OBJECT_0 = parent dead (signaled). Any other
+                        // return (WAIT_TIMEOUT, WAIT_FAILED) means the parent
+                        // is still around; poll again so the watchdog only
+                        // restores the shell after the parent actually dies.
+                        if WaitForSingleObject(h, 0) == WAIT_OBJECT_0 {
                             break;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(1000));
