@@ -1,18 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
-const { invoke, listen } = vi.hoisted(() => ({
+const { emit, invoke, listen } = vi.hoisted(() => ({
+  emit: vi.fn(),
   invoke: vi.fn(),
   listen: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ listen }));
+vi.mock("@tauri-apps/api/event", () => ({ emit, listen }));
 
 import { useAgentStore } from "./agent";
 
 describe("workflow result messages", () => {
-  const handlers = new Map<string, (event: { payload: unknown }) => void>();
+  const handlers = new Map<string, ((event: { payload: unknown }) => void)[]>();
   const storage = new Map<string, string>();
 
   beforeEach(() => {
@@ -21,10 +22,14 @@ describe("workflow result messages", () => {
     storage.clear();
     storage.set("focus-agent", "char-a");
     invoke.mockReset();
+    emit.mockReset();
     listen.mockReset();
     listen.mockImplementation(async (event: string, handler: (event: { payload: unknown }) => void) => {
-      handlers.set(event, handler);
+      (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler);
       return () => undefined;
+    });
+    emit.mockImplementation(async (event: string, payload: unknown) => {
+      for (const handler of handlers.get(event) ?? []) handler({ payload });
     });
     invoke.mockImplementation(async (command: string) => {
       if (command === "characters_list") {
@@ -58,8 +63,8 @@ describe("workflow result messages", () => {
     await agent.init();
     agent.messages = [];
 
-    const resultHandler = handlers.get("workflow:agent_result");
-    const bubbleHandler = handlers.get("bubble:requested");
+    const resultHandler = handlers.get("workflow:agent_result")?.[0];
+    const bubbleHandler = handlers.get("bubble:requested")?.[0];
     expect(resultHandler).toBeDefined();
     expect(bubbleHandler).toBeDefined();
     if (!resultHandler || !bubbleHandler) return;
@@ -93,5 +98,33 @@ describe("workflow result messages", () => {
     await agent.selectCharacter("char-a");
     await agent.selectCharacter("char-b");
     expect(agent.messages.filter((message) => message.source)).toEqual([]);
+  });
+
+  it("shows a pending target Agent result in the separate Pet store after Chat broadcasts selection", async () => {
+    const chatPinia = createPinia();
+    setActivePinia(chatPinia);
+    const chat = useAgentStore();
+    await chat.init();
+
+    const petPinia = createPinia();
+    setActivePinia(petPinia);
+    const pet = useAgentStore();
+    await pet.init();
+    expect(chat.characterId).toBe("char-a");
+    expect(pet.characterId).toBe("char-a");
+
+    await emit("workflow:agent_result", {
+      workflowId: "wf-char-b",
+      workflowName: "Targeted result",
+      agentId: "char-b",
+      text: "Only the selected pet should show this",
+    });
+    expect(pet.bubble).toBeNull();
+
+    setActivePinia(chatPinia);
+    await chat.selectCharacter("char-b");
+
+    expect(pet.characterId).toBe("char-b");
+    expect(pet.bubble).toMatchObject({ text: "Only the selected pet should show this", priority: "normal" });
   });
 });

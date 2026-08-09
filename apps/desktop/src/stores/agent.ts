@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import type { AgentEventEnvelope, AgentState, PetReaction } from "@focus/event-schema";
 
 export interface ChatMessage {
@@ -107,7 +107,7 @@ export const useAgentStore = defineStore("agent", {
             const saved = localStorage.getItem("focus-agent");
             const target = saved && chars.some((c) => c.id === saved) ? saved : chars[0].id;
             if (target !== this.characterId) {
-              await this.selectCharacter(target);
+              await this.selectCharacter(target, false);
             }
             return;
           }
@@ -118,7 +118,7 @@ export const useAgentStore = defineStore("agent", {
       }
     },
     /** M5 (ADR-0022): switch Agent = replace the dialog context immediately. */
-    async selectCharacter(id: string) {
+    async selectCharacter(id: string, broadcast = true) {
       if (!id || id === this.characterId) return;
       this.characterId = id;
       // M5: remember the choice across restarts.
@@ -137,6 +137,7 @@ export const useAgentStore = defineStore("agent", {
       for (const result of pending) this.appendWorkflowResult(result);
       const latest = pending[pending.length - 1];
       if (latest) this.showBubble(latest.text, "normal");
+      if (broadcast) await emit("agent:selected", { characterId: id });
     },
     async init() {
       if (this.initialized) return;
@@ -172,6 +173,9 @@ export const useAgentStore = defineStore("agent", {
           return;
         }
         (this.pendingWorkflowResults[e.payload.agentId] ??= []).push(e.payload);
+      });
+      await listen<{ characterId: string }>("agent:selected", (e) => {
+        void this.selectCharacter(e.payload.characterId, false);
       });
       await this.refreshStatus();
       await this.refreshSkills();
