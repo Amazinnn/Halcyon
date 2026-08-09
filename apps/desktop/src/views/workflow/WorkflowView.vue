@@ -24,8 +24,6 @@ const nodes = ref<any[]>([]);
 const edges = ref<any[]>([]);
 const selectedNodeId = ref<string | null>(null);
 const errorMsg = ref("");
-const copyTarget = ref<{ id: string; action: "copy" | "move" } | null>(null);
-const copyCharId = ref("");
 const triggerEditor = ref(false);
 const running = ref(false);
 const nodeStatus = ref<Record<string, string>>({});
@@ -126,15 +124,13 @@ function loadDraft(wf: WorkflowDef | null) {
   errorMsg.value = "";
 }
 
-function toDraft(): WorkflowDef | null {
-  // v1.10.5.1 (#66): never create invisible orphan data without a role.
-  if (!store.currentCharacterId) return null;
+function toDraft(): WorkflowDef {
   const base = editingId.value
     ? store.workflows.find((w) => w.id === editingId.value)
     : null;
   const draft: WorkflowDef = base
     ? JSON.parse(JSON.stringify(base))
-    : emptyWorkflow(store.currentCharacterId ?? "");
+    : emptyWorkflow();
   draft.name = meta.value.name.trim() || "新工作流";
   draft.trigger = meta.value.trigger;
   draft.scheduleType = meta.value.scheduleType;
@@ -167,12 +163,6 @@ async function saveNow() {
   saveTimer = null;
   if (nodes.value.length === 0) return; // empty canvas has nothing to persist
   const draft = toDraft();
-  if (!draft) {
-    // v1.10.5.1 (#66): no role selected - block the save instead of losing it.
-    errorMsg.value = "请先选择角色再编辑工作流";
-    saveState.value = "saved";
-    return;
-  }
   selfSave = true;
   try {
     const saved = await store.save(draft);
@@ -204,8 +194,8 @@ onMounted(async () => {
 });
 
 watch(
-  () => [store.currentCharacterId, store.currentWorkflowId] as const,
-  ([, wfId]) => {
+  () => store.currentWorkflowId,
+  (wfId) => {
     // v1.10.5 (#59): never reload for our own auto-save (keeps the node and
     // the in-progress selection); only external switches reload.
     if (selfSave || wfId === editingId.value) return;
@@ -293,7 +283,14 @@ function addNode(kind: string) {
     id: "n" + Date.now() + "-" + len,
     type: "workflow",
     position: { x: 60 + (len % 4) * 240, y: 60 + Math.floor(len / 4) * 160 },
-    data: { kind, params: defaultParams(kind), status: "" },
+    data: {
+      kind,
+      params: defaultParams(kind, {
+        characters: store.characters,
+        persistedAgentId: localStorage.getItem("focus-agent"),
+      }),
+      status: "",
+    },
   };
   nodes.value.push(n);
   selectedNodeId.value = n.id;
@@ -360,25 +357,8 @@ async function applyTrigger() {
 
 function newDraft() {
   flushAutoSave();
-  if (!store.currentCharacterId) return;
   void store.selectWorkflow(null);
   loadDraft(null);
-}
-
-function startCopy(w: { id: string; characterId: string }, action: "copy" | "move") {
-  copyTarget.value = { id: w.id, action };
-  const other = store.characters.find((c) => c.id !== w.characterId);
-  copyCharId.value = other?.id ?? store.characters[0]?.id ?? "";
-}
-
-async function confirmCopy() {
-  if (!copyTarget.value || !copyCharId.value) return;
-  try {
-    await store.copyTo(copyTarget.value.id, copyCharId.value, copyTarget.value.action === "move");
-    copyTarget.value = null;
-  } catch (e) {
-    errorMsg.value = String(e);
-  }
 }
 
 async function toggleEnabled(w: { id: string; enabled: boolean }) {
@@ -440,14 +420,6 @@ function removeOpt(i: number) {
   <div class="wf-window">
     <WindowHeader :title="currentName" collapsible />
     <div class="wf-top">
-      <span class="label">角色</span>
-      <select
-        class="sel"
-        :value="store.currentCharacterId ?? ''"
-        @change="store.selectCharacter(($event.target as HTMLSelectElement).value)"
-      >
-        <option v-for="c in store.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
-      </select>
       <span class="sep" />
       <button class="badge-btn" :class="{ on: currentWf }" @click="triggerEditor = !triggerEditor">
         {{ currentBadge }}
@@ -548,17 +520,8 @@ function removeOpt(i: number) {
             <button class="ghost" :class="{ off: !w.enabled }" @click.stop="toggleEnabled(w)">{{ w.enabled ? "开" : "关" }}</button>
             <button class="ghost" @click.stop="void store.run(w.id)">▶</button>
             <button class="ghost" @click.stop="void store.cancel(w.id)">停</button>
-            <button class="ghost" @click.stop="startCopy(w, 'copy')">复制</button>
-            <button class="ghost" @click.stop="startCopy(w, 'move')">迁移</button>
             <button class="ghost danger" @click.stop="removeWorkflow(w)">删</button>
           </div>
-        </div>
-        <div v-if="copyTarget" class="copy-box">
-          <select v-model="copyCharId" class="sel">
-            <option v-for="c in store.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
-          </select>
-          <button class="btn accent" @click="confirmCopy">确认{{ copyTarget.action === "move" ? "迁移" : "复制" }}</button>
-          <button class="ghost" @click="copyTarget = null">取消</button>
         </div>
       </aside>
 
@@ -616,7 +579,6 @@ function removeOpt(i: number) {
                   :value="String(sp.characterId ?? '')"
                   @change="setParam('characterId', ($event.target as HTMLSelectElement).value)"
                 >
-                  <option value="">工作流默认</option>
                   <option v-for="c in store.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
                 </select>
                 <label>提示词（身份由 AGENTS.md 提供，输出纪律系统注入）</label>
@@ -630,14 +592,6 @@ function removeOpt(i: number) {
                   等待结果（取消则发完即走、不展示）
                 </label>
                 <template v-if="sp.wait !== false">
-                  <label class="check">
-                    <input type="checkbox" :checked="sp.showInitial !== false" @change="setParam('showInitial', ($event.target as HTMLInputElement).checked)" />
-                    初始短句（开工第一句，宠物鲜活）
-                  </label>
-                  <label class="check">
-                    <input type="checkbox" :checked="sp.showThinking === true" @change="setParam('showThinking', ($event.target as HTMLInputElement).checked)" />
-                    思考过程（流式输出进对话框）
-                  </label>
                   <label class="check">
                     <input type="checkbox" :checked="sp.showResult !== false" @change="setParam('showResult', ($event.target as HTMLInputElement).checked)" />
                     最终结果（完成后的答复）
@@ -869,7 +823,6 @@ function removeOpt(i: number) {
 .wf-name { font-weight: 600; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-meta { color: var(--text-low); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-item-ops { display: flex; gap: 3px; margin-top: 4px; flex-wrap: wrap; opacity: 0; transition: opacity 0.12s; }
-.copy-box { display: flex; gap: 4px; align-items: center; padding: 6px 0; flex-wrap: wrap; }
 .wf-canvas { flex: 1; min-width: 0; position: relative; }
 .empty-guide {
   position: absolute;

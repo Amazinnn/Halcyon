@@ -7,6 +7,14 @@ export interface ChatMessage {
   role: "agent" | "user";
   text: string;
   kind: "delta" | "completed" | "system";
+  source?: string;
+}
+
+export interface WorkflowAgentResult {
+  workflowId: string;
+  workflowName: string;
+  agentId: string;
+  text: string;
 }
 
 export interface AgentThread {
@@ -147,6 +155,15 @@ export const useAgentStore = defineStore("agent", {
         this.fallback = e.payload.fallback;
         this.ready = e.payload.ready;
         this.workspaceDir = e.payload.workspaceDir;
+      });
+      await listen<WorkflowAgentResult>("workflow:agent_result", (e) => {
+        if (e.payload.agentId !== this.characterId) return;
+        this.messages.push({
+          role: "agent",
+          text: e.payload.text,
+          kind: "completed",
+          source: `日程 · ${e.payload.workflowName}`,
+        });
       });
       await this.refreshStatus();
       await this.refreshSkills();

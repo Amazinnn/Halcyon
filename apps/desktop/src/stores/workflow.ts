@@ -8,7 +8,6 @@ import type {
   WorkflowRunRow,
 } from "../lib/workflow";
 
-const KEY_CHAR = "focus.workflow.currentCharacterId";
 const KEY_WF = "focus.workflow.currentWorkflowId";
 
 export const useWorkflowStore = defineStore("workflow", {
@@ -17,7 +16,6 @@ export const useWorkflowStore = defineStore("workflow", {
     workflows: [] as WorkflowDef[],
     runs: [] as WorkflowRunRow[],
     recentRuns: [] as RecentRunRow[],
-    currentCharacterId: null as string | null,
     currentWorkflowId: null as string | null,
     initialized: false,
   }),
@@ -25,8 +23,10 @@ export const useWorkflowStore = defineStore("workflow", {
     async init() {
       if (this.initialized) return;
       this.initialized = true;
-      this.currentCharacterId = localStorage.getItem(KEY_CHAR);
       this.currentWorkflowId = localStorage.getItem(KEY_WF);
+      await listen<{ action: string; workflowId: string }>("workflow:changed", () => {
+        void this.refreshWorkflows();
+      });
       await listen<{ workflowId: string; runId: string; status: string; error: string | null }>(
         "workflow:runs_changed",
         (e) => {
@@ -52,23 +52,12 @@ export const useWorkflowStore = defineStore("workflow", {
         }
         if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
       }
-      if (!this.currentCharacterId && this.characters.length) {
-        this.currentCharacterId = this.characters[0].id;
-      }
-      if (
-        this.currentCharacterId &&
-        !this.characters.some((c) => c.id === this.currentCharacterId)
-      ) {
-        this.currentCharacterId = this.characters[0]?.id ?? null;
-      }
-      localStorage.setItem(KEY_CHAR, this.currentCharacterId ?? "");
       await this.refreshWorkflows();
     },
     async refreshWorkflows() {
-      if (!this.currentCharacterId) return;
       try {
         this.workflows = await invoke<WorkflowDef[]>("workflow_list", {
-          characterId: this.currentCharacterId,
+          characterId: "",
         });
         if (
           this.currentWorkflowId &&
@@ -104,14 +93,6 @@ export const useWorkflowStore = defineStore("workflow", {
         console.error("[workflow] workflow_runs_clear failed", e);
       }
     },
-    async selectCharacter(id: string) {
-      this.currentCharacterId = id;
-      this.currentWorkflowId = null;
-      localStorage.setItem(KEY_CHAR, id);
-      localStorage.setItem(KEY_WF, "");
-      this.runs = [];
-      await this.refreshWorkflows();
-    },
     async selectWorkflow(id: string | null) {
       this.currentWorkflowId = id;
       this.runs = [];
@@ -142,14 +123,6 @@ export const useWorkflowStore = defineStore("workflow", {
     },
     async cancel(id: string) {
       await invoke("workflow_cancel", { id });
-    },
-    async copyTo(id: string, targetCharacterId: string, moveSource: boolean) {
-      await invoke<WorkflowDef>("workflow_copy", {
-        id,
-        targetCharacterId,
-        moveSource,
-      });
-      await this.refreshWorkflows();
     },
     async cleanupThreads() {
       await invoke("workflow_cleanup_threads");

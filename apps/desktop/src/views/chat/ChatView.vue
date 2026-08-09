@@ -5,15 +5,7 @@ import WindowHeader from "../../components/WindowHeader.vue";
 
 const agent = useAgentStore();
 const input = ref("");
-const workspaceInput = ref("");
 const listRef = ref<HTMLElement | null>(null);
-const optionsOpen = ref(false);
-
-const QUICK = [
-  { label: "计时器状态", text: "请用 focus-cli 查看当前计时器状态" },
-  { label: "开始专注", text: "请用 focus-cli 开始专注" },
-  { label: "今日统计", text: "请用 focus-cli 查看今日专注统计" },
-];
 
 const phaseText = computed(() => {
   switch (agent.phase) {
@@ -40,7 +32,6 @@ watch(
 
 onMounted(async () => {
   await agent.init();
-  workspaceInput.value = agent.workspaceDir;
 });
 
 function send() {
@@ -56,23 +47,6 @@ function send() {
   void agent.send(text);
 }
 
-function sendQuick(text: string) {
-  input.value = "";
-  void agent.send(text);
-}
-
-function useSkill(name: string) {
-  input.value = `使用技能 ${name}：`;
-}
-
-async function applyWorkspace() {
-  const dir = workspaceInput.value.trim();
-  try {
-    await agent.setWorkspaceDir(dir);
-  } catch (e) {
-    agent.pushSystem(`工作区设置失败：${e}`);
-  }
-}
 </script>
 
 <template>
@@ -88,45 +62,18 @@ async function applyWorkspace() {
         {{ agent.provider === "mock" && agent.fallback ? "Mock（回退）" : agent.provider === "mock" ? "Mock" : "Codex" }}
       </span>
       <span class="phase" :class="agent.phase">{{ phaseText }}</span>
-      <button class="ghost" @click="agent.newThread()">新会话</button>
-      <button v-if="agent.threads.some((t) => t.automation)" class="ghost" @click="agent.cleanupAutomationThreads()">清理自动化</button>
-      <button class="ghost" @click="optionsOpen = !optionsOpen">选项</button>
     </div>
-
-    <div v-if="optionsOpen" class="options">
-      <div class="row wrap">
-        <span class="label">技能</span>
-        <span v-if="!agent.skills.length" class="muted">未发现 ~/.codex/skills</span>
-        <span v-for="s in agent.skills" :key="s" class="chip" @click="useSkill(s)">{{ s }}</span>
-      </div>
-      <div class="row wrap">
-        <span class="label">focus-cli</span>
-        <span v-for="q in QUICK" :key="q.label" class="chip" @click="sendQuick(q.text)">{{ q.label }}</span>
-      </div>
-      <div class="row">
-        <span class="label">工作区</span>
-        <input v-model="workspaceInput" class="text-input" placeholder="agent 工作目录（默认用户主目录）" />
-        <button class="btn" @click="applyWorkspace">应用</button>
-      </div>
-    </div>
-
-    <!-- M5 (ADR-0022): history sessions are not listed in the UI — the
-         Agent reads its own hash via focus-cli (agent session). -->
 
     <div ref="listRef" class="msg-list">
       <div v-if="agent.messages.length === 0" class="empty">输入消息开始与 Agent 对话…</div>
       <div v-for="(m, i) in agent.messages" :key="i" class="msg glass" :class="[m.role, m.kind]">
-        <span class="who">{{ m.role === "agent" ? (m.kind === "system" ? "系统" : "Agent") : "我" }}</span>
+        <span class="who">
+          {{ m.role === "agent" ? (m.kind === "system" ? "系统" : "Agent") : "我" }}
+          <span v-if="m.source" class="source">{{ m.source }}</span>
+        </span>
         <span class="text">{{ m.text }}</span>
         <span v-if="m.kind === 'delta'" class="cursor">▍</span>
       </div>
-    </div>
-
-    <div class="tool-strip">
-      <span v-if="agent.tools.length === 0" class="tool-chip muted">无工具调用</span>
-      <span v-for="(t, i) in agent.tools.slice(-4)" :key="i" class="tool-chip" :class="t.status" :title="t.summary">
-        {{ t.tool }} {{ t.status === "started" ? "…" : "✓" }}
-      </span>
     </div>
 
     <form class="composer" @submit.prevent="send">
@@ -203,80 +150,6 @@ async function applyWorkspace() {
   color: var(--text-hi);
   border-color: var(--accent);
 }
-.options {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--glass-border);
-  background: rgba(16, 26, 21, 0.6);
-}
-.row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-.row.wrap {
-  flex-wrap: wrap;
-}
-.row .label {
-  color: var(--text-low);
-  min-width: 52px;
-}
-.seg {
-  display: flex;
-  gap: 4px;
-}
-.seg button {
-  border: 1px solid var(--glass-border);
-  background: transparent;
-  color: var(--text-mid);
-  border-radius: var(--r-sm);
-  font-size: 11px;
-  padding: 2px 10px;
-  cursor: pointer;
-}
-.seg button.on {
-  background: var(--accent);
-  color: #0a110e;
-  border-color: var(--accent);
-}
-.text-input {
-  flex: 1;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-sm);
-  padding: 4px 8px;
-  font-size: 12px;
-  background: #101a15;
-  color: var(--text-hi);
-}
-.btn {
-  border: 1px solid var(--glass-border);
-  background: transparent;
-  color: var(--text-mid);
-  border-radius: var(--r-sm);
-  font-size: 11px;
-  padding: 3px 10px;
-  cursor: pointer;
-}
-.chip {
-  font-size: 11px;
-  border-radius: var(--r-pill);
-  padding: 2px 8px;
-  background: var(--glass);
-  color: var(--text-mid);
-  cursor: pointer;
-  border: 1px solid var(--glass-border);
-}
-.chip:hover {
-  color: var(--accent-bright);
-  border-color: var(--accent);
-}
-.muted {
-  color: var(--text-low);
-  font-size: 11px;
-}
 .msg-list {
   flex: 1;
   overflow-y: auto;
@@ -317,6 +190,11 @@ async function applyWorkspace() {
   opacity: 0.7;
   margin-bottom: 2px;
 }
+.source {
+  margin-left: 6px;
+  color: var(--accent-bright);
+  opacity: 0.8;
+}
 .cursor {
   color: var(--accent-bright);
   animation: blink 1s steps(1) infinite;
@@ -325,27 +203,6 @@ async function applyWorkspace() {
   50% {
     opacity: 0;
   }
-}
-.tool-strip {
-  display: flex;
-  gap: 6px;
-  padding: 6px 12px;
-  flex-wrap: wrap;
-  border-top: 1px solid var(--glass-border);
-}
-.tool-chip {
-  font-size: 11px;
-  border-radius: var(--r-pill);
-  padding: 2px 8px;
-  background: var(--glass);
-  color: var(--text-mid);
-}
-.tool-chip.completed {
-  background: #183624;
-  color: var(--accent-bright);
-}
-.tool-chip.muted {
-  color: var(--text-low);
 }
 .composer {
   display: flex;

@@ -94,20 +94,32 @@ export const NODE_DESC: Record<string, string> = {
   ring: "响铃 N 秒",
 };
 
-export function defaultParams(kind: string): Record<string, unknown> {
+export interface AgentDefaultContext {
+  characters: { id: string }[];
+  persistedAgentId: string | null;
+}
+
+export function defaultParams(
+  kind: string,
+  context?: AgentDefaultContext,
+): Record<string, unknown> {
   switch (kind) {
-    case "agent":
-      // M5 (ADR-0022): display switches — showInitial (first short sentence,
-      // on), showThinking (stream, off), showResult (final, on).
+    case "agent": {
+      const characters = context?.characters ?? [];
+      const persisted = context?.persistedAgentId;
+      const characterId =
+        persisted && characters.some((character) => character.id === persisted)
+          ? persisted
+          : characters[0]?.id ?? "";
       return {
+        characterId,
         prompt: "",
         wait: true,
         timeout: 600,
         fillOptions: [] as string[],
-        showInitial: true,
-        showThinking: false,
         showResult: true,
       };
+    }
     case "show_window":
       return { target: "chat" };
     case "wait":
@@ -125,10 +137,10 @@ export function defaultParams(kind: string): Record<string, unknown> {
   }
 }
 
-export function emptyWorkflow(characterId: string, name = "新工作流"): WorkflowDef {
+export function emptyWorkflow(name = "新工作流"): WorkflowDef {
   return {
     id: "",
-    characterId,
+    characterId: "",
     name,
     trigger: "manual",
     scheduleType: null,
