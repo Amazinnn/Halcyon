@@ -610,6 +610,7 @@ fn handle_turn_completed(
             let _ = tx.send(CoreEvent::BubbleRequested {
                 text: "Agent 出错了，已停止。".to_string(),
                 priority: "critical".to_string(),
+                agent_id: None,
             });
             emit_status(tx, shared, "idle");
             let _ = turn_done.send(TurnDone { thread_id, status: "error".into(), result: Some(result) });

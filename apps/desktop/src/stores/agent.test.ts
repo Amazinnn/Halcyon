@@ -27,7 +27,12 @@ describe("workflow result messages", () => {
       return () => undefined;
     });
     invoke.mockImplementation(async (command: string) => {
-      if (command === "characters_list") return [{ id: "char-a", name: "小专" }];
+      if (command === "characters_list") {
+        return [
+          { id: "char-a", name: "小专" },
+          { id: "char-b", name: "小助" },
+        ];
+      }
       if (command === "agent_status") {
         return {
           provider: "codex",
@@ -48,16 +53,18 @@ describe("workflow result messages", () => {
     });
   });
 
-  it("shows one labeled result only for the selected Agent", async () => {
+  it("delivers one pending workflow result and bubble when its target Agent is selected", async () => {
     const agent = useAgentStore();
     await agent.init();
     agent.messages = [];
 
-    const handler = handlers.get("workflow:agent_result");
-    expect(handler).toBeDefined();
-    if (!handler) return;
+    const resultHandler = handlers.get("workflow:agent_result");
+    const bubbleHandler = handlers.get("bubble:requested");
+    expect(resultHandler).toBeDefined();
+    expect(bubbleHandler).toBeDefined();
+    if (!resultHandler || !bubbleHandler) return;
 
-    handler({
+    resultHandler({
       payload: {
         workflowId: "wf-other",
         workflowName: "别人的日程",
@@ -65,23 +72,26 @@ describe("workflow result messages", () => {
         text: "不应出现",
       },
     });
-    expect(agent.messages).toEqual([]);
-
-    handler({
-      payload: {
-        workflowId: "wf-morning",
-        workflowName: "晨间整理",
-        agentId: "char-a",
-        text: "整理完成",
-      },
+    bubbleHandler({
+      payload: { text: "不应出现", priority: "normal", agentId: "char-b" },
     });
-    expect(agent.messages).toEqual([
+    expect(agent.messages).toEqual([]);
+    expect(agent.bubble).toBeNull();
+
+    await agent.selectCharacter("char-b");
+
+    expect(agent.messages.filter((message) => message.source)).toEqual([
       {
         role: "agent",
-        text: "整理完成",
+        text: "不应出现",
         kind: "completed",
-        source: "日程 · 晨间整理",
+        source: "日程 · 别人的日程",
       },
     ]);
+    expect(agent.bubble).toMatchObject({ text: "不应出现", priority: "normal" });
+
+    await agent.selectCharacter("char-a");
+    await agent.selectCharacter("char-b");
+    expect(agent.messages.filter((message) => message.source)).toEqual([]);
   });
 });

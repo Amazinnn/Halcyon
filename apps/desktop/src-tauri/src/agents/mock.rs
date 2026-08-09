@@ -142,6 +142,7 @@ impl MockProvider {
                     let _ = tx.send(CoreEvent::BubbleRequested {
                         text: text.to_string(),
                         priority: priority.to_string(),
+                        agent_id: None,
                     });
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(600)).await;

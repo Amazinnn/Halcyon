@@ -543,7 +543,7 @@ impl AgentCall for WorkflowManager {
 }
 
 impl EventSink for WorkflowManager {
-    fn bubble(&self, text: &str, priority: &str) {
+    fn bubble(&self, text: &str, priority: &str, agent_id: Option<&str>) {
         let _ = self
             .app
             .state::<AppState>()
@@ -551,6 +551,7 @@ impl EventSink for WorkflowManager {
             .send(CoreEvent::BubbleRequested {
                 text: text.to_string(),
                 priority: priority.to_string(),
+                agent_id: agent_id.map(str::to_owned),
             });
     }
 

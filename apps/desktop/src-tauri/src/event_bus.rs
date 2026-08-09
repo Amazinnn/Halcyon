@@ -12,7 +12,11 @@ pub enum CoreEvent {
     /// Pet state mapping (status -> animation), per design doc §5.2.
     PetStateChanged { state: String, animation: String },
     /// Short pet bubble request, per design doc §5.3.
-    BubbleRequested { text: String, priority: String },
+    BubbleRequested {
+        text: String,
+        priority: String,
+        agent_id: Option<String>,
+    },
     /// Panel mode changed (chat / statistics / ...).
     PanelModeChanged { mode: String },
     /// Music playback tick (fake progress in the spike).
@@ -72,8 +76,16 @@ impl CoreEvent {
             CoreEvent::PetStateChanged { state, animation } => {
                 json!({ "state": state, "animation": animation })
             }
-            CoreEvent::BubbleRequested { text, priority } => {
-                json!({ "text": text, "priority": priority })
+            CoreEvent::BubbleRequested {
+                text,
+                priority,
+                agent_id,
+            } => {
+                let mut payload = json!({ "text": text, "priority": priority });
+                if let Some(agent_id) = agent_id {
+                    payload["agentId"] = json!(agent_id);
+                }
+                payload
             }
             CoreEvent::PanelModeChanged { mode } => json!({ "mode": mode }),
             CoreEvent::MusicTick { position_ms, duration_ms } => {
@@ -153,6 +165,20 @@ mod tests {
                 "agentId": "char-b",
                 "text": "done",
             })
+        );
+    }
+
+    #[test]
+    fn targeted_bubble_keeps_its_agent_id() {
+        let event = CoreEvent::BubbleRequested {
+            text: "done".into(),
+            priority: "normal".into(),
+            agent_id: Some("char-b".into()),
+        };
+
+        assert_eq!(
+            event.payload(),
+            json!({ "text": "done", "priority": "normal", "agentId": "char-b" })
         );
     }
 }

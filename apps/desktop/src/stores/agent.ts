@@ -71,6 +71,10 @@ export const useAgentStore = defineStore("agent", {
     state: "idle" as AgentState,
     animation: "idle",
     messages: [] as ChatMessage[],
+    // Workflow outcomes are not conversation history. Keep only results that
+    // arrived while their target Agent was not selected, then consume them on
+    // that Agent's next selection.
+    pendingWorkflowResults: {} as Record<string, WorkflowAgentResult[]>,
     tools: [] as { tool: string; summary: string; status: "started" | "completed" }[],
     bubble: null as { text: string; priority: string; expiresAt: number } | null,
     reaction: null as PetReaction | null,
@@ -128,6 +132,11 @@ export const useAgentStore = defineStore("agent", {
       this.characterName = c?.name ?? "对话";
       // Today's session hash is resumed server-side (lazy runtime build).
       this.pushSystem(`已切换到 ${this.characterName}`);
+      const pending = this.pendingWorkflowResults[id] ?? [];
+      delete this.pendingWorkflowResults[id];
+      for (const result of pending) this.appendWorkflowResult(result);
+      const latest = pending[pending.length - 1];
+      if (latest) this.showBubble(latest.text, "normal");
     },
     async init() {
       if (this.initialized) return;
@@ -139,7 +148,8 @@ export const useAgentStore = defineStore("agent", {
         this.lastEvent = e.payload;
         this.handleEvent(e.payload);
       });
-      await listen<{ text: string; priority: string }>("bubble:requested", (e) => {
+      await listen<{ text: string; priority: string; agentId?: string }>("bubble:requested", (e) => {
+        if (e.payload.agentId && e.payload.agentId !== this.characterId) return;
         this.bubble = {
           text: e.payload.text,
           priority: e.payload.priority,
@@ -157,13 +167,11 @@ export const useAgentStore = defineStore("agent", {
         this.workspaceDir = e.payload.workspaceDir;
       });
       await listen<WorkflowAgentResult>("workflow:agent_result", (e) => {
-        if (e.payload.agentId !== this.characterId) return;
-        this.messages.push({
-          role: "agent",
-          text: e.payload.text,
-          kind: "completed",
-          source: `日程 · ${e.payload.workflowName}`,
-        });
+        if (e.payload.agentId === this.characterId) {
+          this.appendWorkflowResult(e.payload);
+          return;
+        }
+        (this.pendingWorkflowResults[e.payload.agentId] ??= []).push(e.payload);
       });
       await this.refreshStatus();
       await this.refreshSkills();
@@ -287,6 +295,14 @@ export const useAgentStore = defineStore("agent", {
     },
     pushSystem(text: string) {
       this.messages.push({ role: "agent", text, kind: "system" });
+    },
+    appendWorkflowResult(result: WorkflowAgentResult) {
+      this.messages.push({
+        role: "agent",
+        text: result.text,
+        kind: "completed",
+        source: `日程 · ${result.workflowName}`,
+      });
     },
     handleEvent(env: AgentEventEnvelope) {
       const ev = env.event;

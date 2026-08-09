@@ -51,7 +51,7 @@ pub trait AgentCall: Send + Sync {
 }
 
 pub trait EventSink: Send + Sync {
-    fn bubble(&self, text: &str, priority: &str);
+    fn bubble(&self, text: &str, priority: &str, agent_id: Option<&str>);
     fn agent_result(
         &self,
         workflow_id: &str,
@@ -334,7 +334,7 @@ fn run_node(
                     // one bubble, both gated by the saved showResult flag.
                     if show_result {
                         events.agent_result(workflow_id, workflow_name, &caller.id, &result);
-                        events.bubble(&result, "normal");
+                        events.bubble(&result, "normal", Some(&caller.id));
                     }
                     let mut out = json!({ "result": result, "threadId": thread_id, "status": "completed" });
                     // v2 fill-slot: the agent answers a single-choice question;
@@ -662,12 +662,16 @@ mod tests {
     }
     #[derive(Default)]
     struct Sink {
-        bubbles: Mutex<Vec<(String, String)>>,
+        bubbles: Mutex<Vec<(String, String, Option<String>)>>,
         agent_results: Mutex<Vec<(String, String, String, String)>>,
     }
     impl EventSink for Sink {
-        fn bubble(&self, text: &str, priority: &str) {
-            self.bubbles.lock().unwrap().push((text.into(), priority.into()));
+        fn bubble(&self, text: &str, priority: &str, agent_id: Option<&str>) {
+            self.bubbles.lock().unwrap().push((
+                text.into(),
+                priority.into(),
+                agent_id.map(str::to_owned),
+            ));
         }
 
         fn agent_result(
@@ -777,10 +781,11 @@ mod tests {
         );
         let out = run_with_sink(&w, &agent, &system, &sink);
         assert_eq!(out.status, RunStatus::Success);
-        let bubbles: Vec<String> = sink.bubbles.lock().unwrap().iter().map(|(t, _p)| t.clone()).collect();
+        let bubbles: Vec<String> = sink.bubbles.lock().unwrap().iter().map(|(t, _p, _agent_id)| t.clone()).collect();
         assert_eq!(bubbles.len(), 1);
         assert!(bubbles[0].starts_with("我比较专注吧 => "));
         assert_eq!(sink.bubbles.lock().unwrap()[0].1, "normal");
+        assert_eq!(sink.bubbles.lock().unwrap()[0].2.as_deref(), Some("char-b"));
         assert_eq!(
             *agent.displays.lock().unwrap(),
             vec![AgentDisplay { show_initial: false, show_thinking: false, show_result: false }],
