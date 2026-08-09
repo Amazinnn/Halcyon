@@ -210,9 +210,13 @@ pub fn unlock_desktop() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Tests mutate the LOCKED / SHELL_HIDDEN statics directly; run them
+    // serially so a parallel test runner cannot interleave state writes.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn lock_unlock_state_machine() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Don't actually lock in tests (no desktop) — verify state bits.
         assert!(!is_locked());
         LOCKED.store(true, Ordering::Relaxed);
@@ -225,6 +229,7 @@ mod tests {
 
     #[test]
     fn keys_lock_is_active_without_reporting_strict_lock() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         LOCKED.store(true, Ordering::Relaxed);
         SHELL_HIDDEN.store(false, Ordering::Relaxed);
         assert!(is_any_locked());
@@ -234,6 +239,7 @@ mod tests {
 
     #[test]
     fn crash_recovery_restores_desktop_without_local_lock_state() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // A watchdog is a separate process, so its LOCKED static always starts
         // false. Recovery must still restore the shell windows it inherits.
         LOCKED.store(false, Ordering::Relaxed);
@@ -243,6 +249,7 @@ mod tests {
 
     #[test]
     fn setting_unlocked_is_idempotent_without_local_lock_state() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         LOCKED.store(false, Ordering::Relaxed);
         set_desktop_locked(false).unwrap();
         assert!(!is_locked());
