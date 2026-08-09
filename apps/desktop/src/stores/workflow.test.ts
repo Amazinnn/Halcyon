@@ -80,14 +80,57 @@ describe("unified workflow list", () => {
     ]);
   });
 
-  it("does not publish the external signal for its own save event", async () => {
+  it("keeps an interleaved external update visible and consumes only the matching local event", async () => {
+    storage.set("focus.workflow.currentWorkflowId", "wf-1");
     const store = useWorkflowStore();
     await store.init();
     const handler = handlers.get("workflow:changed");
     expect(handler).toBeDefined();
     if (!handler) return;
 
-    const saved = workflow("wf-1", "本地保存");
+    let finishSave!: (saved: WorkflowDef) => void;
+    const pendingSave = new Promise<WorkflowDef>((resolve) => {
+      finishSave = resolve;
+    });
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "workflow_save") return pendingSave;
+      if (command === "workflow_list") return listed;
+      if (command === "workflow_runs") return [];
+      return [];
+    });
+
+    const local = workflow("wf-local", "本地保存");
+    const saving = store.save(local);
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("workflow_save", { workflow: local });
+    });
+
+    listed = [workflow("wf-1", "外部更新"), local];
+    handler({ payload: { action: "updated", workflowId: "wf-1" } });
+    await vi.waitFor(() => {
+      expect(store.externalChangeRevision).toBe(1);
+    });
+    expect(store.currentWorkflowId).toBe("wf-1");
+    expect(store.workflows.find((item) => item.id === "wf-1")?.name).toBe("外部更新");
+
+    finishSave(local);
+    await saving;
+    handler({ payload: { action: "updated", workflowId: "wf-local" } });
+    await vi.waitFor(() => {
+      expect(invoke.mock.calls.filter(([command]) => command === "workflow_list")).toHaveLength(4);
+    });
+    expect(store.externalChangeRevision).toBe(1);
+  });
+
+  it("does not invent a local reservation for a create with an unknown generated ID", async () => {
+    const store = useWorkflowStore();
+    await store.init();
+    const handler = handlers.get("workflow:changed");
+    expect(handler).toBeDefined();
+    if (!handler) return;
+
+    const draft = workflow("", "新建日程");
+    const saved = workflow("wf-created", "新建日程");
     invoke.mockImplementation(async (command: string) => {
       if (command === "workflow_save") return saved;
       if (command === "workflow_list") return [saved];
@@ -95,12 +138,11 @@ describe("unified workflow list", () => {
       return [];
     });
 
-    await store.save(saved);
-    handler({ payload: { action: "updated", workflowId: "wf-1" } });
+    await store.save(draft);
+    handler({ payload: { action: "created", workflowId: "wf-created" } });
 
     await vi.waitFor(() => {
-      expect(invoke.mock.calls.filter(([command]) => command === "workflow_list")).toHaveLength(3);
+      expect(store.externalChangeRevision).toBe(1);
     });
-    expect(store.externalChangeRevision).toBe(0);
   });
 });

@@ -18,7 +18,7 @@ export const useWorkflowStore = defineStore("workflow", {
     recentRuns: [] as RecentRunRow[],
     currentWorkflowId: null as string | null,
     externalChangeRevision: 0,
-    _pendingLocalSaveEvents: 0,
+    _expectedLocalChange: null as { workflowId: string; action: string } | null,
     initialized: false,
   }),
   actions: {
@@ -26,9 +26,12 @@ export const useWorkflowStore = defineStore("workflow", {
       if (this.initialized) return;
       this.initialized = true;
       this.currentWorkflowId = localStorage.getItem(KEY_WF);
-      await listen<{ action: string; workflowId: string }>("workflow:changed", async () => {
-        const isLocalSave = this._pendingLocalSaveEvents > 0;
-        if (isLocalSave) this._pendingLocalSaveEvents -= 1;
+      await listen<{ action: string; workflowId: string }>("workflow:changed", async (e) => {
+        const expected = this._expectedLocalChange;
+        const isLocalSave =
+          expected?.workflowId === e.payload.workflowId &&
+          expected.action === e.payload.action;
+        if (isLocalSave) this._expectedLocalChange = null;
         const refreshed = await this.refreshWorkflows();
         if (refreshed && !isLocalSave) this.externalChangeRevision += 1;
       });
@@ -107,7 +110,10 @@ export const useWorkflowStore = defineStore("workflow", {
       if (id) await this.refreshRuns(id);
     },
     async save(workflow: WorkflowDef): Promise<WorkflowDef> {
-      this._pendingLocalSaveEvents += 1;
+      const expected = workflow.id
+        ? { workflowId: workflow.id, action: "updated" }
+        : null;
+      if (expected) this._expectedLocalChange = expected;
       try {
         const saved = await invoke<WorkflowDef>("workflow_save", { workflow });
         // v1.10.5 (#59): refresh the list BEFORE publishing the new id so any
@@ -118,7 +124,13 @@ export const useWorkflowStore = defineStore("workflow", {
         await this.refreshRuns(saved.id);
         return saved;
       } catch (e) {
-        this._pendingLocalSaveEvents = Math.max(0, this._pendingLocalSaveEvents - 1);
+        if (
+          expected &&
+          this._expectedLocalChange?.workflowId === expected.workflowId &&
+          this._expectedLocalChange.action === expected.action
+        ) {
+          this._expectedLocalChange = null;
+        }
         throw e;
       }
     },
