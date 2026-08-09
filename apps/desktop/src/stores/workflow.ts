@@ -41,7 +41,7 @@ export const useWorkflowStore = defineStore("workflow", {
           expected.action === e.payload.action;
         if (isLocalSave) this._expectedLocalChange = null;
         const refreshed = await this.refreshWorkflows();
-        if (refreshed && !isLocalSave) {
+        if (refreshed && !isLocalSave && affectsCurrentDraft) {
           this.lastExternalChange = {
             workflowId: e.payload.workflowId,
             action: e.payload.action,

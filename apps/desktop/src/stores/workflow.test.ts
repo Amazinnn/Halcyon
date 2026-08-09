@@ -70,12 +70,9 @@ describe("unified workflow list", () => {
     handler({ payload: { action: "updated", workflowId: "wf-1" } });
 
     await vi.waitFor(() => {
-      expect(store.lastExternalChange).toEqual({
-        workflowId: "wf-1",
-        action: "updated",
-        affectsCurrentDraft: false,
-      });
+      expect(store.workflows[0]?.name).toBe("Agent 更新后的名字");
     });
+    expect(store.lastExternalChange).toBeNull();
     expect(store.workflows[0]?.name).toBe("Agent 更新后的名字");
     const listCalls = invoke.mock.calls.filter(([command]) => command === "workflow_list");
     expect(listCalls).toEqual([
@@ -98,11 +95,7 @@ describe("unified workflow list", () => {
     await vi.waitFor(() => {
       expect(store.workflows.find((item) => item.id === "wf-b")?.name).toBe("由 Agent 更新");
     });
-    expect(store.lastExternalChange).toEqual({
-      workflowId: "wf-b",
-      action: "updated",
-      affectsCurrentDraft: false,
-    });
+    expect(store.lastExternalChange).toBeNull();
 
     listed = [workflow("wf-a", "当前日程已更新"), workflow("wf-b", "由 Agent 更新")];
     handler({ payload: { action: "updated", workflowId: "wf-a" } });
@@ -124,6 +117,29 @@ describe("unified workflow list", () => {
       });
     });
     expect(store.currentWorkflowId).toBeNull();
+  });
+
+  it("keeps a selected draft signal when an unrelated external change follows in the same tick", async () => {
+    storage.set("focus.workflow.currentWorkflowId", "wf-a");
+    listed = [workflow("wf-a", "正在编辑"), workflow("wf-b", "另一个日程")];
+    const store = useWorkflowStore();
+    await store.init();
+    const handler = handlers.get("workflow:changed");
+    expect(handler).toBeDefined();
+    if (!handler) return;
+
+    listed = [workflow("wf-a", "当前日程已更新"), workflow("wf-b", "另一个日程已更新")];
+    handler({ payload: { action: "updated", workflowId: "wf-a" } });
+    handler({ payload: { action: "updated", workflowId: "wf-b" } });
+
+    await vi.waitFor(() => {
+      expect(store.workflows.find((item) => item.id === "wf-b")?.name).toBe("另一个日程已更新");
+      expect(store.lastExternalChange).toEqual({
+        workflowId: "wf-a",
+        action: "updated",
+        affectsCurrentDraft: true,
+      });
+    });
   });
 
   it("keeps an interleaved external update visible and consumes only the matching local event", async () => {
