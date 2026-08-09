@@ -1,5 +1,5 @@
 //! Agent providers (ADR-0007): Focus embeds a real agent CLI (Codex app-server)
-//! and keeps the scripted mock as fallback. Both implement the same
+//! and keeps the scripted mock for Rust test injection. Both implement the same
 //! `AgentProvider` trait; events are published as AgentEvent v1 envelopes over
 //! the core event bus (`agent:event` / `pet:state_changed` /
 //! `bubble:requested`).
@@ -36,6 +36,7 @@ pub const SCHEMA_JSON: &str =
 #[serde(rename_all = "lowercase")]
 pub enum AgentProviderKind {
     Codex,
+    #[cfg(test)]
     Mock,
 }
 
@@ -43,6 +44,7 @@ impl AgentProviderKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             AgentProviderKind::Codex => "codex",
+            #[cfg(test)]
             AgentProviderKind::Mock => "mock",
         }
     }
@@ -50,7 +52,6 @@ impl AgentProviderKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "codex" => Some(Self::Codex),
-            "mock" => Some(Self::Mock),
             _ => None,
         }
     }
@@ -82,8 +83,8 @@ pub struct AgentThreadInfo {
 
 /// Common agent contract implemented by the real (Codex) and mock providers.
 /// Methods are synchronous; streaming events arrive on the core event bus.
-/// M5 (ADR-0022): `display` carries the per-node show switches so the
-/// provider filters events (initial short sentence / stream / final result).
+/// `display` controls provider event visibility. Direct chat passes full
+/// display; workflow calls pass all false and let the engine own presentation.
 pub trait AgentProvider: Send + Sync {
 
     /// Create a new thread and start a turn (initial message may be empty).
@@ -109,6 +110,7 @@ pub trait AgentProvider: Send + Sync {
 /// in-flight request never blocks the whole agent state (e.g. interrupt).
 pub enum AgentRuntime {
     Codex(std::sync::Arc<std::sync::Mutex<codex::CodexProvider>>),
+    #[cfg(test)]
     Mock(std::sync::Mutex<mock::MockProvider>),
 }
 
@@ -139,6 +141,7 @@ impl AgentRuntime {
     pub fn kind(&self) -> AgentProviderKind {
         match self {
             AgentRuntime::Codex(_) => AgentProviderKind::Codex,
+            #[cfg(test)]
             AgentRuntime::Mock(_) => AgentProviderKind::Mock,
         }
     }
@@ -151,6 +154,7 @@ impl AgentRuntime {
     ) -> Result<AgentThreadInfo, String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().start_thread(workspace_dir, initial_message, display),
+            #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().start_thread(workspace_dir, initial_message, display),
         }
     }
@@ -158,6 +162,7 @@ impl AgentRuntime {
     pub fn resume_thread(&self, thread_id: &str) -> Result<AgentThreadInfo, String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().resume_thread(thread_id),
+            #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().resume_thread(thread_id),
         }
     }
@@ -165,6 +170,7 @@ impl AgentRuntime {
     pub fn list_threads(&self) -> Result<Vec<AgentThreadInfo>, String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().list_threads(),
+            #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().list_threads(),
         }
     }
@@ -172,6 +178,7 @@ impl AgentRuntime {
     pub fn send(&self, thread_id: &str, text: &str, display: crate::workflow_engine::engine::AgentDisplay) -> Result<(), String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().send(thread_id, text, display),
+            #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().send(thread_id, text, display),
         }
     }
@@ -180,6 +187,7 @@ impl AgentRuntime {
     pub fn subscribe_turn_done(&self) -> Option<tokio::sync::broadcast::Receiver<TurnDone>> {
         match self {
             AgentRuntime::Codex(p) => Some(p.lock().unwrap().subscribe_turn_done()),
+            #[cfg(test)]
             AgentRuntime::Mock(p) => Some(p.lock().unwrap().subscribe_turn_done()),
         }
     }
@@ -187,6 +195,7 @@ impl AgentRuntime {
     pub fn interrupt(&self, thread_id: &str) -> Result<(), String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().interrupt(thread_id),
+            #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().interrupt(thread_id),
         }
     }

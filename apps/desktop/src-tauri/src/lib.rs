@@ -245,13 +245,14 @@ fn emit_agent_status(app: &tauri::AppHandle) {
 
 /// M5 (ADR-0022): build (or reuse) the runtime for a character's Agent.
 /// Lazily creates the per-Agent workspace + AGENTS.md when missing.
-/// Returns the runtime (codex or mock fallback).
+/// Returns the real Codex runtime. Mock runtimes exist only for Rust tests.
 pub fn ensure_agent_runtime(app: &tauri::AppHandle, character_id: &str) -> Result<agents::AgentRuntime, String> {
     let state = app.state::<AppState>();
     // Existing runtime?
     if let Some(rt) = state.agents.lock().unwrap().get(character_id) {
         return Ok(match rt {
             agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
+            #[cfg(test)]
             agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(state.events_tx.clone()))),
         });
     }
@@ -266,7 +267,7 @@ pub fn ensure_agent_runtime(app: &tauri::AppHandle, character_id: &str) -> Resul
     // Build the runtime.
     let tx = state.events_tx.clone();
     let rt = match row.tool.as_str() {
-        "mock" => agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx))),
+        "mock" => return Err("Mock provider is test-only; production requires real Codex".into()),
         _ => {
             // M5 (ADR-0022): no fallback — if Codex is missing, the call
             // fails with a clear error; next use rebuilds lazily.
@@ -285,6 +286,7 @@ pub fn ensure_agent_runtime(app: &tauri::AppHandle, character_id: &str) -> Resul
     };
     state.agents.lock().unwrap().insert(character_id.to_string(), match &rt {
         agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
+        #[cfg(test)]
         agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(state.events_tx.clone()))),
     });
     Ok(rt)
@@ -391,6 +393,7 @@ fn with_agent_rt<R>(rt: &agents::AgentRuntime, f: impl FnOnce(&agents::AgentRunt
             let tmp = agents::AgentRuntime::Codex(p2);
             f(&tmp)
         }
+        #[cfg(test)]
         agents::AgentRuntime::Mock(_) => f(rt),
     }
 }
@@ -533,7 +536,8 @@ fn desktop_set_focus_lock(mode: String) -> Result<(), String> {
 
 #[tauri::command]
 fn set_agent_provider(app: tauri::AppHandle, provider: String) -> Result<(), String> {
-    let kind = agents::AgentProviderKind::parse(&provider).ok_or("provider 需为 codex 或 mock")?;
+    let kind = agents::AgentProviderKind::parse(&provider)
+        .ok_or("provider must be codex; mock is test-only and production requires real Codex")?;
     {
         let state = app.state::<AppState>();
         let mut s = state.settings.lock().unwrap();
@@ -2080,7 +2084,12 @@ pub fn run() {
 }
 #[cfg(test)]
 mod tests {
-    use super::{elapsed_sec, topbar_visible};
+    use super::{agents::AgentProviderKind, elapsed_sec, topbar_visible};
+
+    #[test]
+    fn legacy_mock_provider_is_not_a_production_provider() {
+        assert!(AgentProviderKind::parse("mock").is_none());
+    }
 
     #[test]
     fn elapsed_sec_wall_clock() {

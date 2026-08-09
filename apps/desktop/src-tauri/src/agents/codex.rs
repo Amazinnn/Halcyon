@@ -71,8 +71,8 @@ pub fn find_codex_exe() -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-/// Errors that mean "the Codex binary is not usable" so the caller can fall
-/// back to the mock provider.
+/// Legacy unavailable-error classifier retained for focused tests.
+#[cfg(test)]
 pub fn is_unavailable_error(err: &str) -> bool {
     err.contains("启动失败") || err.contains("codex 未启动") || err.contains("写入失败")
 }

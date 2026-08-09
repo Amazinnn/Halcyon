@@ -38,6 +38,14 @@ pub enum CoreEvent {
         action: String,
         workflow_id: String,
     },
+    /// Internal workflow result channel. This is deliberately separate from
+    /// the externally versioned AgentEvent schema.
+    WorkflowAgentResult {
+        workflow_id: String,
+        workflow_name: String,
+        agent_id: String,
+        text: String,
+    },
 }
 
 impl CoreEvent {
@@ -54,6 +62,7 @@ impl CoreEvent {
             CoreEvent::WorkflowSystemAction { .. } => "workflow:system-action",
             CoreEvent::WorkflowRunChanged { .. } => "workflow:runs_changed",
             CoreEvent::WorkflowChanged { .. } => "workflow:changed",
+            CoreEvent::WorkflowAgentResult { .. } => "workflow:agent_result",
         }
     }
 
@@ -88,6 +97,17 @@ impl CoreEvent {
             CoreEvent::WorkflowChanged { action, workflow_id } => {
                 json!({ "action": action, "workflowId": workflow_id })
             }
+            CoreEvent::WorkflowAgentResult {
+                workflow_id,
+                workflow_name,
+                agent_id,
+                text,
+            } => json!({
+                "workflowId": workflow_id,
+                "workflowName": workflow_name,
+                "agentId": agent_id,
+                "text": text,
+            }),
         }
     }
 }
@@ -107,5 +127,32 @@ pub async fn relay_task(
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CoreEvent;
+    use serde_json::json;
+
+    #[test]
+    fn workflow_agent_result_has_internal_name_and_target_agent_payload() {
+        let event = CoreEvent::WorkflowAgentResult {
+            workflow_id: "wf-1".into(),
+            workflow_name: "Morning".into(),
+            agent_id: "char-b".into(),
+            text: "done".into(),
+        };
+
+        assert_eq!(event.event_name(), "workflow:agent_result");
+        assert_eq!(
+            event.payload(),
+            json!({
+                "workflowId": "wf-1",
+                "workflowName": "Morning",
+                "agentId": "char-b",
+                "text": "done",
+            })
+        );
     }
 }

@@ -15,8 +15,8 @@ use super::model::{CharacterInfo, NodeDef, NodeLogEntry, RunStatus, WorkflowDef,
 /// One-shot agent invocation. wait=true blocks until the agent turn finishes
 /// and returns (result_text, thread_id); wait=false returns None right
 /// after dispatch (no output for downstream nodes).
-/// M5 (ADR-0022): `display` carries the per-node show switches
-/// (showInitial/showThinking/showResult) so the provider filters events.
+/// Workflow calls always suppress provider-facing chat events. The engine
+/// separately owns the single final result event and bubble.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AgentDisplay {
     pub show_initial: bool,
@@ -52,6 +52,13 @@ pub trait AgentCall: Send + Sync {
 
 pub trait EventSink: Send + Sync {
     fn bubble(&self, text: &str, priority: &str);
+    fn agent_result(
+        &self,
+        workflow_id: &str,
+        workflow_name: &str,
+        agent_id: &str,
+        text: &str,
+    );
 }
 
 pub trait WindowOps: Send + Sync {
@@ -175,7 +182,19 @@ pub fn execute_run(
             break;
         }
         let node = nodes[id];
-        match run_node(node, &data, &incoming, character, agent, events, windows, system, cancel) {
+        match run_node(
+            node,
+            &data,
+            &incoming,
+            &wf.id,
+            &wf.name,
+            character,
+            agent,
+            events,
+            windows,
+            system,
+            cancel,
+        ) {
             Ok((output, taken_handle)) => {
                 data.insert(id.to_string(), output.clone());
                 log.push(NodeLogEntry {
@@ -278,6 +297,8 @@ fn run_node(
     node: &NodeDef,
     data: &HashMap<String, Value>,
     incoming: &HashMap<&str, &str>,
+    workflow_id: &str,
+    workflow_name: &str,
     character: &CharacterInfo,
     agent: &dyn AgentCall,
     events: &dyn EventSink,
@@ -299,19 +320,20 @@ fn run_node(
             } else {
                 character.clone()
             };
-            // M5 (ADR-0022): per-node display switches (default on/off/on).
+            let show_result = param_bool(node, "showResult").unwrap_or(true);
+            // Raw workflow turns are never rendered as ordinary provider chat.
+            // Saved showInitial/showThinking fields remain tolerated but inert.
             let display = AgentDisplay {
-                show_initial: param_bool(node, "showInitial").unwrap_or(true),
-                show_thinking: param_bool(node, "showThinking").unwrap_or(false),
-                show_result: param_bool(node, "showResult").unwrap_or(true),
+                show_initial: false,
+                show_thinking: false,
+                show_result: false,
             };
             match agent.call_one_shot(&caller, &prompt, wait, cancel, display) {
                 Ok(Some((result, thread_id))) => {
-                    // v1.10.5 (ADR-0018): Agent reply is shown to the user —
-                    // pet bubble here; chat side comes from the agent thread
-                    // event (one message, line breaks preserved).
-                    // M5 (ADR-0022): bubble only when showResult is on.
-                    if display.show_result {
+                    // Workflow results have one engine-owned chat event and
+                    // one bubble, both gated by the saved showResult flag.
+                    if show_result {
+                        events.agent_result(workflow_id, workflow_name, &caller.id, &result);
                         events.bubble(&result, "normal");
                     }
                     let mut out = json!({ "result": result, "threadId": thread_id, "status": "completed" });
@@ -595,6 +617,7 @@ mod tests {
         fail: bool,
         prompts: Mutex<Vec<String>>,
         targets: Mutex<Vec<String>>,
+        displays: Mutex<Vec<AgentDisplay>>,
     }
     impl MockAgent {
         fn new(result: &str) -> Self {
@@ -603,6 +626,7 @@ mod tests {
                 fail: false,
                 prompts: Mutex::new(vec![]),
                 targets: Mutex::new(vec![]),
+                displays: Mutex::new(vec![]),
             }
         }
     }
@@ -621,10 +645,11 @@ mod tests {
             prompt: &str,
             wait: bool,
             _cancel: &AtomicBool,
-            _display: AgentDisplay,
+            display: AgentDisplay,
         ) -> Result<Option<(String, String)>, String> {
             self.prompts.lock().unwrap().push(prompt.to_string());
             self.targets.lock().unwrap().push(c.id.clone());
+            self.displays.lock().unwrap().push(display);
             if self.fail {
                 return Err("agent boom".into());
             }
@@ -635,12 +660,29 @@ mod tests {
             }
         }
     }
+    #[derive(Default)]
     struct Sink {
         bubbles: Mutex<Vec<(String, String)>>,
+        agent_results: Mutex<Vec<(String, String, String, String)>>,
     }
     impl EventSink for Sink {
         fn bubble(&self, text: &str, priority: &str) {
             self.bubbles.lock().unwrap().push((text.into(), priority.into()));
+        }
+
+        fn agent_result(
+            &self,
+            workflow_id: &str,
+            workflow_name: &str,
+            agent_id: &str,
+            text: &str,
+        ) {
+            self.agent_results.lock().unwrap().push((
+                workflow_id.into(),
+                workflow_name.into(),
+                agent_id.into(),
+                text.into(),
+            ));
         }
     }
     struct Win {
@@ -679,7 +721,7 @@ mod tests {
         CharacterInfo { id: "c".into(), name: "c".into(), persona: "p".into() }
     }
     fn run(w: &WorkflowDef, agent: &MockAgent, system: &MockSystem) -> RunOutcome {
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
+        let sink = Sink::default();
         let win = Win { opened: Mutex::new(vec![]) };
         let cancel = AtomicBool::new(false);
         execute_run(w, &char_info(), agent, &sink, &win, system, &cancel)
@@ -725,12 +767,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_success_bubbles_result() {
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
+    fn agent_success_emits_one_result_and_bubble_for_target_agent() {
+        let sink = Sink::default();
         let agent = MockAgent::new("我比较专注吧");
         let system = MockSystem::new("idle");
         let w = wf(
-            vec![node("a", "agent", json!({ "prompt": "自检", "wait": true }))],
+            vec![node("a", "agent", json!({ "prompt": "自检", "wait": true, "characterId": "char-b", "showInitial": true, "showThinking": true, "showResult": true }))],
             vec![],
         );
         let out = run_with_sink(&w, &agent, &system, &sink);
@@ -739,11 +781,21 @@ mod tests {
         assert_eq!(bubbles.len(), 1);
         assert!(bubbles[0].starts_with("我比较专注吧 => "));
         assert_eq!(sink.bubbles.lock().unwrap()[0].1, "normal");
+        assert_eq!(
+            *agent.displays.lock().unwrap(),
+            vec![AgentDisplay { show_initial: false, show_thinking: false, show_result: false }],
+        );
+        let results = sink.agent_results.lock().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "w");
+        assert_eq!(results[0].1, "t");
+        assert_eq!(results[0].2, "char-b");
+        assert!(results[0].3.starts_with("我比较专注吧 => "));
     }
 
     #[test]
     fn agent_no_wait_does_not_bubble() {
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
+        let sink = Sink::default();
         let agent = MockAgent::new("R");
         let system = MockSystem::new("idle");
         let w = wf(
@@ -757,6 +809,27 @@ mod tests {
         assert_eq!(out.status, RunStatus::Success);
         assert!(sink.bubbles.lock().unwrap().is_empty());
         assert_eq!(out.node_log.iter().find(|l| l.node_id == "a").unwrap().output, Some(json!({ "status": "sent" })));
+    }
+
+    #[test]
+    fn agent_show_result_false_emits_neither_result_nor_bubble() {
+        let sink = Sink::default();
+        let agent = MockAgent::new("hidden");
+        let system = MockSystem::new("idle");
+        let w = wf(
+            vec![node(
+                "a",
+                "agent",
+                json!({ "prompt": "go", "wait": true, "showResult": false }),
+            )],
+            vec![],
+        );
+
+        let out = run_with_sink(&w, &agent, &system, &sink);
+
+        assert_eq!(out.status, RunStatus::Success);
+        assert!(sink.agent_results.lock().unwrap().is_empty());
+        assert!(sink.bubbles.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -876,7 +949,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2200));
             cancel_ref.store(true, Ordering::Relaxed);
         });
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
+        let sink = Sink::default();
         let win = Win { opened: Mutex::new(vec![]) };
         let out = execute_run(
             &w,
@@ -928,7 +1001,7 @@ mod tests {
 
     #[test]
     fn fail_fast_stops_run() {
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
+        let sink = Sink::default();
         let mut agent = MockAgent::new("x");
         agent.fail = true;
         let system = MockSystem::new("idle");
@@ -950,7 +1023,7 @@ mod tests {
         let agent = MockAgent::new("x");
         let system = MockSystem::new("idle");
         let cancel = AtomicBool::new(true);
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
+        let sink = Sink::default();
         let win = Win { opened: Mutex::new(vec![]) };
         let w = wf(vec![node("w", "wait", json!({ "seconds": 5 }))], vec![]);
         let out = execute_run(&w, &char_info(), &agent, &sink, &win, &system, &cancel);
@@ -964,7 +1037,7 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let agent = MockAgent::new("x");
         let system = MockSystem::new("idle");
-        let sink = Sink { bubbles: Mutex::new(vec![]) };
+        let sink = Sink::default();
         let win = Win { opened: Mutex::new(vec![]) };
         for kind in ["focus", "idle", "ring"] {
             let w = wf(vec![node("f", kind, json!({ "seconds": 60 }))], vec![]);

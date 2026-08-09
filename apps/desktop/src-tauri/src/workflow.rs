@@ -462,6 +462,7 @@ impl AgentCall for WorkflowManager {
         cancel: &AtomicBool,
         display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<Option<(String, String)>, String> {
+        #[cfg(test)]
         let app_state = self.app.state::<AppState>();
         // M5 (ADR-0022): output discipline is injected system-wide by the
         // provider (agents::OUTPUT_DISCIPLINE); the AGENTS.md identity lives
@@ -474,6 +475,7 @@ impl AgentCall for WorkflowManager {
             let rt = crate::ensure_agent_runtime(&self.app, &character.id)?;
             let rt = match &rt {
                 AgentRuntime::Codex(p) => AgentRuntime::Codex(p.clone()),
+                #[cfg(test)]
                 AgentRuntime::Mock(_) => AgentRuntime::Mock(std::sync::Mutex::new(crate::agents::mock::MockProvider::new(app_state.events_tx.clone()))),
             };
             let rx = rt
@@ -490,6 +492,7 @@ impl AgentCall for WorkflowManager {
             };
             let info = match &rt {
                 AgentRuntime::Codex(p) => p.lock().unwrap().start_thread(&workspace, &full, display)?,
+                #[cfg(test)]
                 AgentRuntime::Mock(m) => m.lock().unwrap().start_thread(&workspace, &full, display)?,
             };
             if let Ok(s) = self.store.lock() {
@@ -548,6 +551,25 @@ impl EventSink for WorkflowManager {
             .send(CoreEvent::BubbleRequested {
                 text: text.to_string(),
                 priority: priority.to_string(),
+            });
+    }
+
+    fn agent_result(
+        &self,
+        workflow_id: &str,
+        workflow_name: &str,
+        agent_id: &str,
+        text: &str,
+    ) {
+        let _ = self
+            .app
+            .state::<AppState>()
+            .events_tx
+            .send(CoreEvent::WorkflowAgentResult {
+                workflow_id: workflow_id.to_string(),
+                workflow_name: workflow_name.to_string(),
+                agent_id: agent_id.to_string(),
+                text: text.to_string(),
             });
     }
 }

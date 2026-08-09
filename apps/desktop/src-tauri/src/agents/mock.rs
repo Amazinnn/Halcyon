@@ -1,16 +1,22 @@
 //! MockProvider: a scripted agent that, on start_thread/send, publishes a
 //! schema-valid AgentEvent v1 sequence (thinking -> reading -> editing ->
 //! success, with an error path on a cadence) plus derived pet/bubble events.
-//! Used when `agentProvider=mock` or as fallback when Codex is unavailable
-//! (ADR-0007).
+//! Retained only for Rust test injection; production always uses real Codex.
 
+#[cfg(test)]
 use crate::agents::{AgentProvider, AgentThreadInfo, TurnDone};
+#[cfg(test)]
 use crate::event_bus::CoreEvent;
+#[cfg(test)]
 use serde_json::{json, Value};
+#[cfg(test)]
 use std::sync::Mutex;
+#[cfg(test)]
 use tokio::sync::broadcast::Sender;
 
+#[cfg(test)]
 pub const AGENT_ID: &str = "mock-opencode";
+#[cfg(test)]
 pub const SESSION_ID: &str = "sess-001";
 
 pub fn state_to_animation(state: &str) -> &'static str {
@@ -30,6 +36,7 @@ fn envelope(event: Value) -> Value {
     envelope_session(SESSION_ID, event)
 }
 
+#[cfg(test)]
 fn envelope_session(session_id: &str, event: Value) -> Value {
     json!({
         "schemaVersion": 1,
@@ -40,12 +47,14 @@ fn envelope_session(session_id: &str, event: Value) -> Value {
     })
 }
 
+#[cfg(test)]
 struct Step {
     event: Value,
     state: Option<&'static str>,
     bubble: Option<(&'static str, &'static str)>, // (text, priority)
 }
 
+#[cfg(test)]
 fn success_cycle() -> Vec<Step> {
     vec![
         Step { event: json!({"type":"session.started"}), state: None, bubble: None },
@@ -76,6 +85,7 @@ fn error_cycle() -> Vec<Step> {
     ]
 }
 
+#[cfg(test)]
 fn reply_cycle(text: &str) -> Vec<Step> {
     vec![
         Step { event: json!({"type":"status.changed","state":"thinking"}), state: Some("thinking"), bubble: None },
@@ -88,13 +98,15 @@ fn reply_cycle(text: &str) -> Vec<Step> {
     ]
 }
 
-/// Scripted fallback provider implementing the AgentProvider contract.
+/// Scripted test provider implementing the AgentProvider contract.
+#[cfg(test)]
 pub struct MockProvider {
     tx: Sender<CoreEvent>,
     session_id: Mutex<String>,
     turn_done: tokio::sync::broadcast::Sender<TurnDone>,
 }
 
+#[cfg(test)]
 impl MockProvider {
     pub fn new(tx: Sender<CoreEvent>) -> Self {
         let (turn_done, _) = tokio::sync::broadcast::channel(64);
@@ -163,6 +175,7 @@ impl MockProvider {
     }
 }
 
+#[cfg(test)]
 impl AgentProvider for MockProvider {
     fn start_thread(
         &mut self,
