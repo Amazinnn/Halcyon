@@ -35,7 +35,6 @@ use serde::Serialize;
 use tauri::{Emitter, Listener, Manager};
 use tauri::{LogicalPosition, LogicalSize};
 
-use agents::AgentProvider;
 use event_bus::CoreEvent;
 use grid::GridManager;
 use settings::{GridRect, Settings, ShortcutType, Task};
@@ -285,14 +284,7 @@ pub fn ensure_agent_runtime(
             // fails with a clear error; next use rebuilds lazily.
             let exe = agents::codex::find_codex_exe()
                 .ok_or_else(|| "未找到 Codex（%LOCALAPPDATA%/OpenAI/Codex/bin）".to_string())?;
-            let mut p = agents::codex::CodexProvider::new(tx, exe, character_id.to_string());
-            // Restore the current session (same-day) so switching Agents
-            // resumes today's conversation.
-            if let Some(hash) = row.current_session_hash.clone() {
-                if row.session_date.as_deref() == Some(&today_local()) {
-                    let _ = p.resume_thread(&hash);
-                }
-            }
+            let p = agents::codex::CodexProvider::new(tx, exe, character_id.to_string());
             agents::AgentRuntime::Codex(std::sync::Arc::new(std::sync::Mutex::new(p)))
         }
     };
@@ -351,16 +343,25 @@ pub fn with_agent_for<R>(
 ) -> Result<R, String> {
     let rt = ensure_agent_runtime(app, character_id)?;
     let r = f(&rt);
-    if r.is_err() {
+    if let Err(error) = &r {
         // Dead process — drop this Agent's runtime; next use rebuilds.
-        app.state::<AppState>()
-            .agents
-            .lock()
-            .unwrap()
-            .runtimes
-            .remove(character_id);
+        discard_runtime_after_provider_error(
+            &mut app.state::<AppState>().agents.lock().unwrap(),
+            character_id,
+            error,
+        );
     }
     r
+}
+
+fn discard_runtime_after_provider_error(
+    registry: &mut agents::AgentRegistry,
+    character_id: &str,
+    error: &str,
+) {
+    if !agents::is_busy_turn_error(error) {
+        registry.runtimes.remove(character_id);
+    }
 }
 
 #[tauri::command]
@@ -433,11 +434,11 @@ fn resume_with_initial_message(
     initial_message: &str,
     display: crate::workflow_engine::engine::AgentDisplay,
 ) -> Result<agents::AgentThreadInfo, String> {
-    let info = with_agent_rt(rt, |r| r.resume_thread(thread_id))?;
-    if !initial_message.trim().is_empty() {
-        with_agent_rt(rt, |r| r.send(&info.id, initial_message, display))?;
+    if initial_message.trim().is_empty() {
+        with_agent_rt(rt, |r| r.resume_thread(thread_id))
+    } else {
+        with_agent_rt(rt, |r| r.resume_and_send(thread_id, initial_message, display))
     }
-    Ok(info)
 }
 
 fn with_agent_rt<R>(
@@ -2370,8 +2371,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agents, agents::AgentProviderKind, codex_ready, elapsed_sec, resume_with_initial_message,
-        topbar_visible,
+        agents, agents::AgentProviderKind, codex_ready, discard_runtime_after_provider_error,
+        elapsed_sec, resume_with_initial_message, topbar_visible,
     };
 
     #[test]
@@ -2386,7 +2387,27 @@ mod tests {
     }
 
     #[test]
-    fn same_day_resume_sends_the_initial_message() {
+    fn busy_turn_error_preserves_runtime_while_other_errors_drop_it() {
+        let (tx, _) = tokio::sync::broadcast::channel(8);
+        let mut registry = agents::AgentRegistry::new();
+        registry.insert(
+            "char-test".into(),
+            agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx))),
+        );
+
+        discard_runtime_after_provider_error(
+            &mut registry,
+            "char-test",
+            agents::ACTIVE_TURN_ERROR,
+        );
+        assert!(registry.get("char-test").is_some());
+
+        discard_runtime_after_provider_error(&mut registry, "char-test", "codex app-server exited");
+        assert!(registry.get("char-test").is_none());
+    }
+
+    #[test]
+    fn same_day_resume_and_send_delivers_the_initial_message() {
         use std::sync::Mutex;
         use std::time::Duration;
 

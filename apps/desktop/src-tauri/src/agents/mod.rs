@@ -32,6 +32,13 @@ pub const OUTPUT_DISCIPLINE: &str = "给用户的输出规范：请用简洁的�
 pub const SCHEMA_JSON: &str =
     include_str!("../../../../../packages/event-schema/agent-event.schema.json");
 
+pub const ACTIVE_TURN_ERROR: &str =
+    "Agent already has an active turn; wait for it to finish or stop it first";
+
+pub fn is_busy_turn_error(error: &str) -> bool {
+    error == ACTIVE_TURN_ERROR
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentProviderKind {
@@ -97,6 +104,18 @@ pub trait AgentProvider: Send + Sync {
 
     /// Load an existing thread so turns can be appended.
     fn resume_thread(&mut self, thread_id: &str) -> Result<AgentThreadInfo, String>;
+
+    /// Resume an existing thread and immediately start a new turn.
+    fn resume_and_send(
+        &mut self,
+        thread_id: &str,
+        text: &str,
+        display: crate::workflow_engine::engine::AgentDisplay,
+    ) -> Result<AgentThreadInfo, String> {
+        let info = self.resume_thread(thread_id)?;
+        self.send(&info.id, text, display)?;
+        Ok(info)
+    }
 
     fn list_threads(&mut self) -> Result<Vec<AgentThreadInfo>, String>;
 
@@ -164,6 +183,19 @@ impl AgentRuntime {
             AgentRuntime::Codex(p) => p.lock().unwrap().resume_thread(thread_id),
             #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().resume_thread(thread_id),
+        }
+    }
+
+    pub fn resume_and_send(
+        &self,
+        thread_id: &str,
+        text: &str,
+        display: crate::workflow_engine::engine::AgentDisplay,
+    ) -> Result<AgentThreadInfo, String> {
+        match self {
+            AgentRuntime::Codex(p) => p.lock().unwrap().resume_and_send(thread_id, text, display),
+            #[cfg(test)]
+            AgentRuntime::Mock(p) => p.lock().unwrap().resume_and_send(thread_id, text, display),
         }
     }
 

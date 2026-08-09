@@ -18,7 +18,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::Sender;
 
-use super::{AgentProvider, AgentThreadInfo, TurnDone};
+use super::{AgentProvider, AgentThreadInfo, TurnDone, ACTIVE_TURN_ERROR};
 use crate::agents::mock::state_to_animation;
 use crate::event_bus::CoreEvent;
 
@@ -420,6 +420,24 @@ impl AgentProvider for CodexProvider {
         self.resume_thread_with_display(thread_id, super::agent_display_full())
     }
 
+    fn resume_and_send(
+        &mut self,
+        thread_id: &str,
+        text: &str,
+        display: crate::workflow_engine::engine::AgentDisplay,
+    ) -> Result<AgentThreadInfo, String> {
+        claim_turn_with_display(&self.shared, display)?;
+        let info = match self.resume_thread_with_display(thread_id, display) {
+            Ok(info) => info,
+            Err(err) => {
+                release_turn(&self.shared);
+                return Err(err);
+            }
+        };
+        self.send_claimed_turn(&info.id, text)?;
+        Ok(info)
+    }
+
     fn list_threads(&mut self) -> Result<Vec<AgentThreadInfo>, String> {
         self.ensure_started()?;
         let resp = self.request(
@@ -581,7 +599,7 @@ fn claim_turn(shared: &Shared) -> Result<(), String> {
     let mut in_flight = shared.turn_in_flight.lock().unwrap();
     if *in_flight {
         return Err(
-            "Agent already has an active turn; wait for it to finish or stop it first".into(),
+            ACTIVE_TURN_ERROR.into(),
         );
     }
     *in_flight = true;
@@ -966,6 +984,43 @@ mod tests {
         assert!(
             claim_turn_with_display(&shared, rejected_display).is_ok(),
             "a terminal turn must release the guard"
+        );
+    }
+
+    #[test]
+    fn busy_resume_and_send_preserves_active_display_and_thread() {
+        let (tx, _) = tokio::sync::broadcast::channel::<CoreEvent>(16);
+        let mut provider = CodexProvider::new(
+            tx,
+            PathBuf::from("codex-not-needed-for-busy-guard"),
+            "char-test".into(),
+        );
+        let active_display = crate::workflow_engine::engine::AgentDisplay {
+            show_initial: true,
+            show_thinking: true,
+            show_result: true,
+        };
+        *provider.shared.current_thread.lock().unwrap() = Some("active-thread".into());
+        *provider.shared.display.lock().unwrap() = active_display;
+        *provider.shared.turn_in_flight.lock().unwrap() = true;
+
+        let err = provider
+            .resume_and_send(
+                "requested-thread",
+                "new message",
+                crate::workflow_engine::engine::AgentDisplay {
+                    show_initial: false,
+                    show_thinking: false,
+                    show_result: false,
+                },
+            )
+            .expect_err("an active turn must reject a same-day resume-and-send");
+
+        assert_eq!(err, crate::agents::ACTIVE_TURN_ERROR);
+        assert_eq!(*provider.shared.display.lock().unwrap(), active_display);
+        assert_eq!(
+            provider.shared.current_thread.lock().unwrap().as_deref(),
+            Some("active-thread")
         );
     }
 
