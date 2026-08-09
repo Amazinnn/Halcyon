@@ -64,7 +64,7 @@ focus-cli --agent-thread <thread_id> <command>
 }
 ```
 
-验证时只创建这种不含桌面、计时、应用或文件副作用的 Agent 手动日程。完成 create、read、update、run、runs 后，必须 `workflow delete <id>` 清理临时日程；如运行仍在进行，先 `workflow cancel <id>`。不要猜测 JSON 或 Agent id，始终读取命令返回的 JSON。
+验证时只创建这种不含桌面、计时、应用或文件副作用的 Agent 手动日程。完成 create、read、update 后执行 `workflow run <id>`，每秒查询一次 `workflow runs <id>`，在有界等待内直到状态为 `success`、`failed` 或 `cancelled`。`success` 后报告结果；`failed` 或 `cancelled` 时如实说明。只在超时或明确清理时执行 `workflow cancel <id>`，随后必须 `workflow delete <id>` 清理临时日程。不要猜测 JSON 或 Agent id，始终读取命令返回的 JSON。
 
 ## 注意
 

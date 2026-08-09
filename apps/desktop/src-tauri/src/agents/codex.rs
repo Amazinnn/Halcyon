@@ -7,6 +7,7 @@
 //! against `codex app-server generate-json-schema` (0.146.0-alpha.3.1).
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -101,6 +102,19 @@ pub fn install_focus_cli_skill() -> Result<PathBuf, String> {
     install_focus_cli_skill_into(Path::new(&home))
 }
 
+/// Make the release sidecar directory available to the real Codex app-server.
+/// The desktop executable and `focus-cli.exe` are shipped together.
+fn app_server_path_with_focus_cli(focus_exe: &Path, existing_path: Option<OsString>) -> OsString {
+    let mut paths = focus_exe
+        .parent()
+        .map(|parent| vec![parent.to_path_buf()])
+        .unwrap_or_default();
+    if let Some(existing_path) = existing_path.as_ref() {
+        paths.extend(std::env::split_paths(existing_path));
+    }
+    std::env::join_paths(paths).unwrap_or_else(|_| existing_path.unwrap_or_default())
+}
+
 
 impl CodexProvider {
     pub fn new(tx: Sender<CoreEvent>, exe_path: PathBuf, character_id: String) -> Self {
@@ -152,7 +166,14 @@ impl CodexProvider {
         if self.child.is_some() && self.stdin.is_some() {
             return Ok(());
         }
-        let mut child = Command::new(&self.exe_path)
+        let mut command = Command::new(&self.exe_path);
+        if let Ok(focus_exe) = std::env::current_exe() {
+            command.env(
+                "PATH",
+                app_server_path_with_focus_cli(&focus_exe, std::env::var_os("PATH")),
+            );
+        }
+        let mut child = command
             .arg("app-server")
             .arg("--stdio")
             .stdin(Stdio::piped())
@@ -850,5 +871,25 @@ mod tests {
         assert!(!workflow.nodes[0].params["characterId"].as_str().unwrap().is_empty());
         assert!(workflow.nodes[0].params["prompt"].is_string());
         assert_eq!(workflow.nodes[0].params["showResult"], true);
+    }
+
+    #[test]
+    fn app_server_path_puts_focus_sidecar_before_existing_path() {
+        let original = std::ffi::OsString::from(r"C:\\Windows\\System32;C:\\Tools");
+        let path = app_server_path_with_focus_cli(
+            Path::new(r"C:\\Focus\\focus-desktop.exe"),
+            Some(original.clone()),
+        );
+        let paths: Vec<_> = std::env::split_paths(&path).collect();
+
+        assert_eq!(paths.first(), Some(&PathBuf::from(r"C:\\Focus")));
+        assert_eq!(paths[1..], std::env::split_paths(&original).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn focus_cli_skill_waits_for_workflow_success_before_cleanup() {
+        assert!(FOCUS_CLI_SKILL.contains("每秒查询一次 `workflow runs <id>`"));
+        assert!(FOCUS_CLI_SKILL.contains("`success`、`failed` 或 `cancelled`"));
+        assert!(FOCUS_CLI_SKILL.contains("只在超时或明确清理时执行 `workflow cancel <id>`"));
     }
 }
