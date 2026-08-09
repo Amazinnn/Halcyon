@@ -205,6 +205,7 @@ export const useUiStore = defineStore("ui", {
     },
     skip() {
       if (this.focusState === "focus") {
+        void invoke("desktop_unlock").catch(() => {});
         this.startRest(true); // v1.8.2: skipped focus still records elapsed focus time
       } else {
         this.startFocus(); // idle or rest -> focus

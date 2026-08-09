@@ -1264,6 +1264,7 @@ fn list_running_apps() -> Vec<String> {
 
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
+    let _ = crate::desktop_lock::unlock_desktop();
     app.exit(0);
 }
 
@@ -1759,7 +1760,7 @@ pub fn run() {
                     let _ = CloseHandle(h);
                 }
             }
-            let _ = desktop_lock::unlock_desktop();
+            let _ = desktop_lock::restore_desktop_after_process_exit();
             std::process::exit(0);
         }
     }

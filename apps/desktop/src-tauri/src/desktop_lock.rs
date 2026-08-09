@@ -106,11 +106,10 @@ pub fn lock_desktop() -> Result<(), String> {
     Ok(())
 }
 
-pub fn unlock_desktop() -> Result<(), String> {
-    if !LOCKED.load(Ordering::Relaxed) {
-        return Ok(());
-    }
-    // Best-effort restore: continue even if one window lookup fails.
+/// Restore the Windows shell windows without relying on this process's lock
+/// state. A crash watchdog runs in a separate process, where `LOCKED` always
+/// starts false even if its parent hid the taskbar and desktop.
+pub fn restore_desktop_after_process_exit() -> Result<(), String> {
     let tray = unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), None).unwrap_or_default() };
     let progman = unsafe { FindWindowW(windows::core::w!("Progman"), None).unwrap_or_default() };
     unsafe {
@@ -120,6 +119,16 @@ pub fn unlock_desktop() -> Result<(), String> {
         if !hwnd_is_null(progman) {
             let _ = ShowWindow(progman, SW_SHOW);
         }
+    }
+    Ok(())
+}
+
+pub fn unlock_desktop() -> Result<(), String> {
+    // Keep shell restoration idempotent so an explicit unlock can also repair
+    // a stale hidden desktop after an earlier process has exited.
+    restore_desktop_after_process_exit()?;
+    if !LOCKED.load(Ordering::Relaxed) {
+        return Ok(());
     }
     if let Some(h) = HOOK.lock().unwrap().take() {
         unsafe {
@@ -141,6 +150,15 @@ mod tests {
         LOCKED.store(true, Ordering::Relaxed);
         assert!(is_locked());
         LOCKED.store(false, Ordering::Relaxed);
+        assert!(!is_locked());
+    }
+
+    #[test]
+    fn crash_recovery_restores_desktop_without_local_lock_state() {
+        // A watchdog is a separate process, so its LOCKED static always starts
+        // false. Recovery must still restore the shell windows it inherits.
+        LOCKED.store(false, Ordering::Relaxed);
+        restore_desktop_after_process_exit().unwrap();
         assert!(!is_locked());
     }
 }
