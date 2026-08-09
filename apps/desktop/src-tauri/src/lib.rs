@@ -1461,6 +1461,15 @@ fn initial_float_rect(
     (x, y, w, h, collapsed.iter().any(|c| c == label))
 }
 
+/// v1.12.3: floats must never become the active window — activation paints
+/// the system caption highlight (the light-blue bar). Same treatment as the
+/// grid-overlay (v1.7.2).
+fn float_noactivate(w: &tauri::WebviewWindow) {
+    if let Ok(hwnd) = w.hwnd() {
+        acrylic::noactivate(hwnd.0);
+    }
+}
+
 fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
     let url = tauri::WebviewUrl::App("index.html".into());
     // v1.10.3.1 (#46/#48): floats are born at their saved grid rect so they
@@ -1491,6 +1500,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
                         .visible(!chat_collapsed) // v1.10.3.1 (#46)
         .build()?;
     strip_float_frame(&chat);
+    float_noactivate(&chat);
 
     let (stats_px, stats_py, stats_pw, stats_ph, stats_collapsed) =
         initial_float_rect(&grid, &collapsed, &gm, "stats", GridRect { col: 0, row: 0, cols: 2, rows: 2 });
@@ -1507,6 +1517,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
                         .visible(!stats_collapsed) // v1.10.3.1 (#46)
         .build()?;
     strip_float_frame(&stats);
+    float_noactivate(&stats);
 
     let (music_px, music_py, music_pw, music_ph, music_collapsed) =
         initial_float_rect(&grid, &collapsed, &gm, "music", GridRect { col: 0, row: 0, cols: 2, rows: 2 });
@@ -1523,6 +1534,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
                         .visible(!music_collapsed) // v1.10.3.1 (#46)
         .build()?;
     strip_float_frame(&music);
+    float_noactivate(&music);
 
     let (pet_px, pet_py, pet_pw, pet_ph, pet_collapsed) =
         initial_float_rect(&grid, &collapsed, &gm, "pet", GridRect { col: 0, row: 0, cols: 2, rows: 2 });
@@ -1539,6 +1551,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
                         .visible(!pet_collapsed) // v1.10.3.1 (#46)
         .build()?;
     strip_float_frame(&pet);
+    float_noactivate(&pet);
 
     let (workflow_px, workflow_py, workflow_pw, workflow_ph, workflow_collapsed) =
         initial_float_rect(&grid, &collapsed, &gm, "workflow", GridRect { col: 0, row: 2, cols: 6, rows: 5 }); // v1.10.4 (#51) default 6x5
@@ -1555,6 +1568,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
                         .visible(!workflow_collapsed) // v1.10.3.1 (#46)
         .build()?;
     strip_float_frame(&workflow);
+    float_noactivate(&workflow);
 
     let overlay = tauri::WebviewWindowBuilder::new(app, "grid-overlay", url.clone())
         .title("Grid Overlay")
