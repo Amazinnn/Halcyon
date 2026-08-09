@@ -245,7 +245,7 @@ impl CodexProvider {
         // M5 (ADR-0022): system-level output discipline injected into every
         // turn (short newline-separated sentences, no Markdown).
         *self.shared.display.lock().unwrap() = display;
-        *self.shared.first_delta_sent.lock().unwrap() = false;
+        reset_turn_capture(&self.shared);
         let full = format!("{}\n\n{}", super::OUTPUT_DISCIPLINE, text);
         let resp = self.request(
             "turn/start",
@@ -426,6 +426,7 @@ fn dispatch_message(
         "item/completed" => handle_item_completed(tx, shared, &params),
         "item/agentMessage/delta" => handle_agent_delta(tx, shared, &params),
         "turn/started" => {
+            reset_turn_capture(shared);
             if let Some(turn_id) = params
                 .get("turn")
                 .and_then(|t| t.get("id"))
@@ -450,6 +451,11 @@ fn dispatch_message(
         }
         _ => {}
     }
+}
+
+fn reset_turn_capture(shared: &Shared) {
+    shared.last_message.lock().unwrap().clear();
+    *shared.first_delta_sent.lock().unwrap() = false;
 }
 
 fn emit_envelope(tx: &Sender<CoreEvent>, shared: &Shared, event: Value) {
@@ -508,6 +514,7 @@ fn handle_item_completed(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value
     match item.get("type").and_then(Value::as_str) {
         Some("agentMessage") => {
             if let Some(text) = item.get("text").and_then(Value::as_str) {
+                *shared.last_message.lock().unwrap() = text.to_string();
                 // M5 (ADR-0022): final result shown only when showResult is on.
                 if !text.trim().is_empty() && shared.display.lock().unwrap().show_result {
                     emit_envelope(tx, shared, json!({ "type": "message.completed", "text": text }));
@@ -733,6 +740,59 @@ mod tests {
             }
         }
         assert!(saw_error, "failed turn must emit session.error");
+    }
+
+    #[test]
+    fn hidden_turn_preserves_result_without_emitting_completed_chat() {
+        let (tx, _rx) = tokio::sync::broadcast::channel::<CoreEvent>(32);
+        let shared = Arc::new(Shared {
+            character_id: "char-test".into(),
+            session_id: "s1".into(),
+            current_thread: Mutex::new(Some("thread-1".into())),
+            current_turn: Mutex::new(None),
+            last_message: Mutex::new("stale result".into()),
+            display: Mutex::new(crate::workflow_engine::engine::AgentDisplay {
+                show_initial: false,
+                show_thinking: false,
+                show_result: false,
+            }),
+            first_delta_sent: Mutex::new(false),
+        });
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let (td_tx, mut td_rx) = tokio::sync::broadcast::channel::<TurnDone>(16);
+        let td = Arc::new(td_tx);
+        let mut events = tx.subscribe();
+
+        dispatch_message(
+            &tx,
+            &shared,
+            &pending,
+            &td,
+            json!({ "method": "turn/started", "params": { "turn": { "id": "turn-1" } } }),
+        );
+        assert!(shared.last_message.lock().unwrap().is_empty());
+        dispatch_message(
+            &tx,
+            &shared,
+            &pending,
+            &td,
+            json!({ "method": "item/completed", "params": { "item": { "type": "agentMessage", "text": "private result" } } }),
+        );
+        dispatch_message(
+            &tx,
+            &shared,
+            &pending,
+            &td,
+            json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } }),
+        );
+
+        let done = td_rx.try_recv().expect("turn completion signal");
+        assert_eq!(done.result.as_deref(), Some("private result"));
+        while let Ok(event) = events.try_recv() {
+            if let CoreEvent::AgentEvent(envelope) = event {
+                assert_ne!(envelope["event"]["type"], "message.completed");
+            }
+        }
     }
 
     #[test]
