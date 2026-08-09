@@ -19,8 +19,12 @@
 ### v1.12 桌面锁后端（2026-08-08 已实现待验收，需求 #70，ADR-0023）
 - 隐藏任务栏+桌面图标+禁键（Win/Alt+Tab/Alt+F4/Ctrl+Esc）；focus-cli desktop lock/unlock/status；六层崩溃检测/逃生（panic hook/Drop/watchdog/focus-cli/逃生文件/explorer 重启）；核心+开发期防御双模块（产品期删防御文件）。UI 触发留给专注模式。
 
+### Agent 对话与工作流闭合（2026-08-09 已实现，真实 Codex 验收待执行，需求 #76–#78，ADR-0024）
+- 正式桌面路径不自动回退 Mock；聊天极简；工作流固定为统一全量日程列表；仅 `showResult` 的 Agent 节点最终结果可一次性带来源回流到目标 Agent 对话与宠物泡泡。
+- **下一门槛**：真实 Codex 与当前宠物完成对话，并经 focus-cli 创建、读取、更新、运行、删除唯一命名的临时工作流；不以 Mock 或模拟结果替代。
+
 ### v1.11.3 M5 完善轮（2026-08-08 已实现待验收，需求 #69，ADR-0022）
-- 多 Agent 事件隔离（envelope agentId=character_id）；崩溃=下次自动重启（去 fallback）；记住上次 Agent；设置页 Agent 管理（删除连带删工作区/打开工作区文件夹）；三开关 provider 层生效（初始短句/思考/最终）。
+- 多 Agent 事件隔离（envelope agentId=character_id）；崩溃=下次自动重启（去 fallback）；记住上次 Agent；设置页 Agent 管理（删除连带删工作区/打开工作区文件夹）；系统级输出纪律注入每次 turn。工作流展示语义已由 ADR-0024 收敛。
 
 ### v1.11.2 M5 Agent 看板 MVP（2026-08-08 已实现待验收，需求 #65/#67，ADR-0022）
 - 宠物=Agent 一对一（DB 0007）；多实例 AgentRuntime；懒生成工作区+AGENTS.md（身份唯一来源）；每日会话旋转（哈希存 Rust + focus-cli agent session/list）；聊天 Agent 下拉；VPN loopback 绕过。
@@ -33,7 +37,7 @@
 - 空角色合法化：save 不挂回 / 删 repair_orphan / list 空串=全部含未绑定；孤儿测试数据删库清理。
 - Agent 节点级目标：节点 `characterId` 参数（含 Agent 节点=必然绑定，节点决定调谁）；前端目标Agent下拉。
 - JSON 文档 + focus-cli `workflow read/create/update/delete --payload`（Agent 只经 CLI 增删改查 JSON，JSON=唯一真相）；`workflow:changed` 事件广播；白名单放行 workflow 全部子命令。
-- 前端列表形态（未绑定工作流入口）M5 再做。
+- 统一全量日程列表与未绑定工作流入口已由 ADR-0024 完成。
 
 ### v1.10.5.1 修复轮：文档固化 + 三样修复（2026-08-08 已实现待验收，需求 #64–#66，ADR-0019）
 - 存档角色绑定：ensure_characters 永不静默返回空（锁失败 into_inner；无宠物包确保 char-default）；workflow_save 空角色自动挂默认角色；启动 repair_orphan_workflows 孤儿挂回默认角色（一次性找回）；前端刷新空角色重试 3×500ms、toDraft 空角色拦截、保存中/已保存✓ + beforeunload flush。
@@ -81,12 +85,11 @@
 
 剩余（下一迭代候选）：
 - **托盘**：`TrayController` 基础托盘菜单（显示/隐藏面板、开始/停止专注）。全局快捷键绑定**暂缓**（需求 #19：所有开发完成前不绑定任何快捷键）。
-- **Agent 状态模拟器完善**：Mock 序列参数化（速度/剧本/气泡），保留 Schema 校验。
-- 验收：重启后布局恢复；宠物状态切换流畅。
+- 验收：先完成 ADR-0024 的真实 Codex 对话与工作流闭环；重启后布局恢复；宠物状态切换流畅。
 
 ## 后续里程碑（保持 M2→M7 顺序）
 
-- M2：时间统计 + 本地音乐播放器——**已实现**（v1.8 统计真实化 + v1.9 本地音乐播放器，ADR-0011）；M3：Codex CLI 嵌入（Claudian 式；2026-08-06 已实现垂直切片：对话 + focus-cli 白名单审计 + skills 透传，ADR-0007；plan mode/Diff/终端面板/Claude Code 为后续，**2026-08-08 冻结**「以后未必做」）；M4：内置工作流引擎（精简 n8n；2026-08-07 方向锁定 #26/#28/#29，v1.10.5 已实现；2026-08-08 冻结（#64/#66，ADR-0019）并**v1.11 退化为 Agent 日程工具**（ADR-0020），**v1.11.1 修复环状执行语义**（ADR-0021））；M5：新的 Agent（外部 Agent 驱动的角色循环；2026-08-07 已锁定方向 #27；**v1.11.2 实现 MVP + v1.11.3 完善**（ADR-0022：宠物=Agent / 多实例 / 懒生成工作区+AGENTS.md / 每日会话 / 事件隔离 / 崩溃自动重启 / 设置页管理 / 三开关），Agent 概念 #65 已落地）；后续顺延：监督与软限制、实验性虚拟桌面（C# helper）、多 Agent 生态。
+- M2：时间统计 + 本地音乐播放器——**已实现**（v1.8 统计真实化 + v1.9 本地音乐播放器，ADR-0011）；M3：Codex CLI 嵌入（Claudian 式；2026-08-06 已实现垂直切片：对话 + focus-cli 白名单审计 + skills 透传，ADR-0007；plan mode/Diff/终端面板/Claude Code 为后续，**2026-08-08 冻结**「以后未必做」）；M4：内置工作流引擎（精简 n8n；2026-08-07 方向锁定 #26/#28/#29，v1.10.5 已实现；2026-08-08 冻结（#64/#66，ADR-0019）并**v1.11 退化为 Agent 日程工具**（ADR-0020），**v1.11.1 修复环状执行语义**（ADR-0021））；M5：新的 Agent（ADR-0022 MVP/完善已落地，ADR-0024 闭合真实 Provider、极简聊天、统一日程与最终结果回流；真实 Codex 验收为当前门槛）；后续顺延：监督与软限制、实验性虚拟桌面（C# helper）、多 Agent 生态。
 - M1 与 M2 模块边界清晰，可部分并行；M3 依赖 M1 的对话面板可用性。
 
-- M4/M5 方向见 docs/requirements-verbatim.md #26/#27；M4 已冻结并退化为 Agent 日程工具（#64/#67/#68，ADR-0019/0020/0021），M5 Agent 概念已定稿（#65，ADR-0019）后端地基已铺（#67，ADR-0020）待实施。
+- M4/M5 方向见 docs/requirements-verbatim.md #26/#27；M4 已冻结并退化为 Agent 日程工具（#64/#67/#68，ADR-0019/0020/0021）；M5 Agent 概念已定稿并完成 ADR-0024 所界定的闭合实现，当前只等真实 Codex 验收。
