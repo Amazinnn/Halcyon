@@ -36,7 +36,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
-use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER};
 
 use crate::grid::{GridManager, GRID_COLS, GRID_ROWS};
 use crate::settings::GridRect;
@@ -103,6 +103,33 @@ pub(crate) fn move_window_raw(w: &tauri::WebviewWindow, x: i32, y: i32) -> bool 
     {
         let _ = (w, x, y);
         false
+    }
+}
+
+/// v1.12.2: native resize (SetWindowPos + SWP_NOACTIVATE + SWP_ASYNCWINDOWPOS).
+/// Tauri's `set_size` can activate the window and paint a caption highlight
+/// while a drag/resize preview is held (the light-blue bar).
+pub(crate) fn resize_window_raw(w: &tauri::WebviewWindow, width: u32, height: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(hwnd) = w.hwnd() {
+            let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
+            let _ = unsafe {
+                SetWindowPos(
+                    hwnd_win,
+                    None,
+                    0,
+                    0,
+                    width as i32,
+                    height as i32,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+                )
+            };
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (w, width, height);
     }
 }
 

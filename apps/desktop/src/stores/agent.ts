@@ -83,24 +83,31 @@ export const useAgentStore = defineStore("agent", {
       this.bubble = { text, priority, expiresAt: Date.now() + 5000 };
     },
     async refreshCharacters() {
-      try {
-        const chars = await invoke<{ id: string; name: string }[]>("characters_list");
-        this.characters = chars;
-        if (chars.length) {
-          // M5 (ADR-0022): restore the last-selected Agent, else pick first.
-          const saved = localStorage.getItem("focus-agent");
-          const target = saved && chars.some((c) => c.id === saved) ? saved : chars[0].id;
-          if (target !== this.characterId) {
-            await this.selectCharacter(target);
+      // v1.12.2: retry a transient empty list (startup race — workflow's
+      // ensure_characters may not have run yet) instead of leaving
+      // characterId empty and failing later with "角色不存在".
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const chars = await invoke<{ id: string; name: string }[]>("characters_list");
+          this.characters = chars;
+          if (chars.length) {
+            // M5 (ADR-0022): restore the last-selected Agent, else pick first.
+            const saved = localStorage.getItem("focus-agent");
+            const target = saved && chars.some((c) => c.id === saved) ? saved : chars[0].id;
+            if (target !== this.characterId) {
+              await this.selectCharacter(target);
+            }
+            return;
           }
+        } catch (e) {
+          console.error("[agent] characters_list failed", e);
         }
-      } catch (e) {
-        console.error("[agent] characters_list failed", e);
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
       }
     },
     /** M5 (ADR-0022): switch Agent = replace the dialog context immediately. */
     async selectCharacter(id: string) {
-      if (id === this.characterId) return;
+      if (!id || id === this.characterId) return;
       this.characterId = id;
       // M5: remember the choice across restarts.
       localStorage.setItem("focus-agent", id);

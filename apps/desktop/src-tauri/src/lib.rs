@@ -111,10 +111,13 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
             // v1.10.2 (#35, ADR-0014): position changes move the native HWND
             // (no WebView2 SetBounds RPC per call); size changes still go
             // through the webview so the renderer relayouts.
+            // v1.12.2: size path is ALSO native (SetWindowPos + SWP_NOACTIVATE)
+            // — Tauri's set_size can activate the window and paint a caption
+            // highlight (light-blue bar) while drag/resize preview is held.
             if !crate::drag::move_window_raw(&w, cx, cy) {
                 let _ = w.set_position(LogicalPosition::new(x - ox as f64 / scale, y - oy as f64 / scale));
             }
-            let _ = w.set_size(LogicalSize::new(wpx, hpx));
+            crate::drag::resize_window_raw(&w, pwp, php);
         }
     }
 }
@@ -501,6 +504,19 @@ fn agent_open_workspace(app: tauri::AppHandle, character_id: String) -> Result<(
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// v1.12.2: UI-facing desktop lock (focus start). Fail-no-lock semantics live
+/// in desktop_lock::lock_desktop.
+#[tauri::command]
+fn desktop_lock() -> Result<(), String> {
+    crate::desktop_lock::lock_desktop()
+}
+
+/// v1.12.2: UI-facing desktop unlock (focus pause/skip/end).
+#[tauri::command]
+fn desktop_unlock() -> Result<(), String> {
+    crate::desktop_lock::unlock_desktop()
 }
 
 #[tauri::command]
@@ -2046,6 +2062,8 @@ pub fn run() {
             agent_list_skills,
             agent_delete,
             agent_open_workspace,
+            desktop_lock,
+            desktop_unlock,
             set_agent_provider,
             set_agent_workspace_dir,
             pet_import_pack,

@@ -119,6 +119,9 @@ export const useUiStore = defineStore("ui", {
       this.timerPaused = false;
       this.phaseDone = false;
       this.focusRemainingSec = this.focusMinutes * 60;
+      // v1.12.2: focus start locks the desktop (taskbar/icons hidden, keys
+      // blocked). Lock failure must NOT block focusing — warn only.
+      void invoke("desktop_lock").catch(() => {});
       void emit("focus:state_changed", { state: "focus" });
       this.emitTick();
       this._ticker = window.setInterval(() => this.tick(), 1000);
@@ -169,6 +172,8 @@ export const useUiStore = defineStore("ui", {
         this.focusRemainingSec--;
         if (this.focusRemainingSec <= 0) {
           this.onPhaseChime();
+          // v1.12.2: focus round naturally ends → unlock the desktop.
+          void invoke("desktop_unlock").catch(() => {});
           window.setTimeout(() => void this.loadTodaySummary(), 600);
           // v1.11.1: a workflow-driven focus countdown ending restarts the
           // timer state but must not fire the focus_end workflow trigger.
@@ -193,6 +198,8 @@ export const useUiStore = defineStore("ui", {
     pause() {
       if (this.focusState === "idle" || this.phaseDone) return;
       this.timerPaused = !this.timerPaused;
+      // v1.12.2: pausing a focus round unlocks the desktop.
+      if (this.focusState === "focus") void invoke("desktop_unlock").catch(() => {});
       void emit("focus:state_changed", { state: this.focusState, paused: this.timerPaused });
       this.emitTick();
     },

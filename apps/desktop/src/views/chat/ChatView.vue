@@ -46,6 +46,12 @@ onMounted(async () => {
 function send() {
   const text = input.value.trim();
   if (!text) return;
+  // v1.12.2: never send with an empty characterId (Rust would report
+  // "角色不存在") — prompt instead.
+  if (!agent.characterId) {
+    agent.pushSystem("请先选择 Agent");
+    return;
+  }
   input.value = "";
   void agent.send(text);
 }
