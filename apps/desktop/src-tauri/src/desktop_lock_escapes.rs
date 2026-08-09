@@ -17,7 +17,7 @@ pub fn install_all() {
 /// Layer 1: panic → unlock before the process dies.
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        if crate::desktop_lock::is_locked() {
+        if crate::desktop_lock::is_any_locked() {
             let _ = crate::desktop_lock::unlock_desktop();
         }
         eprintln!("[focus] panic: {info}");
@@ -43,7 +43,7 @@ fn watch_escape_file() {
     std::thread::spawn(|| {
         let path = std::env::temp_dir().join("focus-lock-escape.tmp");
         loop {
-            if crate::desktop_lock::is_locked() && path.exists() {
+            if crate::desktop_lock::is_any_locked() && path.exists() {
                 let _ = crate::desktop_lock::unlock_desktop();
                 let _ = std::fs::remove_file(&path);
             }

@@ -107,6 +107,8 @@ pub struct Settings {
     pub sound_enabled: bool,
     #[serde(default = "default_show_topbar")]
     pub show_topbar: String,
+    #[serde(default = "default_focus_mode")]
+    pub focus_mode: String,
     #[serde(default = "default_agent_provider")]
     pub agent_provider: String,
     #[serde(default)]
@@ -132,6 +134,10 @@ fn default_5() -> u32 {
 
 fn default_show_topbar() -> String {
     "auto".into()
+}
+
+fn default_focus_mode() -> String {
+    "standard".into()
 }
 
 fn default_true() -> bool {
@@ -176,6 +182,7 @@ impl Default for Settings {
             supervision_pause_until: None,
             sound_enabled: true,
             show_topbar: "auto".into(),
+            focus_mode: "standard".into(),
             agent_provider: "codex".into(),
             agent_workspace_dir: None,
         pet_pack_id: None,

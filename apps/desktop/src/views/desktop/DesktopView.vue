@@ -282,6 +282,11 @@ onBeforeUnmount(() => {
       <button v-if="ui.focusState !== 'focus'" class="dock-btn" @click="ui.startFocus()">
         <AppIcon name="leaf" /><span>开始专注</span>
       </button>
+      <div v-if="ui.focusState !== 'focus'" class="focus-mode-seg" role="group" aria-label="专注锁定模式">
+        <button :class="{ on: settings.focusMode === 'light' }" @click="settings.setFocusMode('light')">轻度</button>
+        <button :class="{ on: settings.focusMode === 'standard' }" @click="settings.setFocusMode('standard')">标准</button>
+        <button :class="{ on: settings.focusMode === 'scholar' }" @click="settings.setFocusMode('scholar')">学霸</button>
+      </div>
       <button class="dock-btn" @click="settingsOpen = !settingsOpen">
         <AppIcon name="settings" /><span>设置</span>
       </button>
@@ -537,6 +542,24 @@ onBeforeUnmount(() => {
   transition: color var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out);
 }
 .dock-btn:hover { color: var(--accent-bright); background: var(--accent-wash); }
+.focus-mode-seg {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-pill);
+  background: rgba(0, 0, 0, 0.14);
+}
+.focus-mode-seg button {
+  border: 0;
+  border-radius: var(--r-pill);
+  padding: 5px 8px;
+  color: var(--text-mid);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.focus-mode-seg button.on { color: var(--bg-0); background: var(--accent-bright); }
 
 .popover-backdrop { position: fixed; inset: 0; z-index: 20; }
 </style>

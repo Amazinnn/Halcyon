@@ -162,6 +162,7 @@ struct Bootstrap {
     supervision_pause_until: Option<i64>,
     sound_enabled: bool,
     show_topbar: String,
+    focus_mode: String,
     agent_provider: String,
     agent_workspace_dir: Option<String>,
     pet_bg_fade: bool,
@@ -195,6 +196,7 @@ fn get_bootstrap(
         supervision_pause_until: s.supervision_pause_until,
         sound_enabled: s.sound_enabled,
         show_topbar: s.show_topbar.clone(),
+        focus_mode: s.focus_mode.clone(),
         agent_provider: s.agent_provider.clone(),
         agent_workspace_dir: s.agent_workspace_dir.clone(),
         pet_bg_fade: s.pet_bg_fade,
@@ -520,6 +522,13 @@ fn desktop_lock() -> Result<(), String> {
 #[tauri::command]
 fn desktop_unlock() -> Result<(), String> {
     crate::desktop_lock::unlock_desktop()
+}
+
+/// UI-only focus lock: this intentionally differs from `desktop_lock`, which
+/// remains the strict/full lock used by focus-cli.
+#[tauri::command]
+fn desktop_set_focus_lock(mode: String) -> Result<(), String> {
+    crate::desktop_lock::set_focus_lock(&mode)
 }
 
 #[tauri::command]
@@ -1097,6 +1106,16 @@ fn set_focus_durations(state: tauri::State<'_, AppState>, focus: u32, rest: u32)
     settings.rest_minutes = rest.clamp(1, 120);
     let _ = settings.save(&state.data_dir);
     Ok(())
+}
+
+#[tauri::command]
+fn set_focus_mode(state: tauri::State<'_, AppState>, mode: String) -> Result<(), String> {
+    if !matches!(mode.as_str(), "light" | "standard" | "scholar") {
+        return Err("invalid focus mode".into());
+    }
+    let mut settings = state.settings.lock().unwrap();
+    settings.focus_mode = mode;
+    settings.save(&state.data_dir)
 }
 
 #[tauri::command]
@@ -2000,6 +2019,7 @@ pub fn run() {
             save_task,
             set_current_task,
             set_focus_durations,
+            set_focus_mode,
             set_distraction_lists,
             set_supervision_paused,
             resume_supervision,
@@ -2029,6 +2049,7 @@ pub fn run() {
             agent_open_workspace,
             desktop_lock,
             desktop_unlock,
+            desktop_set_focus_lock,
             set_agent_provider,
             set_agent_workspace_dir,
             pet_import_pack,

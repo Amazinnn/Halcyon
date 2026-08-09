@@ -267,6 +267,15 @@ onMounted(load);
     </div>
 
     <section class="group">
+      <h4>专注锁定模式</h4>
+      <div class="mode-help">
+        <p><strong>轻度：</strong>不锁定桌面，任务栏、桌面与快捷键均可使用。</p>
+        <p><strong>标准：</strong>拦截 Win、Alt+Tab、Alt+F4 与 Ctrl+Esc，保留任务栏和桌面。</p>
+        <p><strong>学霸：</strong>在标准基础上隐藏任务栏与桌面图标。</p>
+      </div>
+    </section>
+
+    <section class="group">
       <h4>壁纸</h4>
       <div class="row">
         <div class="btns">
@@ -601,6 +610,9 @@ onMounted(load);
 .pack-name:hover { background: var(--accent-wash); color: var(--accent-bright); }
 .pack-name.active { background: var(--accent-wash); color: var(--accent-bright); }
 .about { font-size: 11px; color: var(--text-low); border-top: 1px solid var(--glass-border); padding-top: 8px; }
+.mode-help { display: flex; flex-direction: column; gap: 5px; }
+.mode-help p { margin: 0; color: var(--text-mid); font-size: 12px; line-height: 1.45; }
+.mode-help strong { color: var(--accent-bright); }
 .seg { display: flex; gap: 4px; }
 .seg button {
   border: 1px solid var(--glass-border); background: var(--glass-strong);

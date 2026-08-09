@@ -20,11 +20,19 @@ fn hwnd_is_null(h: HWND) -> bool {
 }
 
 static LOCKED: AtomicBool = AtomicBool::new(false);
+static SHELL_HIDDEN: AtomicBool = AtomicBool::new(false);
 // HHOOK is !Send; wrap in a raw usize (handle value) for the static.
 static HOOK: Mutex<Option<isize>> = Mutex::new(None);
 static TRANSITION: Mutex<()> = Mutex::new(());
 
 pub fn is_locked() -> bool {
+    LOCKED.load(Ordering::Relaxed) && SHELL_HIDDEN.load(Ordering::Relaxed)
+}
+
+/// True whenever the keyboard hook or strict shell lock is active. Cleanup
+/// paths must use this rather than `is_locked`, whose CLI-facing meaning is
+/// deliberately limited to the strict/full desktop lock.
+pub fn is_any_locked() -> bool {
     LOCKED.load(Ordering::Relaxed)
 }
 
@@ -63,8 +71,33 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
     unsafe { CallNextHookEx(Some(HHOOK::default()), code, wparam, lparam) }
 }
 
+fn lock_keys_inner() -> Result<(), String> {
+    if !LOCKED.load(Ordering::Relaxed) {
+        let hook = unsafe {
+            SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(kb_hook as unsafe extern "system" fn(i32, WPARAM, LPARAM) -> LRESULT),
+                None,
+                0,
+            )
+        };
+        let Ok(hook) = hook else {
+            return Err("keyboard hook installation failed".into());
+        };
+        if hook.is_invalid() {
+            return Err("keyboard hook installation failed".into());
+        }
+        *HOOK.lock().unwrap() = Some(hook.0 as isize);
+        LOCKED.store(true, Ordering::Relaxed);
+    }
+    if SHELL_HIDDEN.swap(false, Ordering::Relaxed) {
+        restore_desktop_after_process_exit()?;
+    }
+    Ok(())
+}
+
 fn lock_desktop_inner() -> Result<(), String> {
-    if LOCKED.load(Ordering::Relaxed) {
+    if LOCKED.load(Ordering::Relaxed) && SHELL_HIDDEN.load(Ordering::Relaxed) {
         return Ok(());
     }
     let tray = unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), None).unwrap_or_default() };
@@ -78,6 +111,10 @@ fn lock_desktop_inner() -> Result<(), String> {
     unsafe {
         let _ = ShowWindow(tray, SW_HIDE);
         let _ = ShowWindow(progman, SW_HIDE);
+    }
+    if LOCKED.load(Ordering::Relaxed) {
+        SHELL_HIDDEN.store(true, Ordering::Relaxed);
+        return Ok(());
     }
     let hook = unsafe {
         SetWindowsHookExW(
@@ -104,6 +141,7 @@ fn lock_desktop_inner() -> Result<(), String> {
     }
     *HOOK.lock().unwrap() = Some(hook.0 as isize);
     LOCKED.store(true, Ordering::Relaxed);
+    SHELL_HIDDEN.store(true, Ordering::Relaxed);
     Ok(())
 }
 
@@ -121,6 +159,7 @@ pub fn restore_desktop_after_process_exit() -> Result<(), String> {
             let _ = ShowWindow(progman, SW_SHOW);
         }
     }
+    SHELL_HIDDEN.store(false, Ordering::Relaxed);
     Ok(())
 }
 
@@ -148,6 +187,18 @@ pub fn set_desktop_locked(locked: bool) -> Result<(), String> {
     if locked { lock_desktop_inner() } else { unlock_desktop_inner() }
 }
 
+/// Focus rounds may use a lighter lock than the explicit desktop CLI lock.
+/// `keys` preserves the taskbar and desktop; `strict` retains the full lock.
+pub fn set_focus_lock(mode: &str) -> Result<(), String> {
+    let _transition = TRANSITION.lock().unwrap_or_else(|e| e.into_inner());
+    match mode {
+        "none" => unlock_desktop_inner(),
+        "keys" => lock_keys_inner(),
+        "strict" => lock_desktop_inner(),
+        _ => Err("invalid focus lock mode".into()),
+    }
+}
+
 pub fn lock_desktop() -> Result<(), String> {
     set_desktop_locked(true)
 }
@@ -165,9 +216,20 @@ mod tests {
         // Don't actually lock in tests (no desktop) — verify state bits.
         assert!(!is_locked());
         LOCKED.store(true, Ordering::Relaxed);
+        SHELL_HIDDEN.store(true, Ordering::Relaxed);
         assert!(is_locked());
         LOCKED.store(false, Ordering::Relaxed);
+        SHELL_HIDDEN.store(false, Ordering::Relaxed);
         assert!(!is_locked());
+    }
+
+    #[test]
+    fn keys_lock_is_active_without_reporting_strict_lock() {
+        LOCKED.store(true, Ordering::Relaxed);
+        SHELL_HIDDEN.store(false, Ordering::Relaxed);
+        assert!(is_any_locked());
+        assert!(!is_locked());
+        LOCKED.store(false, Ordering::Relaxed);
     }
 
     #[test]

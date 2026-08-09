@@ -1,6 +1,6 @@
 # Focus Desktop 当前状态（压缩交接页）
 
-> 更新：2026-08-09（v1.12.4 已实现待验收：#73 桌面锁退出残留黑屏修复；v1.12.2 已实现待验收：#71 四问题修复；v1.12（#70 桌面锁，ADR-0023）已实现待验收；v1.11.3（#69，ADR-0022）已实现待验收。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
+> 更新：2026-08-09（v1.12.6 已实现待验收：#75 三档专注锁机模式；v1.12.4 已实现待验收：#73 桌面锁退出残留黑屏修复；v1.12.2 已实现待验收：#71 四问题修复；v1.12（#70 桌面锁，ADR-0023）已实现待验收；v1.11.3（#69，ADR-0022）已实现待验收。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 
 ## 项目一句话
@@ -9,6 +9,7 @@
 
 ## 当前版本与已验证清单（v1.12.2 已实现待验收；前序 v1.12 及更早已实现待验收）
 - v1.12.4（桌面锁退出恢复，已实现待验收，需求 #73）：恢复 Shell_TrayWnd/Progman 的入口不再检查当前进程的 `LOCKED`；watchdog 在主进程被强制结束后调用该无状态入口；专注「跳过」和应用内退出先显式解锁。根因：watchdog 是独立进程，其 LOCKED 初值恒为 false，原先调用 unlock 会直接返回，导致桌面宿主持续隐藏。
+- v1.12.6（三档专注模式，已实现待验收，需求 #75）：轻度不锁定，标准只拦截 Win/Alt+Tab/Alt+F4/Ctrl+Esc，学霸模式额外隐藏 Shell；当前模式保存到设置，新用户默认标准。专注轮次快照模式；开始、暂停、恢复、跳过、自然结束及连续点击均通过串行转换，暂停/休息在可见状态变化前完成桌面恢复；既有 `focus-cli desktop lock/unlock/status` 仍是严格桌面锁语义。
 - v1.12.2（四问题修复，已实现待验收，需求 #71）：① 浮窗浅蓝条——position_window 尺寸路径原生化（SetWindowPos + SWP_NOACTIVATE，杜绝 Tauri set_size 激活画 caption）；② VPN 已解决（v1.12.1 env 合并，验证通过）；③ 「Agent 不存在」——refreshCharacters 空列表重试 3×500ms + ChatView 发送前校验 + selectCharacter 空保护；④ 锁接「开始专注」（startFocus/startFocusFor → desktop_lock；pause/专注结束 → desktop_unlock，新 Tauri 命令）。
 - v1.12（桌面锁后端，已实现待验收，需求 #70，ADR-0023）：隐藏任务栏（Shell_TrayWnd）+ 桌面图标（Progman）+ 禁键（Win/Alt+Tab/Alt+F4/Ctrl+Esc，低级键盘钩子）；focus-cli `desktop lock/unlock/status`；六层崩溃检测/逃生（panic hook / Drop / watchdog 子进程 / focus-cli / 逃生文件 / explorer 重启）；模块化：核心 desktop_lock.rs（产品保留）+ 开发期防御 desktop_lock_escapes.rs（产品期删一文件移除）；失败不锁 + 尽力解锁。UI 触发 v1.12.2 已接（专注开始锁/结束解）。
 - v1.11.3（M5 完善轮，已实现待验收，需求 #69，ADR-0022）：多 Agent 事件隔离（envelope agentId=character_id，前端按当前角色过滤）；Agent 崩溃=下次自动重启（去掉复杂 fallback）；记住上次 Agent（localStorage）；设置页 Agent 管理（列表/删除连带删工作区/打开工作区文件夹）；三开关 provider 层生效（showInitial 首条流式=开工短句 / showThinking 流式 / showResult 最终）；系统级输出纪律注入每次 turn。

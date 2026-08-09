@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
+import { DEFAULT_FOCUS_MODE, normalizeFocusMode, type FocusMode } from "../lib/focus-mode";
 
 export interface FocusTask {
   id: string;
@@ -23,6 +24,7 @@ export const useSettingsStore = defineStore("settings", {
     soundEnabled: true,
     showTopbar: "auto" as "auto" | "on" | "off",
     petBgFade: true,
+    focusMode: DEFAULT_FOCUS_MODE as FocusMode,
   }),
   getters: {
     currentTask(state): FocusTask | null {
@@ -43,6 +45,7 @@ export const useSettingsStore = defineStore("settings", {
         soundEnabled?: boolean;
         showTopbar?: string;
         petBgFade?: boolean;
+        focusMode?: string;
       }>("get_bootstrap");
       this.tasks = b.tasks ?? [];
       this.currentTaskId = b.currentTaskId ?? null;
@@ -56,12 +59,23 @@ export const useSettingsStore = defineStore("settings", {
       this.soundEnabled = !!b.soundEnabled;
       this.showTopbar = (b.showTopbar as "auto" | "on" | "off") ?? "auto";
       this.petBgFade = !!b.petBgFade;
+      this.focusMode = normalizeFocusMode(b.focusMode);
       this.loaded = true;
     },
     async setFocusDurations(focus: number, rest: number) {
       await invoke("set_focus_durations", { focus, rest });
       this.focusMinutes = focus;
       this.restMinutes = rest;
+    },
+    async setFocusMode(mode: FocusMode) {
+      const previous = this.focusMode;
+      this.focusMode = mode;
+      try {
+        await invoke("set_focus_mode", { mode });
+      } catch (error) {
+        this.focusMode = previous;
+        throw error;
+      }
     },
     async setSound(enabled: boolean) {
       await invoke("set_sound_enabled", { enabled });
