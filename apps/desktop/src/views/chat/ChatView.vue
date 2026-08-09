@@ -80,9 +80,10 @@ async function applyWorkspace() {
     <WindowHeader :title="agent.characterName" collapsible />
 
     <div class="agent-row">
-      <select class="agent-select" :value="agent.characterId" @change="agent.selectCharacter(($event.target as HTMLSelectElement).value)">
+      <select v-if="agent.characters.length" class="agent-select" :value="agent.characterId" @change="agent.selectCharacter(($event.target as HTMLSelectElement).value)">
         <option v-for="c in agent.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
       </select>
+      <button v-else class="ghost" @click="agent.refreshCharacters()">Agent 正在初始化，点击刷新</button>
       <span class="badge" :class="agent.provider">
         {{ agent.provider === "mock" && agent.fallback ? "Mock（回退）" : agent.provider === "mock" ? "Mock" : "Codex" }}
       </span>
@@ -129,11 +130,11 @@ async function applyWorkspace() {
     </div>
 
     <form class="composer" @submit.prevent="send">
-      <input v-model="input" placeholder="输入消息…" :disabled="agent.phase === 'connecting'" />
+      <input v-model="input" placeholder="输入消息…" :disabled="agent.phase === 'connecting' || !agent.characterId" />
       <button v-if="agent.phase === 'streaming' || agent.phase === 'connecting'" type="button" class="stop" @click="agent.interrupt()">
         停止
       </button>
-      <button type="submit" :disabled="!input.trim() || agent.phase === 'connecting'">发送</button>
+      <button type="submit" :disabled="!input.trim() || agent.phase === 'connecting' || !agent.characterId">发送</button>
     </form>
   </div>
 </template>

@@ -22,6 +22,7 @@ fn hwnd_is_null(h: HWND) -> bool {
 static LOCKED: AtomicBool = AtomicBool::new(false);
 // HHOOK is !Send; wrap in a raw usize (handle value) for the static.
 static HOOK: Mutex<Option<isize>> = Mutex::new(None);
+static TRANSITION: Mutex<()> = Mutex::new(());
 
 pub fn is_locked() -> bool {
     LOCKED.load(Ordering::Relaxed)
@@ -62,7 +63,7 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
     unsafe { CallNextHookEx(Some(HHOOK::default()), code, wparam, lparam) }
 }
 
-pub fn lock_desktop() -> Result<(), String> {
+fn lock_desktop_inner() -> Result<(), String> {
     if LOCKED.load(Ordering::Relaxed) {
         return Ok(());
     }
@@ -123,7 +124,7 @@ pub fn restore_desktop_after_process_exit() -> Result<(), String> {
     Ok(())
 }
 
-pub fn unlock_desktop() -> Result<(), String> {
+fn unlock_desktop_inner() -> Result<(), String> {
     // Keep shell restoration idempotent so an explicit unlock can also repair
     // a stale hidden desktop after an earlier process has exited.
     restore_desktop_after_process_exit()?;
@@ -137,6 +138,22 @@ pub fn unlock_desktop() -> Result<(), String> {
     }
     LOCKED.store(false, Ordering::Relaxed);
     Ok(())
+}
+
+/// The only entry point that changes shell visibility or the keyboard hook.
+/// Tauri commands can arrive from multiple WebViews, so this mutex preserves
+/// the user's request order across the whole hide/show operation.
+pub fn set_desktop_locked(locked: bool) -> Result<(), String> {
+    let _transition = TRANSITION.lock().unwrap_or_else(|e| e.into_inner());
+    if locked { lock_desktop_inner() } else { unlock_desktop_inner() }
+}
+
+pub fn lock_desktop() -> Result<(), String> {
+    set_desktop_locked(true)
+}
+
+pub fn unlock_desktop() -> Result<(), String> {
+    set_desktop_locked(false)
 }
 
 #[cfg(test)]
@@ -159,6 +176,13 @@ mod tests {
         // false. Recovery must still restore the shell windows it inherits.
         LOCKED.store(false, Ordering::Relaxed);
         restore_desktop_after_process_exit().unwrap();
+        assert!(!is_locked());
+    }
+
+    #[test]
+    fn setting_unlocked_is_idempotent_without_local_lock_state() {
+        LOCKED.store(false, Ordering::Relaxed);
+        set_desktop_locked(false).unwrap();
         assert!(!is_locked());
     }
 }

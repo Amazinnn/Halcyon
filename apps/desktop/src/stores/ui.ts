@@ -4,6 +4,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useSettingsStore } from "./settings";
 import { playChime } from "../lib/sound";
+import { createFocusLockQueue } from "../lib/focus-lock-queue";
+
+const desktopLockQueue = createFocusLockQueue(async (locked) => {
+  await invoke(locked ? "desktop_lock" : "desktop_unlock");
+});
 
 export type FocusState = "idle" | "focus" | "rest";
 export type SupervisionStatus = "ok" | "drift" | "paused";
@@ -30,6 +35,7 @@ export const useUiStore = defineStore("ui", {
     restRemainingSec: 0,
     timerPaused: false,
     phaseDone: false,
+    desktopLockError: "",
     todayFocusSec: 0,
     todayRounds: 0,
     supervisionStatus: "ok" as SupervisionStatus,
@@ -55,6 +61,16 @@ export const useUiStore = defineStore("ui", {
     },
   },
   actions: {
+    async syncDesktopLock(locked: boolean) {
+      try {
+        await desktopLockQueue.request(locked);
+        this.desktopLockError = "";
+      } catch (error) {
+        this.desktopLockError = locked
+          ? `专注桌面锁定失败：${String(error)}`
+          : `桌面恢复失败：${String(error)}`;
+      }
+    },
     async init() {
       await listen("window:visibility", (e) => {
         const p = e.payload as { label: string; visible: boolean };
@@ -121,7 +137,7 @@ export const useUiStore = defineStore("ui", {
       this.focusRemainingSec = this.focusMinutes * 60;
       // v1.12.2: focus start locks the desktop (taskbar/icons hidden, keys
       // blocked). Lock failure must NOT block focusing — warn only.
-      void invoke("desktop_lock").catch(() => {});
+      void this.syncDesktopLock(true);
       void emit("focus:state_changed", { state: "focus" });
       this.emitTick();
       this._ticker = window.setInterval(() => this.tick(), 1000);
@@ -133,6 +149,7 @@ export const useUiStore = defineStore("ui", {
       this.timerPaused = false;
       this.phaseDone = false;
       this.focusRemainingSec = seconds;
+      void this.syncDesktopLock(true);
       void emit("focus:state_changed", { state: "focus" });
       this.emitTick();
       this._ticker = window.setInterval(() => this.tick(), 1000);
@@ -140,6 +157,7 @@ export const useUiStore = defineStore("ui", {
     /** v1.10.4 (#51): idle/rest for a custom number of seconds (workflow idle node). */
     startRestFor(seconds: number) {
       this.stopTicker();
+      void this.syncDesktopLock(false);
       this.focusState = "rest";
       this.timerPaused = false;
       this.phaseDone = false;
@@ -158,6 +176,7 @@ export const useUiStore = defineStore("ui", {
     startRest(completed: boolean) {
       this.workflowDriven = false;
       this.stopTicker();
+      void this.syncDesktopLock(false);
       this.focusState = "rest";
       this.timerPaused = false;
       this.phaseDone = false;
@@ -173,7 +192,6 @@ export const useUiStore = defineStore("ui", {
         if (this.focusRemainingSec <= 0) {
           this.onPhaseChime();
           // v1.12.2: focus round naturally ends → unlock the desktop.
-          void invoke("desktop_unlock").catch(() => {});
           window.setTimeout(() => void this.loadTodaySummary(), 600);
           // v1.11.1: a workflow-driven focus countdown ending restarts the
           // timer state but must not fire the focus_end workflow trigger.
@@ -199,13 +217,12 @@ export const useUiStore = defineStore("ui", {
       if (this.focusState === "idle" || this.phaseDone) return;
       this.timerPaused = !this.timerPaused;
       // v1.12.2: pausing a focus round unlocks the desktop.
-      if (this.focusState === "focus") void invoke("desktop_unlock").catch(() => {});
+      if (this.focusState === "focus") void this.syncDesktopLock(!this.timerPaused);
       void emit("focus:state_changed", { state: this.focusState, paused: this.timerPaused });
       this.emitTick();
     },
     skip() {
       if (this.focusState === "focus") {
-        void invoke("desktop_unlock").catch(() => {});
         this.startRest(true); // v1.8.2: skipped focus still records elapsed focus time
       } else {
         this.startFocus(); // idle or rest -> focus

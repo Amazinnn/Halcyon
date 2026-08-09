@@ -203,6 +203,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="timer-label">{{ timerLabel }}</div>
       <div class="task-line">{{ ui.focusSubtitle }}</div>
+      <div v-if="ui.desktopLockError" class="lock-error">{{ ui.desktopLockError }}</div>
       <div v-if="ui.focusState !== 'idle' && !ui.phaseDone" class="timer-controls">
         <button class="ctl glass" @click="ui.pause()">
           <AppIcon :name="ui.timerPaused ? 'play' : 'pause'" />
@@ -356,6 +357,7 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .hero > * { pointer-events: auto; }
+.lock-error { margin-top: 8px; color: #ffc1b8; font-size: 12px; max-width: 440px; text-align: center; }
 .timer-wrap { position: relative; display: inline-flex; align-items: center; justify-content: center; }
 .ring { width: 360px; height: 360px; transform: rotate(-90deg); }
 .ring-bg { fill: none; stroke: rgba(163, 230, 53, 0.1); stroke-width: 4; }

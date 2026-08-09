@@ -821,7 +821,7 @@ pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), 
     }
     if let Some(win) = app.get_webview_window(label) {
         let _ = win.set_always_on_top(*state.settings.lock().unwrap().topmost.get(label).unwrap_or(&true));
-        let _ = win.show();
+        show_float_noactivate(&win);
     }
     position_window(app, label, &rect, &gm);
     emit_visibility(app, label, true);
@@ -1279,57 +1279,16 @@ fn quit_app(app: tauri::AppHandle) {
 /// decorations(false) still leaves caption-style bits on the host window, so
 /// the outer rect is ~15x9px larger than the client (grid) size and the
 /// content center drifts from the grid-cell center. Removing them makes
-/// Original window procs saved when `strip_float_frame` subclasses a float
-/// window (keyed by HWND). Messages we do not handle are chained to them.
-static SUBCLASS_ORIGINALS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<isize, isize>>> =
-    std::sync::OnceLock::new();
-
-/// v1.10.4 (#49): float-window subclass. Windows 10/11 keeps a 13x8px
-/// invisible non-client band (SM_CXSIZEFRAME) around borderless top-level
-/// windows; it is painted with the default white background and shows up as
-/// the "white web page edge". Returning 0 from WM_NCCALCSIZE makes the client
-/// area equal to the full window, and WM_ERASEBKGND -> 1 stops white flashes.
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn float_wnd_proc(
-    hwnd: windows::Win32::Foundation::HWND,
-    msg: u32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::Foundation::LRESULT;
-    use windows::Win32::UI::WindowsAndMessaging::{CallWindowProcW, DefWindowProcW, WNDPROC};
-    const WM_NCCALCSIZE: u32 = 0x0083;
-    const WM_ERASEBKGND: u32 = 0x0014;
-    if msg == WM_NCCALCSIZE {
-        return LRESULT(0);
-    }
-    if msg == WM_ERASEBKGND {
-        return LRESULT(1);
-    }
-    let original: WNDPROC = SUBCLASS_ORIGINALS
-        .get()
-        .and_then(|m| m.lock().ok())
-        .and_then(|m| m.get(&(hwnd.0 as isize)).copied())
-        .map(|p| std::mem::transmute::<isize, WNDPROC>(p))
-        .unwrap_or(None);
-    if let Some(orig) = original {
-        CallWindowProcW(Some(orig), hwnd, msg, wparam, lparam)
-    } else {
-        DefWindowProcW(hwnd, msg, wparam, lparam)
-    }
-}
-
 /// Strip the system frame from a float window so that outer == client and the
 /// window exactly matches its grid rect (no white edge, #49).
 fn strip_float_frame(w: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Foundation::{HWND, POINT, RECT};
-        use windows::Win32::Graphics::Gdi::ClientToScreen;
+        use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetClientRect, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWLP_WNDPROC,
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos,
             GWL_STYLE, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER,
-            WS_DLGFRAME, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+            WS_DLGFRAME, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
         };
         if let Ok(hwnd) = w.hwnd() {
             let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
@@ -1339,63 +1298,21 @@ fn strip_float_frame(w: &tauri::WebviewWindow) {
                     | (WS_DLGFRAME.0 as isize)
                     | (WS_SYSMENU.0 as isize)
                     | (WS_MINIMIZEBOX.0 as isize)
-                    | (WS_MAXIMIZEBOX.0 as isize));
-                // v1.10.4 (#49): force WS_POPUP so no caption/edge styles remain.
+                    | (WS_MAXIMIZEBOX.0 as isize)
+                    | (WS_THICKFRAME.0 as isize));
                 let new_style = (style & mask) | (WS_POPUP.0 as isize);
                 if new_style != style {
                     let _ = SetWindowLongPtrW(hwnd_win, GWL_STYLE, new_style);
                 }
-                // Capture the desired content rect (client origin + client size,
-                // already aligned to the grid) BEFORE installing the subclass:
-                // after WM_NCCALCSIZE returns 0 the client equals the full
-                // window, so we re-apply this rect as the window rect.
-                let mut cr = RECT::default();
-                let mut pt = POINT { x: 0, y: 0 };
-                let desired = if GetClientRect(hwnd_win, &mut cr).is_ok()
-                    && ClientToScreen(hwnd_win, &mut pt).as_bool()
-                {
-                    Some((pt.x, pt.y, cr.right, cr.bottom))
-                } else {
-                    None
-                };
-                // Install the no-non-client subclass (keeps working for every
-                // subsequent move/resize because it lives on the HWND).
-                let original = GetWindowLongPtrW(hwnd_win, GWLP_WNDPROC);
-                let proc_ptr: unsafe extern "system" fn(
-                    windows::Win32::Foundation::HWND,
-                    u32,
-                    windows::Win32::Foundation::WPARAM,
-                    windows::Win32::Foundation::LPARAM,
-                ) -> windows::Win32::Foundation::LRESULT = float_wnd_proc;
-                let _ = SetWindowLongPtrW(hwnd_win, GWLP_WNDPROC, proc_ptr as isize);
-                if original != 0 {
-                    SUBCLASS_ORIGINALS
-                        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-                        .lock()
-                        .unwrap()
-                        .insert(hwnd.0 as isize, original);
-                }
-                if let Some((x, y, w, h)) = desired {
-                    let _ = SetWindowPos(
-                        hwnd_win,
-                        None,
-                        x,
-                        y,
-                        w,
-                        h,
-                        SWP_FRAMECHANGED | SWP_NOZORDER,
-                    );
-                } else {
-                    let _ = SetWindowPos(
-                        hwnd_win,
-                        None,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-                    );
-                }
+                let _ = SetWindowPos(
+                    hwnd_win,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                );
             }
         }
     }
@@ -1469,6 +1386,21 @@ fn float_noactivate(w: &tauri::WebviewWindow) {
     if let Ok(hwnd) = w.hwnd() {
         acrylic::noactivate(hwnd.0);
     }
+}
+
+fn show_float_noactivate(w: &tauri::WebviewWindow) {
+    float_noactivate(w);
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = w.hwnd() {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+        unsafe {
+            let _ = ShowWindow(HWND(hwnd.0 as *mut core::ffi::c_void), SW_SHOWNOACTIVATE);
+        }
+        return;
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = w.show();
 }
 
 fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
@@ -1614,7 +1546,7 @@ fn apply_topbar_visibility(app: &tauri::AppHandle) {
     let visible = topbar_visible(&mode, &state);
     if let Some(w) = app.get_webview_window("topbar") {
         if visible {
-            let _ = w.show();
+            show_float_noactivate(&w);
             raise_topbar(app);
         } else {
             let _ = w.hide();
@@ -1854,6 +1786,13 @@ pub fn run() {
                 let _ = store_guard.migrate_shortcuts_from_settings(&legacy_shortcuts);
             }
 
+            let _ = desktop_lock::restore_desktop_after_process_exit();
+            let app_handle = app.handle().clone();
+            let wm = std::sync::Arc::new(workflow::WorkflowManager::new(app_handle.clone(), store.clone()));
+            wm.purge_incompatible();
+            let _ = wm.ensure_characters();
+            *app_handle.state::<AppState>().workflow.lock().unwrap() = Some(wm.clone());
+
             create_windows(app)?;
 
             // frosted glass on floating windows (respects settings toggle)
@@ -1889,7 +1828,6 @@ pub fn run() {
             // core event bus + relay
             let rx = app.state::<AppState>().events_tx.subscribe();
             let tx = app.state::<AppState>().events_tx.clone();
-            let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(event_bus::relay_task(app_handle.clone(), rx));
 
             emit_agent_status(&app_handle);
@@ -1899,12 +1837,8 @@ pub fn run() {
 
             // M4 workflow engine (ADR-0012): manager + scheduler + bus hooks
             {
-                let wm =
-                    std::sync::Arc::new(workflow::WorkflowManager::new(app_handle.clone(), store.clone()));
                 // v1.10.5 (#62): no backward compatibility — drop workflows
                 // containing removed node kinds at startup.
-                wm.purge_incompatible();
-                *app_handle.state::<AppState>().workflow.lock().unwrap() = Some(wm.clone());
                 let wm_tick = wm.clone();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(workflow::SCHEDULER_TICK_SEC));
@@ -1940,7 +1874,7 @@ pub fn run() {
                     if visible {
                         let _ = w.hide();
                     } else {
-                        let _ = w.show();
+                        show_float_noactivate(&w);
                     }
                     emit_visibility(&h5, "chat", !visible);
                     raise_topbar(&h5);
