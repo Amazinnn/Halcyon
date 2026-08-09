@@ -3,7 +3,9 @@
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**v1.12（当前）**：桌面锁后端 = 隐藏任务栏（Shell_TrayWnd）+ 桌面图标（Progman）+ 禁键（Win/Alt+Tab/Alt+F4/Ctrl+Esc，低级键盘钩子）、focus-cli `desktop lock/unlock/status`、六层崩溃检测/逃生（panic hook / Drop / watchdog 子进程 / focus-cli / 逃生文件 / explorer 重启）、核心 + 开发期防御双模块（产品期删防御文件即移除）；需求 #70 + ADR-0023。UI 触发留给专注模式。
+**v1.12.2（当前）**：四问题修复 = 浮窗浅蓝条（position_window 尺寸路径原生化 SWP_NOACTIVATE）、Agent 选择兜底（空列表重试 + 发送前校验 + 空保护）、锁接「开始专注」（专注开始锁/暂停/结束解锁，desktop_lock/unlock 命令）、VPN 修复验证；需求 #71。
+
+**v1.12**：桌面锁后端 = 隐藏任务栏（Shell_TrayWnd）+ 桌面图标（Progman）+ 禁键（Win/Alt+Tab/Alt+F4/Ctrl+Esc，低级键盘钩子）、focus-cli `desktop lock/unlock/status`、六层崩溃检测/逃生（panic hook / Drop / watchdog 子进程 / focus-cli / 逃生文件 / explorer 重启）、核心 + 开发期防御双模块（产品期删防御文件即移除）；需求 #70 + ADR-0023。UI 触发 v1.12.2 已接。
 
 **v1.11.3**：M5 完善轮 = 多 Agent 事件隔离（envelope agentId=character_id）、Agent 崩溃=下次自动重启（去 fallback）、记住上次 Agent、设置页 Agent 管理（删除连带删工作区/打开工作区文件夹）、三开关 provider 层生效（初始短句/思考/最终）、系统级输出纪律注入每次 turn；需求 #69 + ADR-0022。
 
