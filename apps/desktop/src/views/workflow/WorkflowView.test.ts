@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import source from "./WorkflowView.vue?raw";
 
 describe("external workflow editor refresh", () => {
-  it("reloads the selected draft when the store publishes an external revision", () => {
-    expect(source).toContain("store.externalChangeRevision");
+  it("reloads only the draft named by an affected external change", () => {
+    expect(source).toContain("store.lastExternalChange");
     expect(source).toMatch(
-      /store\.externalChangeRevision[\s\S]*store\.workflows\.find\([\s\S]*loadDraft\(wf \?\? null\)/,
+      /change\?\.affectsCurrentDraft[\s\S]*change\.workflowId !== editingId\.value[\s\S]*store\.workflows\.find\([\s\S]*loadDraft\(wf \?\? null\)/,
     );
   });
 });

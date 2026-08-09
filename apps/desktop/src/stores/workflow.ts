@@ -10,6 +10,12 @@ import type {
 
 const KEY_WF = "focus.workflow.currentWorkflowId";
 
+type ExternalWorkflowChange = {
+  workflowId: string;
+  action: string;
+  affectsCurrentDraft: boolean;
+};
+
 export const useWorkflowStore = defineStore("workflow", {
   state: () => ({
     characters: [] as CharacterRow[],
@@ -17,7 +23,7 @@ export const useWorkflowStore = defineStore("workflow", {
     runs: [] as WorkflowRunRow[],
     recentRuns: [] as RecentRunRow[],
     currentWorkflowId: null as string | null,
-    externalChangeRevision: 0,
+    lastExternalChange: null as ExternalWorkflowChange | null,
     _expectedLocalChange: null as { workflowId: string; action: string } | null,
     initialized: false,
   }),
@@ -27,13 +33,21 @@ export const useWorkflowStore = defineStore("workflow", {
       this.initialized = true;
       this.currentWorkflowId = localStorage.getItem(KEY_WF);
       await listen<{ action: string; workflowId: string }>("workflow:changed", async (e) => {
+        // Capture this before refreshWorkflows can clear currentWorkflowId for a delete.
+        const affectsCurrentDraft = e.payload.workflowId === this.currentWorkflowId;
         const expected = this._expectedLocalChange;
         const isLocalSave =
           expected?.workflowId === e.payload.workflowId &&
           expected.action === e.payload.action;
         if (isLocalSave) this._expectedLocalChange = null;
         const refreshed = await this.refreshWorkflows();
-        if (refreshed && !isLocalSave) this.externalChangeRevision += 1;
+        if (refreshed && !isLocalSave) {
+          this.lastExternalChange = {
+            workflowId: e.payload.workflowId,
+            action: e.payload.action,
+            affectsCurrentDraft,
+          };
+        }
       });
       await listen<{ workflowId: string; runId: string; status: string; error: string | null }>(
         "workflow:runs_changed",

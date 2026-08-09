@@ -54,13 +54,13 @@ describe("unified workflow list", () => {
     });
   });
 
-  it("publishes an external-change revision after refreshed same-ID data is available", async () => {
+  it("publishes an external change only after refreshed same-ID data is available", async () => {
     const store = useWorkflowStore();
     await store.init();
 
     expect(invoke).toHaveBeenCalledWith("workflow_list", { characterId: "" });
     expect(store.workflows[0]?.name).toBe("wf-1");
-    expect(store.externalChangeRevision).toBe(0);
+    expect(store.lastExternalChange).toBeNull();
 
     const handler = handlers.get("workflow:changed");
     expect(handler).toBeDefined();
@@ -70,7 +70,11 @@ describe("unified workflow list", () => {
     handler({ payload: { action: "updated", workflowId: "wf-1" } });
 
     await vi.waitFor(() => {
-      expect(store.externalChangeRevision).toBe(1);
+      expect(store.lastExternalChange).toEqual({
+        workflowId: "wf-1",
+        action: "updated",
+        affectsCurrentDraft: false,
+      });
     });
     expect(store.workflows[0]?.name).toBe("Agent 更新后的名字");
     const listCalls = invoke.mock.calls.filter(([command]) => command === "workflow_list");
@@ -78,6 +82,48 @@ describe("unified workflow list", () => {
       ["workflow_list", { characterId: "" }],
       ["workflow_list", { characterId: "" }],
     ]);
+  });
+
+  it("keeps external draft-refresh signals scoped to the selected workflow", async () => {
+    storage.set("focus.workflow.currentWorkflowId", "wf-a");
+    listed = [workflow("wf-a", "正在编辑"), workflow("wf-b", "另一个日程")];
+    const store = useWorkflowStore();
+    await store.init();
+    const handler = handlers.get("workflow:changed");
+    expect(handler).toBeDefined();
+    if (!handler) return;
+
+    listed = [workflow("wf-a", "正在编辑"), workflow("wf-b", "由 Agent 更新")];
+    handler({ payload: { action: "updated", workflowId: "wf-b" } });
+    await vi.waitFor(() => {
+      expect(store.workflows.find((item) => item.id === "wf-b")?.name).toBe("由 Agent 更新");
+    });
+    expect(store.lastExternalChange).toEqual({
+      workflowId: "wf-b",
+      action: "updated",
+      affectsCurrentDraft: false,
+    });
+
+    listed = [workflow("wf-a", "当前日程已更新"), workflow("wf-b", "由 Agent 更新")];
+    handler({ payload: { action: "updated", workflowId: "wf-a" } });
+    await vi.waitFor(() => {
+      expect(store.lastExternalChange).toEqual({
+        workflowId: "wf-a",
+        action: "updated",
+        affectsCurrentDraft: true,
+      });
+    });
+
+    listed = [workflow("wf-b", "由 Agent 更新")];
+    handler({ payload: { action: "deleted", workflowId: "wf-a" } });
+    await vi.waitFor(() => {
+      expect(store.lastExternalChange).toEqual({
+        workflowId: "wf-a",
+        action: "deleted",
+        affectsCurrentDraft: true,
+      });
+    });
+    expect(store.currentWorkflowId).toBeNull();
   });
 
   it("keeps an interleaved external update visible and consumes only the matching local event", async () => {
@@ -108,7 +154,11 @@ describe("unified workflow list", () => {
     listed = [workflow("wf-1", "外部更新"), local];
     handler({ payload: { action: "updated", workflowId: "wf-1" } });
     await vi.waitFor(() => {
-      expect(store.externalChangeRevision).toBe(1);
+      expect(store.lastExternalChange).toEqual({
+        workflowId: "wf-1",
+        action: "updated",
+        affectsCurrentDraft: true,
+      });
     });
     expect(store.currentWorkflowId).toBe("wf-1");
     expect(store.workflows.find((item) => item.id === "wf-1")?.name).toBe("外部更新");
@@ -119,7 +169,11 @@ describe("unified workflow list", () => {
     await vi.waitFor(() => {
       expect(invoke.mock.calls.filter(([command]) => command === "workflow_list")).toHaveLength(4);
     });
-    expect(store.externalChangeRevision).toBe(1);
+    expect(store.lastExternalChange).toEqual({
+      workflowId: "wf-1",
+      action: "updated",
+      affectsCurrentDraft: true,
+    });
   });
 
   it("does not invent a local reservation for a create with an unknown generated ID", async () => {
@@ -142,7 +196,11 @@ describe("unified workflow list", () => {
     handler({ payload: { action: "created", workflowId: "wf-created" } });
 
     await vi.waitFor(() => {
-      expect(store.externalChangeRevision).toBe(1);
+      expect(store.lastExternalChange).toEqual({
+        workflowId: "wf-created",
+        action: "created",
+        affectsCurrentDraft: true,
+      });
     });
   });
 });

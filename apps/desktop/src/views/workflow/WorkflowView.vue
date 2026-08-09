@@ -205,9 +205,9 @@ watch(
 );
 
 watch(
-  () => store.externalChangeRevision,
-  () => {
-    if (selfSave) return;
+  () => store.lastExternalChange,
+  (change) => {
+    if (selfSave || !change?.affectsCurrentDraft || change.workflowId !== editingId.value) return;
     const wf = store.workflows.find((w) => w.id === store.currentWorkflowId);
     loadDraft(wf ?? null);
   },
