@@ -17,6 +17,8 @@ export const useWorkflowStore = defineStore("workflow", {
     runs: [] as WorkflowRunRow[],
     recentRuns: [] as RecentRunRow[],
     currentWorkflowId: null as string | null,
+    externalChangeRevision: 0,
+    _pendingLocalSaveEvents: 0,
     initialized: false,
   }),
   actions: {
@@ -24,8 +26,11 @@ export const useWorkflowStore = defineStore("workflow", {
       if (this.initialized) return;
       this.initialized = true;
       this.currentWorkflowId = localStorage.getItem(KEY_WF);
-      await listen<{ action: string; workflowId: string }>("workflow:changed", () => {
-        void this.refreshWorkflows();
+      await listen<{ action: string; workflowId: string }>("workflow:changed", async () => {
+        const isLocalSave = this._pendingLocalSaveEvents > 0;
+        if (isLocalSave) this._pendingLocalSaveEvents -= 1;
+        const refreshed = await this.refreshWorkflows();
+        if (refreshed && !isLocalSave) this.externalChangeRevision += 1;
       });
       await listen<{ workflowId: string; runId: string; status: string; error: string | null }>(
         "workflow:runs_changed",
@@ -66,8 +71,10 @@ export const useWorkflowStore = defineStore("workflow", {
           this.currentWorkflowId = null;
           localStorage.setItem(KEY_WF, "");
         }
+        return true;
       } catch (e) {
         console.error("[workflow] workflow_list failed", e);
+        return false;
       }
     },
     async refreshRuns(workflowId: string) {
@@ -100,14 +107,20 @@ export const useWorkflowStore = defineStore("workflow", {
       if (id) await this.refreshRuns(id);
     },
     async save(workflow: WorkflowDef): Promise<WorkflowDef> {
-      const saved = await invoke<WorkflowDef>("workflow_save", { workflow });
-      // v1.10.5 (#59): refresh the list BEFORE publishing the new id so any
-      // watcher on currentWorkflowId already finds the saved workflow.
-      await this.refreshWorkflows();
-      this.currentWorkflowId = saved.id;
-      localStorage.setItem(KEY_WF, saved.id);
-      await this.refreshRuns(saved.id);
-      return saved;
+      this._pendingLocalSaveEvents += 1;
+      try {
+        const saved = await invoke<WorkflowDef>("workflow_save", { workflow });
+        // v1.10.5 (#59): refresh the list BEFORE publishing the new id so any
+        // watcher on currentWorkflowId already finds the saved workflow.
+        await this.refreshWorkflows();
+        this.currentWorkflowId = saved.id;
+        localStorage.setItem(KEY_WF, saved.id);
+        await this.refreshRuns(saved.id);
+        return saved;
+      } catch (e) {
+        this._pendingLocalSaveEvents = Math.max(0, this._pendingLocalSaveEvents - 1);
+        throw e;
+      }
     },
     async remove(id: string) {
       await invoke("workflow_delete", { id });

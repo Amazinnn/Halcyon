@@ -204,6 +204,15 @@ watch(
   },
 );
 
+watch(
+  () => store.externalChangeRevision,
+  () => {
+    if (selfSave) return;
+    const wf = store.workflows.find((w) => w.id === store.currentWorkflowId);
+    loadDraft(wf ?? null);
+  },
+);
+
 onBeforeUnmount(() => {
   window.removeEventListener("beforeunload", flushAutoSave);
   flushAutoSave();
