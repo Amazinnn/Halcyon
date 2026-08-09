@@ -26,9 +26,10 @@ describe("simplified chat surface", () => {
     }
   });
 
-  it("locks selection and sending for the whole active turn while keeping stop available", () => {
+  it("locks selection and sending for the whole active turn and only exposes Stop when it can interrupt", () => {
     expect(source).toContain(':disabled="isBusy"');
     expect(source).toContain(':disabled="isBusy || !agent.characterId"');
-    expect(source).toContain("agent.phase === 'streaming' || agent.phase === 'connecting'");
+    expect(source).toContain("agent.phase === 'streaming'");
+    expect(source).not.toContain("agent.phase === 'streaming' || agent.phase === 'connecting'");
   });
 });

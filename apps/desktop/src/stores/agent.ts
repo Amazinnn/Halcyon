@@ -273,7 +273,6 @@ export const useAgentStore = defineStore("agent", {
           characterId: this.characterId,
           threadId: this.currentThreadId,
         });
-        this.phase = "idle";
       } catch (e) {
         console.error("[agent] agent_interrupt failed", e);
       }

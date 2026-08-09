@@ -77,7 +77,7 @@ function send() {
 
     <form class="composer" @submit.prevent="send">
       <input v-model="input" placeholder="输入消息…" :disabled="isBusy || !agent.characterId" />
-      <button v-if="agent.phase === 'streaming' || agent.phase === 'connecting'" type="button" class="stop" @click="agent.interrupt()">
+      <button v-if="agent.phase === 'streaming'" type="button" class="stop" @click="agent.interrupt()">
         停止
       </button>
       <button type="submit" :disabled="!input.trim() || isBusy || !agent.characterId">发送</button>

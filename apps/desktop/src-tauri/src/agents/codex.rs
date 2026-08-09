@@ -276,17 +276,13 @@ impl CodexProvider {
         }
     }
 
-    fn send_internal(
+    fn send_claimed_turn(
         &mut self,
         thread_id: &str,
         text: &str,
-        display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<(), String> {
-        claim_turn(&self.shared)?;
         // M5 (ADR-0022): system-level output discipline injected into every
         // turn (short newline-separated sentences, no Markdown).
-        *self.shared.display.lock().unwrap() = display;
-        reset_turn_capture(&self.shared);
         let full = format!("{}\n\n{}", super::OUTPUT_DISCIPLINE, text);
         let resp = match self.request(
             "turn/start",
@@ -376,26 +372,46 @@ impl AgentProvider for CodexProvider {
         display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<AgentThreadInfo, String> {
         self.ensure_started()?;
-        *self.shared.display.lock().unwrap() = display;
+        let starts_turn = !initial_message.trim().is_empty();
+        if starts_turn {
+            claim_turn_with_display(&self.shared, display)?;
+        } else {
+            *self.shared.display.lock().unwrap() = display;
+        }
         let mut params = serde_json::Map::new();
         if !workspace_dir.trim().is_empty() {
             params.insert("cwd".into(), json!(workspace_dir.trim()));
         }
-        let resp = self.request("thread/start", Value::Object(params), REQUEST_TIMEOUT)?;
+        let resp = self
+            .request("thread/start", Value::Object(params), REQUEST_TIMEOUT)
+            .map_err(|err| {
+                if starts_turn {
+                    release_turn(&self.shared);
+                }
+                err
+            })?;
         if resp.get("error").is_some() {
+            if starts_turn {
+                release_turn(&self.shared);
+            }
             return Err(format!("thread/start 失败: {resp}"));
         }
         let thread = resp
             .get("result")
             .and_then(|r| r.get("thread"))
             .cloned()
-            .ok_or_else(|| format!("thread/start 响应缺少 thread: {resp}"))?;
+            .ok_or_else(|| {
+                if starts_turn {
+                    release_turn(&self.shared);
+                }
+                format!("thread/start 响应缺少 thread: {resp}")
+            })?;
         let info = thread_info(&thread);
         *self.shared.current_thread.lock().unwrap() = Some(info.id.clone());
         self.write_thread_marker();
         self.emit_envelope(json!({ "type": "session.started" }));
-        if !initial_message.trim().is_empty() {
-            self.send_internal(&info.id, initial_message, display)?;
+        if starts_turn {
+            self.send_claimed_turn(&info.id, initial_message)?;
         }
         Ok(info)
     }
@@ -430,13 +446,17 @@ impl AgentProvider for CodexProvider {
         display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<(), String> {
         self.ensure_started()?;
+        claim_turn_with_display(&self.shared, display)?;
         {
             let cur = self.shared.current_thread.lock().unwrap().clone();
             if cur.as_deref() != Some(thread_id) {
-                let _ = self.resume_thread_with_display(thread_id, display)?;
+                if let Err(err) = self.resume_thread_with_display(thread_id, display) {
+                    release_turn(&self.shared);
+                    return Err(err);
+                }
             }
         }
-        self.send_internal(thread_id, text, display)
+        self.send_claimed_turn(thread_id, text)
     }
 
     fn interrupt(&mut self, thread_id: &str) -> Result<(), String> {
@@ -565,6 +585,16 @@ fn claim_turn(shared: &Shared) -> Result<(), String> {
         );
     }
     *in_flight = true;
+    Ok(())
+}
+
+fn claim_turn_with_display(
+    shared: &Shared,
+    display: crate::workflow_engine::engine::AgentDisplay,
+) -> Result<(), String> {
+    claim_turn(shared)?;
+    *shared.display.lock().unwrap() = display;
+    reset_turn_capture(shared);
     Ok(())
 }
 
@@ -896,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_turn_is_rejected_until_the_active_turn_finishes() {
+    fn rejected_overlapping_turn_preserves_active_display_and_thread() {
         let shared = Shared {
             character_id: "char-test".into(),
             session_id: "s1".into(),
@@ -904,12 +934,25 @@ mod tests {
             current_turn: Mutex::new(None),
             turn_in_flight: Mutex::new(false),
             last_message: Mutex::new(String::new()),
-            display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
+            display: Mutex::new(crate::workflow_engine::engine::AgentDisplay {
+                show_initial: true,
+                show_thinking: true,
+                show_result: true,
+            }),
             first_delta_sent: Mutex::new(false),
         };
-        assert!(claim_turn(&shared).is_ok());
-        let err = claim_turn(&shared).expect_err("the second simultaneous turn must be rejected");
+        let active_display = *shared.display.lock().unwrap();
+        assert!(claim_turn_with_display(&shared, active_display).is_ok());
+        let rejected_display = crate::workflow_engine::engine::AgentDisplay {
+            show_initial: false,
+            show_thinking: false,
+            show_result: false,
+        };
+        let err = claim_turn_with_display(&shared, rejected_display)
+            .expect_err("the second simultaneous turn must be rejected");
         assert!(err.contains("active turn"));
+        assert_eq!(*shared.display.lock().unwrap(), active_display);
+        assert_eq!(shared.current_thread.lock().unwrap().as_deref(), Some("thread-1"));
 
         let (tx, _) = tokio::sync::broadcast::channel::<CoreEvent>(16);
         let (done_tx, _) = tokio::sync::broadcast::channel::<TurnDone>(16);
@@ -921,7 +964,7 @@ mod tests {
         );
 
         assert!(
-            claim_turn(&shared).is_ok(),
+            claim_turn_with_display(&shared, rejected_display).is_ok(),
             "a terminal turn must release the guard"
         );
     }
@@ -1036,14 +1079,31 @@ mod tests {
             }),
             first_delta_sent: Mutex::new(false),
         });
+        let pending = Arc::new(Mutex::new(HashMap::new()));
         let (done_tx, mut done_rx) = tokio::sync::broadcast::channel::<TurnDone>(16);
+        let done = Arc::new(done_tx);
         let mut events = tx.subscribe();
 
-        handle_turn_completed(
+        dispatch_message(
             &tx,
             &shared,
-            &Arc::new(done_tx),
-            &json!({ "threadId": "thread-1", "turn": { "id": "turn-1", "status": "failed", "error": { "message": "boom" } } }),
+            &pending,
+            &done,
+            json!({ "method": "item/agentMessage/delta", "params": { "delta": "private delta" } }),
+        );
+        dispatch_message(
+            &tx,
+            &shared,
+            &pending,
+            &done,
+            json!({ "method": "item/started", "params": { "item": { "type": "local_shell_call", "command": "private tool" } } }),
+        );
+        dispatch_message(
+            &tx,
+            &shared,
+            &pending,
+            &done,
+            json!({ "method": "error", "params": { "message": "boom" } }),
         );
 
         let done = done_rx.try_recv().expect("workflow engine completion");

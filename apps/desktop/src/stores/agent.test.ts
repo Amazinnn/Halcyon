@@ -147,3 +147,39 @@ describe("direct chat stream convergence", () => {
     expect(agent.messages).toEqual([{ role: "agent", text: "正在回答", kind: "completed" }]);
   });
 });
+
+describe("interrupt lifecycle", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    invoke.mockReset();
+  });
+
+  it("stays streaming after interrupt RPC acknowledgement until the terminal event arrives", async () => {
+    const agent = useAgentStore();
+    agent.characterId = "char-a";
+    agent.currentThreadId = "thread-1";
+    agent.phase = "streaming";
+    let acknowledge: (() => void) | undefined;
+    invoke.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          acknowledge = resolve;
+        }),
+    );
+
+    const pendingInterrupt = agent.interrupt();
+    expect(agent.phase).toBe("streaming");
+    acknowledge?.();
+    await pendingInterrupt;
+    expect(agent.phase).toBe("streaming");
+
+    agent.handleEvent({
+      schemaVersion: 1,
+      agentId: "char-a",
+      sessionId: "thread-1",
+      timestamp: "2026-08-09T00:00:00.000Z",
+      event: { type: "session.completed", outcome: "cancelled" },
+    });
+    expect(agent.phase).toBe("idle");
+  });
+});
