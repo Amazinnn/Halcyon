@@ -1,4 +1,5 @@
 # Focus Desktop
+> 当前 Agent/工作流语义以 [ADR-0024](./docs/decisions/ADR-0024-agent-workflow-closure.md) 为准：正式桌面仅使用真实 Codex，聊天保持极简；工作流 Agent 只在允许显示结果时向目标 Agent 投递一条带来源的最终消息。
 > GitHub：https://github.com/Amazinnn/Halcyon.git（private）
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
