@@ -128,3 +128,22 @@ describe("workflow result messages", () => {
     expect(pet.bubble).toMatchObject({ text: "Only the selected pet should show this", priority: "normal" });
   });
 });
+
+describe("direct chat stream convergence", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it("finalizes the active delta instead of appending a duplicate completed message", () => {
+    const agent = useAgentStore();
+    agent.messages = [{ role: "agent", text: "正在回答", kind: "delta" }];
+
+    agent.handleEvent({
+      schemaVersion: 1,
+      agentId: "focus-demo-pet",
+      sessionId: "thread-1",
+      timestamp: "2026-08-09T00:00:00.000Z",
+      event: { type: "message.completed", text: "正在回答" },
+    });
+
+    expect(agent.messages).toEqual([{ role: "agent", text: "正在回答", kind: "completed" }]);
+  });
+});

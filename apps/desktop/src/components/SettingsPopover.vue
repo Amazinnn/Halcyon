@@ -146,10 +146,6 @@ function onPauseSupervision() {
 }
 
 
-async function setAgentProvider(p: "codex" | "mock") {
-  await agent.setProvider(p);
-}
-
 async function applyAgentWorkspace() {
   try {
     await agent.setWorkspaceDir(agentWorkspace.value.trim());
@@ -461,14 +457,11 @@ onMounted(load);
       <h4>Agent</h4>
       <div class="row">
         <span class="label">Provider</span>
-        <div class="seg">
-          <button :class="{ on: agent.provider === 'codex' }" @click="setAgentProvider('codex')">Codex</button>
-          <button :class="{ on: agent.provider === 'mock' }" @click="setAgentProvider('mock')">Mock</button>
-        </div>
+        <span class="ok">Codex</span>
       </div>
-      <div class="row" v-if="agent.fallback">
+      <div class="row">
         <span class="label">状态</span>
-        <span class="ok">未找到 Codex，已回退 Mock</span>
+        <span :class="agent.ready ? 'ok' : 'err'">{{ agent.ready ? "已找到 Codex" : "未找到 Codex" }}</span>
       </div>
       <div class="row">
         <span class="label">工作区</span>

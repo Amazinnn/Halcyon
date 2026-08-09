@@ -28,8 +28,7 @@ export interface AgentThread {
 }
 
 export interface AgentStatus {
-  provider: "codex" | "mock";
-  fallback: boolean;
+  provider: "codex";
   ready: boolean;
   exePath: string | null;
   workspaceDir: string;
@@ -79,8 +78,7 @@ export const useAgentStore = defineStore("agent", {
     bubble: null as { text: string; priority: string; expiresAt: number } | null,
     reaction: null as PetReaction | null,
     lastEvent: null as AgentEventEnvelope | null,
-    provider: "codex" as "codex" | "mock",
-    fallback: false,
+    provider: "codex" as "codex",
     ready: false,
     workspaceDir: "",
     threads: [] as AgentThread[],
@@ -163,7 +161,6 @@ export const useAgentStore = defineStore("agent", {
       });
       await listen<AgentStatus>("agent:status", (e) => {
         this.provider = e.payload.provider;
-        this.fallback = e.payload.fallback;
         this.ready = e.payload.ready;
         this.workspaceDir = e.payload.workspaceDir;
       });
@@ -185,7 +182,6 @@ export const useAgentStore = defineStore("agent", {
       try {
         const s = await invoke<AgentStatus>("agent_status");
         this.provider = s.provider;
-        this.fallback = s.fallback;
         this.ready = s.ready;
         this.workspaceDir = s.workspaceDir;
       } catch (e) {
@@ -282,10 +278,6 @@ export const useAgentStore = defineStore("agent", {
         console.error("[agent] agent_interrupt failed", e);
       }
     },
-    async setProvider(provider: "codex" | "mock") {
-      await invoke("set_agent_provider", { provider });
-      await this.refreshStatus();
-    },
     async setWorkspaceDir(dir: string) {
       await invoke("set_agent_workspace_dir", { dir });
       this.workspaceDir = dir;
@@ -319,7 +311,7 @@ export const useAgentStore = defineStore("agent", {
           this.appendDelta(ev.text);
           break;
         case "message.completed":
-          this.messages.push({ role: "agent", text: ev.text, kind: "completed" });
+          this.finalizeDelta(ev.text);
           break;
         case "tool.started":
           this.tools.push({ tool: ev.tool, summary: ev.inputSummary, status: "started" });
@@ -368,6 +360,15 @@ export const useAgentStore = defineStore("agent", {
         last.text += text;
       } else {
         this.messages.push({ role: "agent", text, kind: "delta" });
+      }
+    },
+    finalizeDelta(text: string) {
+      const last = this.messages[this.messages.length - 1];
+      if (last && last.role === "agent" && last.kind === "delta") {
+        last.text = text;
+        last.kind = "completed";
+      } else {
+        this.messages.push({ role: "agent", text, kind: "completed" });
       }
     },
     addUserMessage(text: string) {

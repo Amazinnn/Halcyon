@@ -9,9 +9,9 @@ mod activity;
 mod agents;
 mod apps;
 mod cli;
-mod drag;
 mod desktop_lock;
 mod desktop_lock_escapes;
+mod drag;
 mod event_bus;
 mod grid;
 mod icons;
@@ -28,16 +28,16 @@ mod workflow_engine;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{Emitter, Listener, Manager};
 use tauri::{LogicalPosition, LogicalSize};
 
+use agents::AgentProvider;
 use event_bus::CoreEvent;
 use grid::GridManager;
-use agents::AgentProvider;
 use settings::{GridRect, Settings, ShortcutType, Task};
 
 pub struct AppState {
@@ -57,7 +57,6 @@ pub struct AppState {
     pub events_tx: tokio::sync::broadcast::Sender<CoreEvent>,
     /// M5 (ADR-0022): multi-Agent registry — one runtime per character.
     pub agents: Mutex<agents::AgentRegistry>,
-    pub agent_fallback: AtomicBool,
     /// M4 workflow engine app layer (ADR-0012), initialized after the store.
     pub workflow: Mutex<Option<std::sync::Arc<workflow::WorkflowManager>>>,
     /// M5 (ADR-0022): the shared SQLite store (characters/session hashes).
@@ -93,7 +92,6 @@ fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
     let _ = (w, enabled);
 }
 
-
 fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &GridManager) {
     if let Some(w) = app.get_webview_window(label) {
         let (x, y, wpx, hpx) = gm.rect_to_logical(rect);
@@ -118,7 +116,10 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
             // — Tauri's set_size can activate the window and paint a caption
             // highlight (light-blue bar) while drag/resize preview is held.
             if !crate::drag::move_window_raw(&w, cx, cy) {
-                let _ = w.set_position(LogicalPosition::new(x - ox as f64 / scale, y - oy as f64 / scale));
+                let _ = w.set_position(LogicalPosition::new(
+                    x - ox as f64 / scale,
+                    y - oy as f64 / scale,
+                ));
             }
             crate::drag::resize_window_raw(&w, pwp, php);
         }
@@ -126,7 +127,10 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
 }
 
 fn emit_visibility(app: &tauri::AppHandle, label: &str, visible: bool) {
-    let _ = app.emit("window:visibility", serde_json::json!({ "label": label, "visible": visible }));
+    let _ = app.emit(
+        "window:visibility",
+        serde_json::json!({ "label": label, "visible": visible }),
+    );
 }
 
 pub(crate) fn occupied_rects(settings: &Settings, except: Option<&str>) -> Vec<GridRect> {
@@ -203,12 +207,10 @@ fn get_bootstrap(
     }
 }
 
-#[derive(Clone)]
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentStatusView {
     provider: String,
-    fallback: bool,
     ready: bool,
     exe_path: Option<String>,
     workspace_dir: String,
@@ -227,16 +229,18 @@ fn current_workspace_dir(state: &AppState) -> String {
 
 fn agent_status_view(app: &tauri::AppHandle) -> AgentStatusView {
     let state = app.state::<AppState>();
-    let fallback = state.agent_fallback.load(std::sync::atomic::Ordering::Relaxed);
     let ws = current_workspace_dir(&state);
     let exe_path = agents::codex::find_codex_exe().map(|p| p.to_string_lossy().to_string());
     AgentStatusView {
         provider: "codex".to_string(),
-        fallback,
-        ready: !fallback,
+        ready: codex_ready(&exe_path),
         exe_path,
         workspace_dir: ws,
     }
+}
+
+fn codex_ready(exe_path: &Option<String>) -> bool {
+    exe_path.is_some()
 }
 
 fn emit_agent_status(app: &tauri::AppHandle) {
@@ -246,21 +250,29 @@ fn emit_agent_status(app: &tauri::AppHandle) {
 /// M5 (ADR-0022): build (or reuse) the runtime for a character's Agent.
 /// Lazily creates the per-Agent workspace + AGENTS.md when missing.
 /// Returns the real Codex runtime. Mock runtimes exist only for Rust tests.
-pub fn ensure_agent_runtime(app: &tauri::AppHandle, character_id: &str) -> Result<agents::AgentRuntime, String> {
+pub fn ensure_agent_runtime(
+    app: &tauri::AppHandle,
+    character_id: &str,
+) -> Result<agents::AgentRuntime, String> {
     let state = app.state::<AppState>();
     // Existing runtime?
     if let Some(rt) = state.agents.lock().unwrap().get(character_id) {
         return Ok(match rt {
             agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
             #[cfg(test)]
-            agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(state.events_tx.clone()))),
+            agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(
+                agents::mock::MockProvider::new(state.events_tx.clone()),
+            )),
         });
     }
     // Character row (must exist — workflow ensures char-default).
     let row = {
         let st = app.state::<AppState>().store.clone();
         let store = st.lock().unwrap();
-        store.get_character(character_id).map_err(|e| e.to_string())?.ok_or_else(|| format!("角色 {character_id} 不存在"))?
+        store
+            .get_character(character_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("角色 {character_id} 不存在"))?
     };
     // Lazily create workspace + AGENTS.md (also persists workspace_dir).
     ensure_agent_workspace(&state, &row)?;
@@ -284,11 +296,16 @@ pub fn ensure_agent_runtime(app: &tauri::AppHandle, character_id: &str) -> Resul
             agents::AgentRuntime::Codex(std::sync::Arc::new(std::sync::Mutex::new(p)))
         }
     };
-    state.agents.lock().unwrap().insert(character_id.to_string(), match &rt {
-        agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
-        #[cfg(test)]
-        agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(state.events_tx.clone()))),
-    });
+    state.agents.lock().unwrap().insert(
+        character_id.to_string(),
+        match &rt {
+            agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
+            #[cfg(test)]
+            agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(
+                agents::mock::MockProvider::new(state.events_tx.clone()),
+            )),
+        },
+    );
     Ok(rt)
 }
 
@@ -296,7 +313,10 @@ pub fn ensure_agent_runtime(app: &tauri::AppHandle, character_id: &str) -> Resul
 /// AGENTS.md is the single identity source (persona is retired).
 pub const AGENTS_MD_TEMPLATE: &str = "你是 Focus 桌宠 Agent「{name}」。请用简洁中文短句回答，句间用单个换行分隔；不要使用 Markdown、列表、代码块或长段落；总长度不超过约 200 字；只输出需要直接展示给用户看的内容。\n";
 
-fn ensure_agent_workspace(state: &tauri::State<'_, AppState>, row: &storage::CharacterRow) -> Result<String, String> {
+fn ensure_agent_workspace(
+    state: &tauri::State<'_, AppState>,
+    row: &storage::CharacterRow,
+) -> Result<String, String> {
     let home = user_home();
     let dir = PathBuf::from(&home).join("Focus-Agents").join(&row.id);
     if !dir.is_dir() {
@@ -307,7 +327,12 @@ fn ensure_agent_workspace(state: &tauri::State<'_, AppState>, row: &storage::Cha
     let ws = dir.to_string_lossy().to_string();
     let store = state.store.lock().unwrap();
     if row.workspace_dir.as_deref() != Some(ws.as_str()) {
-        let _ = store.update_character_agent(&row.id, Some(&ws), row.current_session_hash.as_deref(), row.session_date.as_deref());
+        let _ = store.update_character_agent(
+            &row.id,
+            Some(&ws),
+            row.current_session_hash.as_deref(),
+            row.session_date.as_deref(),
+        );
     }
     Ok(ws)
 }
@@ -356,14 +381,22 @@ fn agent_start_thread(
     let needs_new = {
         let store = state.store.lock().unwrap();
         match store.get_character(&character_id) {
-            Ok(Some(c)) => c.current_session_hash.is_none() || c.session_date.as_deref() != Some(today.as_str()),
+            Ok(Some(c)) => {
+                c.current_session_hash.is_none()
+                    || c.session_date.as_deref() != Some(today.as_str())
+            }
             _ => true,
         }
     };
     let rt = ensure_agent_runtime(&app, &character_id)?;
     let ws = {
         let store = state.store.lock().unwrap();
-        store.get_character(&character_id).ok().flatten().and_then(|c| c.workspace_dir).unwrap_or_else(user_home)
+        store
+            .get_character(&character_id)
+            .ok()
+            .flatten()
+            .and_then(|c| c.workspace_dir)
+            .unwrap_or_else(user_home)
     };
     // M5 (ADR-0022): conversation = full display (stream + result both shown).
     let display = agents::agent_display_full();
@@ -373,20 +406,44 @@ fn agent_start_thread(
         let _ = store.update_character_agent(&character_id, None, Some(&info.id), Some(&today));
         info
     } else {
-        let hash = state.store.lock().unwrap().get_character(&character_id).ok().flatten().and_then(|c| c.current_session_hash).unwrap_or_default();
+        let hash = state
+            .store
+            .lock()
+            .unwrap()
+            .get_character(&character_id)
+            .ok()
+            .flatten()
+            .and_then(|c| c.current_session_hash)
+            .unwrap_or_default();
         if hash.is_empty() {
             let info = with_agent_rt(&rt, |r| r.start_thread(&ws, &initial_message, display))?;
             let store = state.store.lock().unwrap();
             let _ = store.update_character_agent(&character_id, None, Some(&info.id), Some(&today));
             info
         } else {
-            with_agent_rt(&rt, |r| r.resume_thread(&hash))?
+            resume_with_initial_message(&rt, &hash, &initial_message, display)?
         }
     };
     Ok(info)
 }
 
-fn with_agent_rt<R>(rt: &agents::AgentRuntime, f: impl FnOnce(&agents::AgentRuntime) -> Result<R, String>) -> Result<R, String> {
+fn resume_with_initial_message(
+    rt: &agents::AgentRuntime,
+    thread_id: &str,
+    initial_message: &str,
+    display: crate::workflow_engine::engine::AgentDisplay,
+) -> Result<agents::AgentThreadInfo, String> {
+    let info = with_agent_rt(rt, |r| r.resume_thread(thread_id))?;
+    if !initial_message.trim().is_empty() {
+        with_agent_rt(rt, |r| r.send(&info.id, initial_message, display))?;
+    }
+    Ok(info)
+}
+
+fn with_agent_rt<R>(
+    rt: &agents::AgentRuntime,
+    f: impl FnOnce(&agents::AgentRuntime) -> Result<R, String>,
+) -> Result<R, String> {
     match rt {
         agents::AgentRuntime::Codex(p) => {
             let p2 = p.clone();
@@ -408,7 +465,10 @@ fn agent_resume_thread(
 }
 
 #[tauri::command]
-fn agent_list_threads(app: tauri::AppHandle, character_id: String) -> Result<Vec<agents::AgentThreadInfo>, String> {
+fn agent_list_threads(
+    app: tauri::AppHandle,
+    character_id: String,
+) -> Result<Vec<agents::AgentThreadInfo>, String> {
     let mut threads = with_agent_for(&app, &character_id, |rt| rt.list_threads())?;
     // ADR-0012: hide cleaned automation threads and badge the rest.
     let hidden: std::collections::HashSet<String> = app
@@ -435,14 +495,25 @@ fn agent_list_threads(app: tauri::AppHandle, character_id: String) -> Result<Vec
 }
 
 #[tauri::command]
-fn agent_send(app: tauri::AppHandle, character_id: String, thread_id: String, text: String) -> Result<(), String> {
+fn agent_send(
+    app: tauri::AppHandle,
+    character_id: String,
+    thread_id: String,
+    text: String,
+) -> Result<(), String> {
     // M5 (ADR-0022): conversation = full display.
     let display = agents::agent_display_full();
-    with_agent_for(&app, &character_id, |rt| rt.send(&thread_id, &text, display))
+    with_agent_for(&app, &character_id, |rt| {
+        rt.send(&thread_id, &text, display)
+    })
 }
 
 #[tauri::command]
-fn agent_interrupt(app: tauri::AppHandle, character_id: String, thread_id: String) -> Result<(), String> {
+fn agent_interrupt(
+    app: tauri::AppHandle,
+    character_id: String,
+    thread_id: String,
+) -> Result<(), String> {
     with_agent_for(&app, &character_id, |rt| rt.interrupt(&thread_id))
 }
 
@@ -546,7 +617,12 @@ fn set_agent_provider(app: tauri::AppHandle, provider: String) -> Result<(), Str
     }
     // M5 (ADR-0022): provider change drops all cached runtimes; new ones are
     // rebuilt lazily per character on next use.
-    app.state::<AppState>().agents.lock().unwrap().runtimes.clear();
+    app.state::<AppState>()
+        .agents
+        .lock()
+        .unwrap()
+        .runtimes
+        .clear();
     emit_agent_status(&app);
     Ok(())
 }
@@ -567,7 +643,10 @@ fn set_agent_workspace_dir(app: tauri::AppHandle, dir: String) -> Result<(), Str
     Ok(())
 }
 #[tauri::command]
-fn pet_import_pack(state: tauri::State<'_, AppState>, dir: String) -> Result<pets::PetInfo, String> {
+fn pet_import_pack(
+    state: tauri::State<'_, AppState>,
+    dir: String,
+) -> Result<pets::PetInfo, String> {
     let info = pets::import(std::path::Path::new(&dir), &state.data_dir)?;
     {
         let mut s = state.settings.lock().unwrap();
@@ -640,9 +719,19 @@ fn resize_preview(
     let cols = cols.unwrap_or(1);
     let rows = rows.unwrap_or(1);
     let settings = state.settings.lock().unwrap();
-    let current = settings.grid.get(label).copied().unwrap_or(GridRect { col: 0, row: 0, cols, rows });
+    let current = settings.grid.get(label).copied().unwrap_or(GridRect {
+        col: 0,
+        row: 0,
+        cols,
+        rows,
+    });
     let occupied = occupied_rects(&settings, Some(label));
-    let target = GridRect { col: current.col, row: current.row, cols, rows };
+    let target = GridRect {
+        col: current.col,
+        row: current.row,
+        cols,
+        rows,
+    };
     let conflict = occupied.iter().any(|o| crate::grid::overlap(&target, o));
     drop(settings);
     let _ = app.emit(
@@ -675,14 +764,23 @@ fn resize_window(
     let cols = cols.clamp(1, grid::GRID_COLS);
     let rows = rows.clamp(1, grid::GRID_ROWS);
     let (w, h) = *state.screen.lock().unwrap();
-    let gm = GridManager { screen_w: w, screen_h: h };
+    let gm = GridManager {
+        screen_w: w,
+        screen_h: h,
+    };
     let mut settings = state.settings.lock().unwrap();
-    let current = settings
-        .grid
-        .get(&label)
-        .copied()
-        .unwrap_or(GridRect { col: 0, row: 0, cols, rows });
-    let rect = GridRect { col: current.col, row: current.row, cols, rows };
+    let current = settings.grid.get(&label).copied().unwrap_or(GridRect {
+        col: 0,
+        row: 0,
+        cols,
+        rows,
+    });
+    let rect = GridRect {
+        col: current.col,
+        row: current.row,
+        cols,
+        rows,
+    };
     let occupied = occupied_rects(&settings, Some(&label));
     if occupied.iter().any(|o| crate::grid::overlap(&rect, o)) {
         // Reject conflicting resize: keep current size and window position.
@@ -700,7 +798,11 @@ fn resize_window(
 #[tauri::command]
 fn get_grid_metrics(state: tauri::State<'_, AppState>) -> grid::GridMetrics {
     let (w, h) = *state.screen.lock().unwrap();
-    GridManager { screen_w: w, screen_h: h }.metrics()
+    GridManager {
+        screen_w: w,
+        screen_h: h,
+    }
+    .metrics()
 }
 
 pub(crate) fn place_window_inner(
@@ -711,9 +813,17 @@ pub(crate) fn place_window_inner(
     row: usize,
 ) -> Result<GridRect, String> {
     let (w, h) = *state.screen.lock().unwrap();
-    let gm = GridManager { screen_w: w, screen_h: h };
+    let gm = GridManager {
+        screen_w: w,
+        screen_h: h,
+    };
     let mut settings = state.settings.lock().unwrap();
-    let current = settings.grid.get(label).copied().unwrap_or(GridRect { col: 0, row: 0, cols: 2, rows: 2 });
+    let current = settings.grid.get(label).copied().unwrap_or(GridRect {
+        col: 0,
+        row: 0,
+        cols: 2,
+        rows: 2,
+    });
     let occupied = occupied_rects(&settings, Some(label));
     match gm.place(label, &current, col, row, &occupied) {
         Ok(new_rect) => {
@@ -765,7 +875,11 @@ fn set_topmost(
 }
 
 #[tauri::command]
-fn collapse(app: tauri::AppHandle, state: tauri::State<'_, AppState>, label: String) -> Result<(), String> {
+fn collapse(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    label: String,
+) -> Result<(), String> {
     {
         let mut settings = state.settings.lock().unwrap();
         if settings.collapsed.contains(&label) {
@@ -782,7 +896,11 @@ fn collapse(app: tauri::AppHandle, state: tauri::State<'_, AppState>, label: Str
 }
 
 #[tauri::command]
-fn restore(app: tauri::AppHandle, _state: tauri::State<'_, AppState>, label: String) -> Result<(), String> {
+fn restore(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, AppState>,
+    label: String,
+) -> Result<(), String> {
     restore_window(&app, &label)
 }
 
@@ -810,13 +928,33 @@ pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), 
     }
     let state = app.state::<AppState>();
     let (w, h) = *state.screen.lock().unwrap();
-    let gm = GridManager { screen_w: w, screen_h: h };
-    let default_rect = if label == "workflow" {
-        GridRect { col: 4, row: 2, cols: 4, rows: 3 } // v1.10.2 (#36): 4x3
-    } else {
-        GridRect { col: 0, row: 0, cols: 2, rows: 2 }
+    let gm = GridManager {
+        screen_w: w,
+        screen_h: h,
     };
-    let mut rect = state.settings.lock().unwrap().grid.get(label).copied().unwrap_or(default_rect);
+    let default_rect = if label == "workflow" {
+        GridRect {
+            col: 4,
+            row: 2,
+            cols: 4,
+            rows: 3,
+        } // v1.10.2 (#36): 4x3
+    } else {
+        GridRect {
+            col: 0,
+            row: 0,
+            cols: 2,
+            rows: 2,
+        }
+    };
+    let mut rect = state
+        .settings
+        .lock()
+        .unwrap()
+        .grid
+        .get(label)
+        .copied()
+        .unwrap_or(default_rect);
     // v1.10.3 (#45): never restore onto a visible window - pick the nearest
     // free slot when the saved rect overlaps (ADR-0016).
     {
@@ -833,7 +971,15 @@ pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), 
         }
     }
     if let Some(win) = app.get_webview_window(label) {
-        let _ = win.set_always_on_top(*state.settings.lock().unwrap().topmost.get(label).unwrap_or(&true));
+        let _ = win.set_always_on_top(
+            *state
+                .settings
+                .lock()
+                .unwrap()
+                .topmost
+                .get(label)
+                .unwrap_or(&true),
+        );
         show_float_noactivate(&win);
     }
     position_window(app, label, &rect, &gm);
@@ -948,7 +1094,11 @@ fn add_url_shortcut(
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("URL 需以 http:// 或 https:// 开头".into());
     }
-    let display = if name.trim().is_empty() { url.clone() } else { name.trim().to_string() };
+    let display = if name.trim().is_empty() {
+        url.clone()
+    } else {
+        name.trim().to_string()
+    };
     insert_new_shortcut(&store, display, ShortcutType::Url, url)
 }
 
@@ -1033,7 +1183,10 @@ async fn launch_shortcut(
     let row = {
         let st = store.lock().map_err(|e| e.to_string())?;
         let rows = st.list_shortcuts().map_err(|e| e.to_string())?;
-        rows.iter().find(|r| r.id == id).cloned().ok_or("shortcut not found")?
+        rows.iter()
+            .find(|r| r.id == id)
+            .cloned()
+            .ok_or("shortcut not found")?
     };
 
     // Single-flight: rapid clicks must not queue another blocking launch.
@@ -1066,7 +1219,11 @@ async fn launch_shortcut(
 }
 
 #[tauri::command]
-fn set_acrylic(app: tauri::AppHandle, state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+fn set_acrylic(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
     {
         let mut s = state.settings.lock().unwrap();
         s.acrylic_enabled = enabled;
@@ -1104,7 +1261,11 @@ fn set_current_task(state: tauri::State<'_, AppState>, id: Option<String>) -> Re
 }
 
 #[tauri::command]
-fn set_focus_durations(state: tauri::State<'_, AppState>, focus: u32, rest: u32) -> Result<(), String> {
+fn set_focus_durations(
+    state: tauri::State<'_, AppState>,
+    focus: u32,
+    rest: u32,
+) -> Result<(), String> {
     let mut settings = state.settings.lock().unwrap();
     settings.focus_minutes = focus.clamp(1, 240);
     settings.rest_minutes = rest.clamp(1, 120);
@@ -1295,7 +1456,6 @@ fn quit_app(app: tauri::AppHandle) {
 // window creation
 // ---------------------------------------------------------------------------
 
-
 /// v1.10.3.1 (#46): physical initial rect for a float at its saved grid slot.
 
 /// v1.10.3.1 (#48): strip WS_BORDER|WS_DLGFRAME from float windows. tauri's
@@ -1309,9 +1469,9 @@ fn strip_float_frame(w: &tauri::WebviewWindow) {
     {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos,
-            GWL_STYLE, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER,
-            WS_DLGFRAME, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
+            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER, WS_DLGFRAME, WS_MAXIMIZEBOX,
+            WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
         };
         if let Ok(hwnd) = w.hwnd() {
             let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
@@ -1341,7 +1501,6 @@ fn strip_float_frame(w: &tauri::WebviewWindow) {
     }
 }
 
-
 /// v1.10.3.1 (#48): physical offset of the client-area origin from the window
 /// origin (non-client border). Used to position the *content* exactly at the
 /// grid-cell origin even if the host window keeps a non-client frame.
@@ -1356,8 +1515,13 @@ pub(crate) fn client_origin_offset(w: &tauri::WebviewWindow) -> (i32, i32) {
             unsafe {
                 let mut wr = RECT::default();
                 let mut cr = RECT::default();
-                if GetWindowRect(hwnd_win, &mut wr).is_ok() && GetClientRect(hwnd_win, &mut cr).is_ok() {
-                    let mut pt = POINT { x: cr.left, y: cr.top };
+                if GetWindowRect(hwnd_win, &mut wr).is_ok()
+                    && GetClientRect(hwnd_win, &mut cr).is_ok()
+                {
+                    let mut pt = POINT {
+                        x: cr.left,
+                        y: cr.top,
+                    };
                     if ClientToScreen(hwnd_win, &mut pt).as_bool() {
                         return (pt.x - wr.left, pt.y - wr.top);
                     }
@@ -1367,7 +1531,6 @@ pub(crate) fn client_origin_offset(w: &tauri::WebviewWindow) -> (i32, i32) {
     }
     (0, 0)
 }
-
 
 /// v1.10.4 (#50): client-area geometry (origin offset + size, physical px) for
 /// the drag preview so the brightness center tracks the visible content.
@@ -1431,9 +1594,24 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
     // v1.10.3.1 (#46/#48): floats are born at their saved grid rect so they
     // never stack at the default size/position; collapsed windows stay hidden.
     let (sw, sh) = *app.state::<AppState>().screen.lock().unwrap();
-    let gm = GridManager { screen_w: sw, screen_h: sh };
-    let grid = app.state::<AppState>().settings.lock().unwrap().grid.clone();
-    let collapsed = app.state::<AppState>().settings.lock().unwrap().collapsed.clone();
+    let gm = GridManager {
+        screen_w: sw,
+        screen_h: sh,
+    };
+    let grid = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .unwrap()
+        .grid
+        .clone();
+    let collapsed = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .unwrap()
+        .collapsed
+        .clone();
 
     tauri::WebviewWindowBuilder::new(app, "desktop", url.clone())
         .title("Focus Desktop")
@@ -1441,8 +1619,18 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .decorations(false)
         .build()?;
 
-    let (chat_px, chat_py, chat_pw, chat_ph, chat_collapsed) =
-        initial_float_rect(&grid, &collapsed, &gm, "chat", GridRect { col: 0, row: 0, cols: 2, rows: 2 });
+    let (chat_px, chat_py, chat_pw, chat_ph, chat_collapsed) = initial_float_rect(
+        &grid,
+        &collapsed,
+        &gm,
+        "chat",
+        GridRect {
+            col: 0,
+            row: 0,
+            cols: 2,
+            rows: 2,
+        },
+    );
     let chat = tauri::WebviewWindowBuilder::new(app, "chat", url.clone())
         .title("对话")
         .decorations(false)
@@ -1453,13 +1641,23 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(chat_px, chat_py)
         .inner_size(chat_pw, chat_ph)
-                        .visible(!chat_collapsed) // v1.10.3.1 (#46)
+        .visible(!chat_collapsed) // v1.10.3.1 (#46)
         .build()?;
     strip_float_frame(&chat);
     float_noactivate(&chat);
 
-    let (stats_px, stats_py, stats_pw, stats_ph, stats_collapsed) =
-        initial_float_rect(&grid, &collapsed, &gm, "stats", GridRect { col: 0, row: 0, cols: 2, rows: 2 });
+    let (stats_px, stats_py, stats_pw, stats_ph, stats_collapsed) = initial_float_rect(
+        &grid,
+        &collapsed,
+        &gm,
+        "stats",
+        GridRect {
+            col: 0,
+            row: 0,
+            cols: 2,
+            rows: 2,
+        },
+    );
     let stats = tauri::WebviewWindowBuilder::new(app, "stats", url.clone())
         .title("统计")
         .decorations(false)
@@ -1470,13 +1668,23 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(stats_px, stats_py)
         .inner_size(stats_pw, stats_ph)
-                        .visible(!stats_collapsed) // v1.10.3.1 (#46)
+        .visible(!stats_collapsed) // v1.10.3.1 (#46)
         .build()?;
     strip_float_frame(&stats);
     float_noactivate(&stats);
 
-    let (music_px, music_py, music_pw, music_ph, music_collapsed) =
-        initial_float_rect(&grid, &collapsed, &gm, "music", GridRect { col: 0, row: 0, cols: 2, rows: 2 });
+    let (music_px, music_py, music_pw, music_ph, music_collapsed) = initial_float_rect(
+        &grid,
+        &collapsed,
+        &gm,
+        "music",
+        GridRect {
+            col: 0,
+            row: 0,
+            cols: 2,
+            rows: 2,
+        },
+    );
     let music = tauri::WebviewWindowBuilder::new(app, "music", url.clone())
         .title("音乐")
         .decorations(false)
@@ -1487,13 +1695,23 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(music_px, music_py)
         .inner_size(music_pw, music_ph)
-                        .visible(!music_collapsed) // v1.10.3.1 (#46)
+        .visible(!music_collapsed) // v1.10.3.1 (#46)
         .build()?;
     strip_float_frame(&music);
     float_noactivate(&music);
 
-    let (pet_px, pet_py, pet_pw, pet_ph, pet_collapsed) =
-        initial_float_rect(&grid, &collapsed, &gm, "pet", GridRect { col: 0, row: 0, cols: 2, rows: 2 });
+    let (pet_px, pet_py, pet_pw, pet_ph, pet_collapsed) = initial_float_rect(
+        &grid,
+        &collapsed,
+        &gm,
+        "pet",
+        GridRect {
+            col: 0,
+            row: 0,
+            cols: 2,
+            rows: 2,
+        },
+    );
     let pet = tauri::WebviewWindowBuilder::new(app, "pet", url.clone())
         .title("桌宠")
         .decorations(false)
@@ -1504,13 +1722,24 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(pet_px, pet_py)
         .inner_size(pet_pw, pet_ph)
-                        .visible(!pet_collapsed) // v1.10.3.1 (#46)
+        .visible(!pet_collapsed) // v1.10.3.1 (#46)
         .build()?;
     strip_float_frame(&pet);
     float_noactivate(&pet);
 
     let (workflow_px, workflow_py, workflow_pw, workflow_ph, workflow_collapsed) =
-        initial_float_rect(&grid, &collapsed, &gm, "workflow", GridRect { col: 0, row: 2, cols: 6, rows: 5 }); // v1.10.4 (#51) default 6x5
+        initial_float_rect(
+            &grid,
+            &collapsed,
+            &gm,
+            "workflow",
+            GridRect {
+                col: 0,
+                row: 2,
+                cols: 6,
+                rows: 5,
+            },
+        ); // v1.10.4 (#51) default 6x5
     let workflow = tauri::WebviewWindowBuilder::new(app, "workflow", url.clone())
         .title("工作流")
         .decorations(false)
@@ -1521,7 +1750,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(workflow_px, workflow_py)
         .inner_size(workflow_pw, workflow_ph)
-                        .visible(!workflow_collapsed) // v1.10.3.1 (#46)
+        .visible(!workflow_collapsed) // v1.10.3.1 (#46)
         .build()?;
     strip_float_frame(&workflow);
     float_noactivate(&workflow);
@@ -1539,8 +1768,6 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
     if let Ok(hwnd) = overlay.hwnd() {
         acrylic::noactivate(hwnd.0);
     }
-
-    
 
     let topbar = tauri::WebviewWindowBuilder::new(app, "topbar", url.clone())
         .title("状态")
@@ -1594,7 +1821,9 @@ pub(crate) fn raise_topbar(app: &tauri::AppHandle) {
         }
         *last = std::time::Instant::now();
     }
-    let Some(w) = app.get_webview_window("topbar") else { return };
+    let Some(w) = app.get_webview_window("topbar") else {
+        return;
+    };
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::UI::WindowsAndMessaging::{
@@ -1637,7 +1866,10 @@ fn sync_collapsed(app: &tauri::AppHandle, state: &AppState) {
 
 fn apply_initial_layout(app: &tauri::App, state: &AppState) {
     let (w, h) = *state.screen.lock().unwrap();
-    let gm = GridManager { screen_w: w, screen_h: h };
+    let gm = GridManager {
+        screen_w: w,
+        screen_h: h,
+    };
     let settings = state.settings.lock().unwrap();
 
     for label in ["chat", "stats", "music", "pet", "workflow"] {
@@ -1649,7 +1881,12 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
             position_window(
                 &app.handle(),
                 label,
-                &GridRect { col: 4, row: 2, cols: 4, rows: 4 },
+                &GridRect {
+                    col: 4,
+                    row: 2,
+                    cols: 4,
+                    rows: 4,
+                },
                 &gm,
             );
         }
@@ -1725,10 +1962,14 @@ pub fn run() {
     // and is released by the OS on exit.
     {
         use windows::core::PCWSTR;
-        use windows::Win32::Foundation::{GetLastError, SetLastError, ERROR_ALREADY_EXISTS, WIN32_ERROR};
+        use windows::Win32::Foundation::{
+            GetLastError, SetLastError, ERROR_ALREADY_EXISTS, WIN32_ERROR,
+        };
         use windows::Win32::System::Threading::CreateMutexW;
         let name = windows::core::HSTRING::from("Local\\FocusDesktop_SingleInstance");
-        unsafe { SetLastError(WIN32_ERROR(0)); }
+        unsafe {
+            SetLastError(WIN32_ERROR(0));
+        }
         match unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) } {
             Ok(handle) => {
                 if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
@@ -1762,7 +2003,9 @@ pub fn run() {
             // v1.9: re-allow the saved music folder in the asset protocol scope
             // (scope is per-process; it only covers $APPDATA/** by default).
             if let Some(music_folder) = settings.music_folder.clone() {
-                let _ = app.asset_protocol_scope().allow_directory(std::path::Path::new(&music_folder), true);
+                let _ = app
+                    .asset_protocol_scope()
+                    .allow_directory(std::path::Path::new(&music_folder), true);
             }
             let legacy_shortcuts = settings.shortcuts.clone();
             let data_dir_clone = data_dir.clone();
@@ -1788,7 +2031,6 @@ pub fn run() {
                 // M5 (ADR-0022): registry starts empty; runtimes are created
                 // per character on first use (lazy).
                 agents: Mutex::new(agents::AgentRegistry::new()),
-                agent_fallback: AtomicBool::new(false),
                 workflow: Mutex::new(None),
                 store: store_arc,
                 // v1.12.3: guard lives with AppState → dropped only at process exit.
@@ -1811,7 +2053,10 @@ pub fn run() {
 
             let _ = desktop_lock::restore_desktop_after_process_exit();
             let app_handle = app.handle().clone();
-            let wm = std::sync::Arc::new(workflow::WorkflowManager::new(app_handle.clone(), store.clone()));
+            let wm = std::sync::Arc::new(workflow::WorkflowManager::new(
+                app_handle.clone(),
+                store.clone(),
+            ));
             wm.purge_incompatible();
             let _ = wm.ensure_characters();
             *app_handle.state::<AppState>().workflow.lock().unwrap() = Some(wm.clone());
@@ -1819,7 +2064,12 @@ pub fn run() {
             create_windows(app)?;
 
             // frosted glass on floating windows (respects settings toggle)
-            let acrylic_enabled = app.state::<AppState>().settings.lock().unwrap().acrylic_enabled;
+            let acrylic_enabled = app
+                .state::<AppState>()
+                .settings
+                .lock()
+                .unwrap()
+                .acrylic_enabled;
             for label in ["chat", "stats", "music", "pet", "workflow", "topbar"] {
                 if let Some(w) = app.get_webview_window(label) {
                     apply_acrylic_opt(&w, acrylic_enabled);
@@ -1864,7 +2114,9 @@ pub fn run() {
                 // containing removed node kinds at startup.
                 let wm_tick = wm.clone();
                 std::thread::spawn(move || loop {
-                    std::thread::sleep(std::time::Duration::from_secs(workflow::SCHEDULER_TICK_SEC));
+                    std::thread::sleep(std::time::Duration::from_secs(
+                        workflow::SCHEDULER_TICK_SEC,
+                    ));
                     wm_tick.scheduler_tick();
                 });
                 let wm_events = wm.clone();
@@ -1889,7 +2141,12 @@ pub fn run() {
             let h5 = h.clone();
             h5.clone().listen("ui:toggle_chat", move |_event| {
                 let state = h5.state::<AppState>();
-                let collapsed = state.settings.lock().unwrap().collapsed.contains(&"chat".to_string());
+                let collapsed = state
+                    .settings
+                    .lock()
+                    .unwrap()
+                    .collapsed
+                    .contains(&"chat".to_string());
                 if collapsed {
                     let _ = restore(h5.clone(), state.clone(), "chat".to_string());
                 } else if let Some(w) = h5.get_webview_window("chat") {
@@ -1910,7 +2167,10 @@ pub fn run() {
                     serde_json::from_str(event.payload()).unwrap_or_default();
                 let position_ms = v.get("positionMs").and_then(|x| x.as_u64()).unwrap_or(0);
                 let duration_ms = v.get("durationMs").and_then(|x| x.as_u64()).unwrap_or(0);
-                let _ = tx.send(CoreEvent::MusicTick { position_ms, duration_ms });
+                let _ = tx.send(CoreEvent::MusicTick {
+                    position_ms,
+                    duration_ms,
+                });
             });
 
             // natural-release signal from the drag poller: finalize on the main
@@ -1919,7 +2179,11 @@ pub fn run() {
             hd.clone().listen("drag:released", move |event| {
                 let v: serde_json::Value =
                     serde_json::from_str(event.payload()).unwrap_or_default();
-                let label = v.get("label").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let label = v
+                    .get("label")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if !label.is_empty() {
                     drag::finalize(&hd, &label);
                 }
@@ -1930,15 +2194,23 @@ pub fn run() {
             hf.clone().listen("focus:state_changed", move |event| {
                 let v: serde_json::Value =
                     serde_json::from_str(event.payload()).unwrap_or_default();
-                let state = v.get("state").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let state = v
+                    .get("state")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let paused = v.get("paused").and_then(|x| x.as_bool()).unwrap_or(false);
-                let completed = v.get("completed").and_then(|x| x.as_bool()).unwrap_or(false);
+                let completed = v
+                    .get("completed")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
                 let app_state = hf.state::<AppState>();
                 *app_state.focus_state.lock().unwrap() = state.clone();
                 // M4/ADR-0012: focus-end trigger via the core event bus
-                let _ = app_state
-                    .events_tx
-                    .send(CoreEvent::FocusStateChanged { state: state.clone(), completed });
+                let _ = app_state.events_tx.send(CoreEvent::FocusStateChanged {
+                    state: state.clone(),
+                    completed,
+                });
                 let mut ft = app_state.focus_track.lock().unwrap();
                 match state.as_str() {
                     "focus" => {
@@ -1958,12 +2230,18 @@ pub fn run() {
                         if ft.active {
                             let started = ft.session_started_at.clone().unwrap_or_default();
                             let ended = chrono::Local::now().to_rfc3339();
-                            let dur = elapsed_sec(&started, &ended).unwrap_or_else(|| ft.session_focus_sec.max(1));
+                            let dur = elapsed_sec(&started, &ended)
+                                .unwrap_or_else(|| ft.session_focus_sec.max(1));
                             let tid = ft.task_id.clone();
                             let store_state = hf.state::<std::sync::Arc<Mutex<storage::Store>>>();
                             match store_state.lock() {
                                 Ok(store) => {
-                                    if let Err(e) = store.record_focus_session(&started, &ended, dur, tid.as_deref()) {
+                                    if let Err(e) = store.record_focus_session(
+                                        &started,
+                                        &ended,
+                                        dur,
+                                        tid.as_deref(),
+                                    ) {
                                         eprintln!("[focus] record_focus_session failed: {e}");
                                     }
                                 }
@@ -1988,9 +2266,16 @@ pub fn run() {
             // CLI timer round-trip: desktop webview replies with live state
             let hc = h.clone();
             hc.clone().listen("cli:timer-done", move |event| {
-                let v: serde_json::Value = serde_json::from_str(event.payload()).unwrap_or_default();
+                let v: serde_json::Value =
+                    serde_json::from_str(event.payload()).unwrap_or_default();
                 let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(u64::MAX);
-                if let Some(tx) = hc.state::<AppState>().cli_pending.lock().unwrap().remove(&id) {
+                if let Some(tx) = hc
+                    .state::<AppState>()
+                    .cli_pending
+                    .lock()
+                    .unwrap()
+                    .remove(&id)
+                {
                     let _ = tx.send(v);
                 }
             });
@@ -2084,11 +2369,62 @@ pub fn run() {
 }
 #[cfg(test)]
 mod tests {
-    use super::{agents::AgentProviderKind, elapsed_sec, topbar_visible};
+    use super::{
+        agents, agents::AgentProviderKind, codex_ready, elapsed_sec, resume_with_initial_message,
+        topbar_visible,
+    };
 
     #[test]
     fn legacy_mock_provider_is_not_a_production_provider() {
         assert!(AgentProviderKind::parse("mock").is_none());
+    }
+
+    #[test]
+    fn codex_readiness_reflects_executable_availability() {
+        assert!(codex_ready(&Some(r"C:\\Codex\\codex.exe".into())));
+        assert!(!codex_ready(&None));
+    }
+
+    #[test]
+    fn same_day_resume_sends_the_initial_message() {
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        let (tx, _) = tokio::sync::broadcast::channel(32);
+        let mut events = tx.subscribe();
+        let runtime = agents::AgentRuntime::Mock(Mutex::new(agents::mock::MockProvider::new(tx)));
+
+        let info = resume_with_initial_message(
+            &runtime,
+            "today-thread",
+            "resume this message",
+            agents::agent_display_full(),
+        )
+        .expect("same-day resume should accept its initial message");
+        assert_eq!(info.id, "today-thread");
+
+        let mut saw_resumed_input = false;
+        for _ in 0..8 {
+            let Ok(Ok(crate::event_bus::CoreEvent::AgentEvent(event))) =
+                tauri::async_runtime::block_on(async {
+                    tokio::time::timeout(Duration::from_secs(1), events.recv()).await
+                })
+            else {
+                continue;
+            };
+            if event["event"]["type"] == "message.delta"
+                && event["event"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("resume this message"))
+            {
+                saw_resumed_input = true;
+                break;
+            }
+        }
+        assert!(
+            saw_resumed_input,
+            "the resumed thread must receive the caller's initial message"
+        );
     }
 
     #[test]
@@ -2122,7 +2458,11 @@ mod tests {
     fn free_cell_skips_forbidden_zones() {
         use super::free_cell_for;
         let (c0, r0) = free_cell_for(&[]);
-        assert_eq!((c0, r0), (0, 0), "top-left is free (hero only blocks cols 3-9 rows 0-3)");
+        assert_eq!(
+            (c0, r0),
+            (0, 0),
+            "top-left is free (hero only blocks cols 3-9 rows 0-3)"
+        );
         let occupied = vec![crate::storage::ShortcutRow {
             id: "x".into(),
             name: "x".into(),
@@ -2136,6 +2476,10 @@ mod tests {
             fit_rows: None,
         }];
         let (c1, r1) = free_cell_for(&occupied);
-        assert_eq!((c1, r1), (0, 0), "occupied (0,4) does not block the top-left");
+        assert_eq!(
+            (c1, r1),
+            (0, 0),
+            "occupied (0,4) does not block the top-left"
+        );
     }
 }

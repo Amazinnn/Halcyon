@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast::Sender;
 
 use super::{AgentProvider, AgentThreadInfo, TurnDone};
-use crate::event_bus::CoreEvent;
 use crate::agents::mock::state_to_animation;
+use crate::event_bus::CoreEvent;
 
 pub const CLIENT_NAME: &str = "focus_desktop";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -34,6 +34,7 @@ struct Shared {
     session_id: String,
     current_thread: Mutex<Option<String>>,
     current_turn: Mutex<Option<String>>,
+    turn_in_flight: Mutex<bool>,
     last_message: Mutex<String>,
     /// M5 (ADR-0022): per-turn display switches + first-delta marker.
     display: Mutex<crate::workflow_engine::engine::AgentDisplay>,
@@ -55,7 +56,10 @@ pub struct CodexProvider {
 /// Version directories are content hashes, so the newest by file mtime wins.
 pub fn find_codex_exe() -> Option<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA")?;
-    let bin = PathBuf::from(local).join("OpenAI").join("Codex").join("bin");
+    let bin = PathBuf::from(local)
+        .join("OpenAI")
+        .join("Codex")
+        .join("bin");
     let rd = std::fs::read_dir(&bin).ok()?;
     let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     for entry in rd.flatten() {
@@ -87,7 +91,10 @@ pub fn install_focus_cli_skill_into(base: &Path) -> Result<PathBuf, String> {
     let dir = base.join(".codex").join("skills").join("focus-cli");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("SKILL.md");
-    if std::fs::read_to_string(&path).map(|s| s == FOCUS_CLI_SKILL).unwrap_or(false) {
+    if std::fs::read_to_string(&path)
+        .map(|s| s == FOCUS_CLI_SKILL)
+        .unwrap_or(false)
+    {
         return Ok(path);
     }
     std::fs::write(&path, FOCUS_CLI_SKILL).map_err(|e| e.to_string())?;
@@ -115,7 +122,6 @@ fn app_server_path_with_focus_cli(focus_exe: &Path, existing_path: Option<OsStri
     std::env::join_paths(paths).unwrap_or_else(|_| existing_path.unwrap_or_default())
 }
 
-
 impl CodexProvider {
     pub fn new(tx: Sender<CoreEvent>, exe_path: PathBuf, character_id: String) -> Self {
         let session_id = format!("focus-{}-{}", character_id, std::process::id());
@@ -127,6 +133,7 @@ impl CodexProvider {
                 session_id,
                 current_thread: Mutex::new(None),
                 current_turn: Mutex::new(None),
+                turn_in_flight: Mutex::new(false),
                 last_message: Mutex::new(String::new()),
                 display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
                 first_delta_sent: Mutex::new(false),
@@ -139,7 +146,6 @@ impl CodexProvider {
         }
     }
 
-
     /// Publish the active thread id so the agent can pass `--agent-thread`
     /// when invoking focus-cli (see the focus-cli skill).
     fn write_thread_marker(&self) {
@@ -147,7 +153,13 @@ impl CodexProvider {
             return;
         };
         let path = PathBuf::from(home).join(".codex").join("focus-thread.json");
-        let tid = self.shared.current_thread.lock().unwrap().clone().unwrap_or_default();
+        let tid = self
+            .shared
+            .current_thread
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default();
         let _ = std::fs::write(
             path,
             json!({
@@ -203,7 +215,9 @@ impl CodexProvider {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 let Ok(line) = line else { break };
-                let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
                 dispatch_message(&tx, &shared, &pending, &turn_done, msg);
             }
         });
@@ -262,21 +276,34 @@ impl CodexProvider {
         }
     }
 
-    fn send_internal(&mut self, thread_id: &str, text: &str, display: crate::workflow_engine::engine::AgentDisplay) -> Result<(), String> {
+    fn send_internal(
+        &mut self,
+        thread_id: &str,
+        text: &str,
+        display: crate::workflow_engine::engine::AgentDisplay,
+    ) -> Result<(), String> {
+        claim_turn(&self.shared)?;
         // M5 (ADR-0022): system-level output discipline injected into every
         // turn (short newline-separated sentences, no Markdown).
         *self.shared.display.lock().unwrap() = display;
         reset_turn_capture(&self.shared);
         let full = format!("{}\n\n{}", super::OUTPUT_DISCIPLINE, text);
-        let resp = self.request(
+        let resp = match self.request(
             "turn/start",
             json!({
                 "threadId": thread_id,
                 "input": [{ "type": "text", "text": full }]
             }),
             REQUEST_TIMEOUT,
-        )?;
+        ) {
+            Ok(resp) => resp,
+            Err(err) => {
+                release_turn(&self.shared);
+                return Err(err);
+            }
+        };
         if resp.get("error").is_some() {
+            release_turn(&self.shared);
             return Err(format!("turn/start 失败: {resp}"));
         }
         if let Some(turn_id) = resp
@@ -286,13 +313,45 @@ impl CodexProvider {
             .and_then(Value::as_str)
         {
             *self.shared.current_turn.lock().unwrap() = Some(turn_id.to_string());
+            return Ok(());
         }
-        Ok(())
+        release_turn(&self.shared);
+        Err(format!("turn/start response missing turn: {resp}"))
     }
 
     fn emit_envelope(&self, event: Value) {
+        if !process_events_visible(&self.shared) {
+            return;
+        }
         let env = super::envelope(&self.shared.character_id, &self.shared.session_id, event);
         let _ = self.tx.send(CoreEvent::AgentEvent(env));
+    }
+
+    fn resume_thread_with_display(
+        &mut self,
+        thread_id: &str,
+        display: crate::workflow_engine::engine::AgentDisplay,
+    ) -> Result<AgentThreadInfo, String> {
+        self.ensure_started()?;
+        *self.shared.display.lock().unwrap() = display;
+        let resp = self.request(
+            "thread/resume",
+            json!({ "threadId": thread_id }),
+            REQUEST_TIMEOUT,
+        )?;
+        if resp.get("error").is_some() {
+            return Err(format!("thread/resume failed: {resp}"));
+        }
+        let thread = resp
+            .get("result")
+            .and_then(|r| r.get("thread"))
+            .cloned()
+            .ok_or_else(|| format!("thread/resume response missing thread: {resp}"))?;
+        let info = thread_info(&thread);
+        *self.shared.current_thread.lock().unwrap() = Some(info.id.clone());
+        self.write_thread_marker();
+        self.emit_envelope(json!({ "type": "session.started" }));
+        Ok(info)
     }
 
     /// Subscribe to turn-completion signals (M4 workflow agent nodes).
@@ -310,7 +369,6 @@ impl Drop for CodexProvider {
 }
 
 impl AgentProvider for CodexProvider {
-
     fn start_thread(
         &mut self,
         workspace_dir: &str,
@@ -318,6 +376,7 @@ impl AgentProvider for CodexProvider {
         display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<AgentThreadInfo, String> {
         self.ensure_started()?;
+        *self.shared.display.lock().unwrap() = display;
         let mut params = serde_json::Map::new();
         if !workspace_dir.trim().is_empty() {
             params.insert("cwd".into(), json!(workspace_dir.trim()));
@@ -342,25 +401,7 @@ impl AgentProvider for CodexProvider {
     }
 
     fn resume_thread(&mut self, thread_id: &str) -> Result<AgentThreadInfo, String> {
-        self.ensure_started()?;
-        let resp = self.request(
-            "thread/resume",
-            json!({ "threadId": thread_id }),
-            REQUEST_TIMEOUT,
-        )?;
-        if resp.get("error").is_some() {
-            return Err(format!("thread/resume 失败: {resp}"));
-        }
-        let thread = resp
-            .get("result")
-            .and_then(|r| r.get("thread"))
-            .cloned()
-            .ok_or_else(|| format!("thread/resume 响应缺少 thread: {resp}"))?;
-        let info = thread_info(&thread);
-        *self.shared.current_thread.lock().unwrap() = Some(info.id.clone());
-        self.write_thread_marker();
-        self.emit_envelope(json!({ "type": "session.started" }));
-        Ok(info)
+        self.resume_thread_with_display(thread_id, super::agent_display_full())
     }
 
     fn list_threads(&mut self) -> Result<Vec<AgentThreadInfo>, String> {
@@ -382,12 +423,17 @@ impl AgentProvider for CodexProvider {
         Ok(data.iter().map(thread_info).collect())
     }
 
-    fn send(&mut self, thread_id: &str, text: &str, display: crate::workflow_engine::engine::AgentDisplay) -> Result<(), String> {
+    fn send(
+        &mut self,
+        thread_id: &str,
+        text: &str,
+        display: crate::workflow_engine::engine::AgentDisplay,
+    ) -> Result<(), String> {
         self.ensure_started()?;
         {
             let cur = self.shared.current_thread.lock().unwrap().clone();
             if cur.as_deref() != Some(thread_id) {
-                let _ = self.resume_thread(thread_id)?;
+                let _ = self.resume_thread_with_display(thread_id, display)?;
             }
         }
         self.send_internal(thread_id, text, display)
@@ -396,7 +442,9 @@ impl AgentProvider for CodexProvider {
     fn interrupt(&mut self, thread_id: &str) -> Result<(), String> {
         self.ensure_started()?;
         let turn_id = self.shared.current_turn.lock().unwrap().clone();
-        let Some(turn_id) = turn_id else { return Ok(()) };
+        let Some(turn_id) = turn_id else {
+            return Ok(());
+        };
         let _ = self.request(
             "turn/interrupt",
             json!({ "threadId": thread_id, "turnId": turn_id }),
@@ -408,9 +456,21 @@ impl AgentProvider for CodexProvider {
 
 fn thread_info(t: &Value) -> AgentThreadInfo {
     AgentThreadInfo {
-        id: t.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
-        preview: t.get("preview").and_then(Value::as_str).unwrap_or("").to_string(),
-        cwd: t.get("cwd").and_then(Value::as_str).unwrap_or("").to_string(),
+        id: t
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        preview: t
+            .get("preview")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        cwd: t
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         status: t
             .get("status")
             .and_then(|s| s.get("type"))
@@ -447,28 +507,46 @@ fn dispatch_message(
         "item/completed" => handle_item_completed(tx, shared, &params),
         "item/agentMessage/delta" => handle_agent_delta(tx, shared, &params),
         "turn/started" => {
-            reset_turn_capture(shared);
             if let Some(turn_id) = params
                 .get("turn")
                 .and_then(|t| t.get("id"))
                 .and_then(Value::as_str)
             {
+                let current = shared.current_turn.lock().unwrap().clone();
+                if current.as_deref().is_some_and(|active| active != turn_id) {
+                    return;
+                }
+                reset_turn_capture(shared);
                 *shared.current_turn.lock().unwrap() = Some(turn_id.to_string());
+                *shared.turn_in_flight.lock().unwrap() = true;
             }
             emit_status(tx, shared, "thinking");
         }
         "turn/completed" => handle_turn_completed(tx, shared, turn_done, &params),
         "thread/started" => {
-            if let Some(tid) = params.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str) {
+            if let Some(tid) = params
+                .get("thread")
+                .and_then(|t| t.get("id"))
+                .and_then(Value::as_str)
+            {
                 *shared.current_thread.lock().unwrap() = Some(tid.to_string());
             }
         }
         "error" => {
+            let was_in_flight = *shared.turn_in_flight.lock().unwrap();
+            release_turn(shared);
             emit_envelope(
                 tx,
                 shared,
                 json!({ "type": "session.error", "message": params.get("message").and_then(Value::as_str).unwrap_or("codex error") }),
             );
+            if was_in_flight {
+                let _ = turn_done.send(TurnDone {
+                    thread_id: shared.current_thread.lock().unwrap().clone(),
+                    status: "error".into(),
+                    result: Some(shared.last_message.lock().unwrap().clone()),
+                });
+            }
         }
         _ => {}
     }
@@ -479,7 +557,31 @@ fn reset_turn_capture(shared: &Shared) {
     *shared.first_delta_sent.lock().unwrap() = false;
 }
 
+fn claim_turn(shared: &Shared) -> Result<(), String> {
+    let mut in_flight = shared.turn_in_flight.lock().unwrap();
+    if *in_flight {
+        return Err(
+            "Agent already has an active turn; wait for it to finish or stop it first".into(),
+        );
+    }
+    *in_flight = true;
+    Ok(())
+}
+
+fn release_turn(shared: &Shared) {
+    *shared.current_turn.lock().unwrap() = None;
+    *shared.turn_in_flight.lock().unwrap() = false;
+}
+
+fn process_events_visible(shared: &Shared) -> bool {
+    let display = *shared.display.lock().unwrap();
+    display.show_initial || display.show_thinking || display.show_result
+}
+
 fn emit_envelope(tx: &Sender<CoreEvent>, shared: &Shared, event: Value) {
+    if !process_events_visible(shared) {
+        return;
+    }
     // M5 (ADR-0022): agentId = character_id so the frontend can isolate
     // per-Agent event streams.
     let env = super::envelope(&shared.character_id, &shared.session_id, event);
@@ -487,7 +589,14 @@ fn emit_envelope(tx: &Sender<CoreEvent>, shared: &Shared, event: Value) {
 }
 
 fn emit_status(tx: &Sender<CoreEvent>, shared: &Shared, state: &str) {
-    emit_envelope(tx, shared, json!({ "type": "status.changed", "state": state }));
+    if !process_events_visible(shared) {
+        return;
+    }
+    emit_envelope(
+        tx,
+        shared,
+        json!({ "type": "status.changed", "state": state }),
+    );
     let _ = tx.send(CoreEvent::PetStateChanged {
         state: state.to_string(),
         animation: state_to_animation(state).to_string(),
@@ -509,7 +618,11 @@ fn tool_summary(item: &Value, fallback: &str) -> String {
     if let Some(c) = item.get("name").and_then(Value::as_str) {
         return c.to_string();
     }
-    if let Some(a) = item.get("action").and_then(|a| a.get("command")).and_then(Value::as_str) {
+    if let Some(a) = item
+        .get("action")
+        .and_then(|a| a.get("command"))
+        .and_then(Value::as_str)
+    {
         return a.to_string();
     }
     if let Some(p) = item.get("path").and_then(Value::as_str) {
@@ -518,7 +631,9 @@ fn tool_summary(item: &Value, fallback: &str) -> String {
     fallback.to_string()
 }
 fn handle_item_started(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value) {
-    let Some(item) = params.get("item") else { return };
+    let Some(item) = params.get("item") else {
+        return;
+    };
     match item.get("type").and_then(Value::as_str) {
         Some("reasoning") => emit_status(tx, shared, "thinking"),
         Some(t) if tool_kind(item).is_some() => emit_envelope(
@@ -531,14 +646,20 @@ fn handle_item_started(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value) 
 }
 
 fn handle_item_completed(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value) {
-    let Some(item) = params.get("item") else { return };
+    let Some(item) = params.get("item") else {
+        return;
+    };
     match item.get("type").and_then(Value::as_str) {
         Some("agentMessage") => {
             if let Some(text) = item.get("text").and_then(Value::as_str) {
                 *shared.last_message.lock().unwrap() = text.to_string();
                 // M5 (ADR-0022): final result shown only when showResult is on.
                 if !text.trim().is_empty() && shared.display.lock().unwrap().show_result {
-                    emit_envelope(tx, shared, json!({ "type": "message.completed", "text": text }));
+                    emit_envelope(
+                        tx,
+                        shared,
+                        json!({ "type": "message.completed", "text": text }),
+                    );
                 }
             }
         }
@@ -572,10 +693,18 @@ fn handle_agent_delta(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value) {
         // later deltas = the thinking stream (showThinking).
         let display = *shared.display.lock().unwrap();
         let mut first = shared.first_delta_sent.lock().unwrap();
-        let allow = if !*first { display.show_initial } else { display.show_thinking };
+        let allow = if !*first {
+            display.show_initial
+        } else {
+            display.show_thinking
+        };
         *first = true;
         if allow {
-            emit_envelope(tx, shared, json!({ "type": "message.delta", "text": delta }));
+            emit_envelope(
+                tx,
+                shared,
+                json!({ "type": "message.delta", "text": delta }),
+            );
         }
     }
 }
@@ -586,7 +715,10 @@ fn handle_turn_completed(
     turn_done: &Arc<tokio::sync::broadcast::Sender<TurnDone>>,
     params: &Value,
 ) {
-    *shared.current_turn.lock().unwrap() = None;
+    if !*shared.turn_in_flight.lock().unwrap() {
+        return;
+    }
+    release_turn(shared);
     let thread_id = params
         .get("threadId")
         .and_then(Value::as_str)
@@ -608,15 +740,31 @@ fn handle_turn_completed(
     match status {
         "completed" => {
             emit_status(tx, shared, "success");
-            emit_envelope(tx, shared, json!({ "type": "session.completed", "outcome": "success" }));
+            emit_envelope(
+                tx,
+                shared,
+                json!({ "type": "session.completed", "outcome": "success" }),
+            );
             emit_status(tx, shared, "idle");
-            let _ = turn_done.send(TurnDone { thread_id, status: "completed".into(), result: Some(result) });
+            let _ = turn_done.send(TurnDone {
+                thread_id,
+                status: "completed".into(),
+                result: Some(result),
+            });
         }
         "interrupted" => {
             emit_status(tx, shared, "cancelled");
-            emit_envelope(tx, shared, json!({ "type": "session.completed", "outcome": "cancelled" }));
+            emit_envelope(
+                tx,
+                shared,
+                json!({ "type": "session.completed", "outcome": "cancelled" }),
+            );
             emit_status(tx, shared, "idle");
-            let _ = turn_done.send(TurnDone { thread_id, status: "interrupted".into(), result: Some(result) });
+            let _ = turn_done.send(TurnDone {
+                thread_id,
+                status: "interrupted".into(),
+                result: Some(result),
+            });
         }
         _ => {
             let message = params
@@ -626,15 +774,29 @@ fn handle_turn_completed(
                 .and_then(Value::as_str)
                 .unwrap_or("agent turn failed");
             emit_status(tx, shared, "error");
-            emit_envelope(tx, shared, json!({ "type": "session.error", "message": message }));
-            emit_envelope(tx, shared, json!({ "type": "session.completed", "outcome": "error" }));
-            let _ = tx.send(CoreEvent::BubbleRequested {
-                text: "Agent 出错了，已停止。".to_string(),
-                priority: "critical".to_string(),
-                agent_id: None,
-            });
+            emit_envelope(
+                tx,
+                shared,
+                json!({ "type": "session.error", "message": message }),
+            );
+            emit_envelope(
+                tx,
+                shared,
+                json!({ "type": "session.completed", "outcome": "error" }),
+            );
+            if process_events_visible(shared) {
+                let _ = tx.send(CoreEvent::BubbleRequested {
+                    text: "Agent 出错了，已停止。".to_string(),
+                    priority: "critical".to_string(),
+                    agent_id: None,
+                });
+            }
             emit_status(tx, shared, "idle");
-            let _ = turn_done.send(TurnDone { thread_id, status: "error".into(), result: Some(result) });
+            let _ = turn_done.send(TurnDone {
+                thread_id,
+                status: "error".into(),
+                result: Some(result),
+            });
         }
     }
 }
@@ -714,6 +876,7 @@ mod tests {
             session_id: "s1".into(),
             current_thread: Mutex::new(None),
             current_turn: Mutex::new(None),
+            turn_in_flight: Mutex::new(false),
             last_message: Mutex::new(String::new()),
             display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
             first_delta_sent: Mutex::new(false),
@@ -725,9 +888,42 @@ mod tests {
             &json!({ "delta": "你好", "itemId": "i1", "threadId": "t", "turnId": "u" }),
         );
         let env = rx.try_recv().expect("envelope emitted");
-        let CoreEvent::AgentEvent(v) = env else { panic!("expected AgentEvent") };
+        let CoreEvent::AgentEvent(v) = env else {
+            panic!("expected AgentEvent")
+        };
         validate_envelope(&v).unwrap();
         assert_eq!(v["event"]["text"], "你好");
+    }
+
+    #[test]
+    fn overlapping_turn_is_rejected_until_the_active_turn_finishes() {
+        let shared = Shared {
+            character_id: "char-test".into(),
+            session_id: "s1".into(),
+            current_thread: Mutex::new(Some("thread-1".into())),
+            current_turn: Mutex::new(None),
+            turn_in_flight: Mutex::new(false),
+            last_message: Mutex::new(String::new()),
+            display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
+            first_delta_sent: Mutex::new(false),
+        };
+        assert!(claim_turn(&shared).is_ok());
+        let err = claim_turn(&shared).expect_err("the second simultaneous turn must be rejected");
+        assert!(err.contains("active turn"));
+
+        let (tx, _) = tokio::sync::broadcast::channel::<CoreEvent>(16);
+        let (done_tx, _) = tokio::sync::broadcast::channel::<TurnDone>(16);
+        handle_turn_completed(
+            &tx,
+            &shared,
+            &Arc::new(done_tx),
+            &json!({ "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } }),
+        );
+
+        assert!(
+            claim_turn(&shared).is_ok(),
+            "a terminal turn must release the guard"
+        );
     }
 
     #[test]
@@ -738,6 +934,7 @@ mod tests {
             session_id: "s1".into(),
             current_thread: Mutex::new(None),
             current_turn: Mutex::new(Some("u1".into())),
+            turn_in_flight: Mutex::new(true),
             last_message: Mutex::new(String::new()),
             display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
             first_delta_sent: Mutex::new(false),
@@ -772,6 +969,7 @@ mod tests {
             session_id: "s1".into(),
             current_thread: Mutex::new(Some("thread-1".into())),
             current_turn: Mutex::new(None),
+            turn_in_flight: Mutex::new(false),
             last_message: Mutex::new("stale result".into()),
             display: Mutex::new(crate::workflow_engine::engine::AgentDisplay {
                 show_initial: false,
@@ -811,9 +1009,54 @@ mod tests {
         let done = td_rx.try_recv().expect("turn completion signal");
         assert_eq!(done.result.as_deref(), Some("private result"));
         while let Ok(event) = events.try_recv() {
-            if let CoreEvent::AgentEvent(envelope) = event {
-                assert_ne!(envelope["event"]["type"], "message.completed");
-            }
+            assert!(
+                !matches!(
+                    event,
+                    CoreEvent::AgentEvent(_) | CoreEvent::BubbleRequested { .. }
+                ),
+                "hidden workflow turns must not leak raw process events: {event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_failed_turn_emits_no_error_bubble_but_notifies_the_engine() {
+        let (tx, _) = tokio::sync::broadcast::channel::<CoreEvent>(32);
+        let shared = Arc::new(Shared {
+            character_id: "char-test".into(),
+            session_id: "s1".into(),
+            current_thread: Mutex::new(Some("thread-1".into())),
+            current_turn: Mutex::new(Some("turn-1".into())),
+            turn_in_flight: Mutex::new(true),
+            last_message: Mutex::new("private failure result".into()),
+            display: Mutex::new(crate::workflow_engine::engine::AgentDisplay {
+                show_initial: false,
+                show_thinking: false,
+                show_result: false,
+            }),
+            first_delta_sent: Mutex::new(false),
+        });
+        let (done_tx, mut done_rx) = tokio::sync::broadcast::channel::<TurnDone>(16);
+        let mut events = tx.subscribe();
+
+        handle_turn_completed(
+            &tx,
+            &shared,
+            &Arc::new(done_tx),
+            &json!({ "threadId": "thread-1", "turn": { "id": "turn-1", "status": "failed", "error": { "message": "boom" } } }),
+        );
+
+        let done = done_rx.try_recv().expect("workflow engine completion");
+        assert_eq!(done.status, "error");
+        assert_eq!(done.result.as_deref(), Some("private failure result"));
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(
+                    event,
+                    CoreEvent::AgentEvent(_) | CoreEvent::BubbleRequested { .. }
+                ),
+                "hidden workflow failure must not emit a chat envelope or error bubble: {event:?}"
+            );
         }
     }
 
@@ -830,7 +1073,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let path = install_focus_cli_skill_into(&base).unwrap();
         let name = path.to_string_lossy().to_string();
-        assert!(name.contains(".codex") && name.contains("focus-cli") && name.ends_with("SKILL.md"));
+        assert!(
+            name.contains(".codex") && name.contains("focus-cli") && name.ends_with("SKILL.md")
+        );
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("focus-cli"));
         assert!(content.contains("--agent-thread"));
@@ -868,7 +1113,10 @@ mod tests {
         assert!(workflow.character_id.is_empty());
         assert_eq!(workflow.nodes.len(), 1);
         assert_eq!(workflow.nodes[0].kind, "agent");
-        assert!(!workflow.nodes[0].params["characterId"].as_str().unwrap().is_empty());
+        assert!(!workflow.nodes[0].params["characterId"]
+            .as_str()
+            .unwrap()
+            .is_empty());
         assert!(workflow.nodes[0].params["prompt"].is_string());
         assert_eq!(workflow.nodes[0].params["showResult"], true);
     }
@@ -883,7 +1131,10 @@ mod tests {
         let paths: Vec<_> = std::env::split_paths(&path).collect();
 
         assert_eq!(paths.first(), Some(&PathBuf::from(r"C:\\Focus")));
-        assert_eq!(paths[1..], std::env::split_paths(&original).collect::<Vec<_>>());
+        assert_eq!(
+            paths[1..],
+            std::env::split_paths(&original).collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ import source from "./ChatView.vue?raw";
 describe("simplified chat surface", () => {
   it("keeps only the Agent/status/messages/interrupt/composer controls", () => {
     expect(source).toContain("agent.refreshCharacters()");
-    expect(source).toContain("agent.provider");
+    expect(source).toContain("Codex");
     expect(source).toContain("phaseText");
     expect(source).toContain("agent.messages");
     expect(source).toContain("agent.interrupt()");
@@ -20,8 +20,15 @@ describe("simplified chat surface", () => {
       "workspaceInput",
       "useSkill",
       "tool-strip",
+      "Mock",
     ]) {
       expect(source).not.toContain(removed);
     }
+  });
+
+  it("locks selection and sending for the whole active turn while keeping stop available", () => {
+    expect(source).toContain(':disabled="isBusy"');
+    expect(source).toContain(':disabled="isBusy || !agent.characterId"');
+    expect(source).toContain("agent.phase === 'streaming' || agent.phase === 'connecting'");
   });
 });

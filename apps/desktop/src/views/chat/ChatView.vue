@@ -6,6 +6,7 @@ import WindowHeader from "../../components/WindowHeader.vue";
 const agent = useAgentStore();
 const input = ref("");
 const listRef = ref<HTMLElement | null>(null);
+const isBusy = computed(() => agent.phase === "connecting" || agent.phase === "streaming");
 
 const phaseText = computed(() => {
   switch (agent.phase) {
@@ -54,13 +55,11 @@ function send() {
     <WindowHeader :title="agent.characterName" collapsible />
 
     <div class="agent-row">
-      <select v-if="agent.characters.length" class="agent-select" :value="agent.characterId" @change="agent.selectCharacter(($event.target as HTMLSelectElement).value)">
+      <select v-if="agent.characters.length" class="agent-select" :value="agent.characterId" :disabled="isBusy" @change="agent.selectCharacter(($event.target as HTMLSelectElement).value)">
         <option v-for="c in agent.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
       </select>
       <button v-else class="ghost" @click="agent.refreshCharacters()">Agent 正在初始化，点击刷新</button>
-      <span class="badge" :class="agent.provider">
-        {{ agent.provider === "mock" && agent.fallback ? "Mock（回退）" : agent.provider === "mock" ? "Mock" : "Codex" }}
-      </span>
+      <span class="badge">Codex</span>
       <span class="phase" :class="agent.phase">{{ phaseText }}</span>
     </div>
 
@@ -77,11 +76,11 @@ function send() {
     </div>
 
     <form class="composer" @submit.prevent="send">
-      <input v-model="input" placeholder="输入消息…" :disabled="agent.phase === 'connecting' || !agent.characterId" />
+      <input v-model="input" placeholder="输入消息…" :disabled="isBusy || !agent.characterId" />
       <button v-if="agent.phase === 'streaming' || agent.phase === 'connecting'" type="button" class="stop" @click="agent.interrupt()">
         停止
       </button>
-      <button type="submit" :disabled="!input.trim() || agent.phase === 'connecting' || !agent.characterId">发送</button>
+      <button type="submit" :disabled="!input.trim() || isBusy || !agent.characterId">发送</button>
     </form>
   </div>
 </template>
@@ -121,10 +120,6 @@ function send() {
   padding: 2px 10px;
   background: #183624;
   color: var(--accent-bright);
-}
-.badge.mock {
-  background: #3a3318;
-  color: #e8c766;
 }
 .phase {
   font-size: 11px;
