@@ -814,4 +814,40 @@ mod tests {
         assert!(content.contains("--agent-thread"));
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    #[test]
+    fn focus_cli_skill_teaches_agent_workflow_control() {
+        assert!(FOCUS_CLI_SKILL.contains("agent list"));
+        assert!(FOCUS_CLI_SKILL.contains("agent session"));
+        for command in [
+            "workflow list",
+            "workflow read",
+            "workflow create",
+            "workflow update",
+            "workflow delete",
+            "workflow run",
+            "workflow runs",
+            "workflow cancel",
+        ] {
+            assert!(FOCUS_CLI_SKILL.contains(command), "missing {command}");
+        }
+        assert!(FOCUS_CLI_SKILL.contains("--payload"));
+        assert!(FOCUS_CLI_SKILL.contains("\"trigger\": \"manual\""));
+        assert!(FOCUS_CLI_SKILL.contains("\"characterId\": \"\""));
+        assert!(FOCUS_CLI_SKILL.contains("\"kind\": \"agent\""));
+        assert!(FOCUS_CLI_SKILL.contains("\"prompt\": \""));
+        assert!(FOCUS_CLI_SKILL.contains("\"showResult\": true"));
+
+        let json_start = FOCUS_CLI_SKILL.find("```json\n").unwrap() + "```json\n".len();
+        let json_end = FOCUS_CLI_SKILL[json_start..].find("\n```").unwrap() + json_start;
+        let workflow: crate::workflow_engine::model::WorkflowDef =
+            serde_json::from_str(&FOCUS_CLI_SKILL[json_start..json_end]).unwrap();
+        assert_eq!(workflow.trigger, "manual");
+        assert!(workflow.character_id.is_empty());
+        assert_eq!(workflow.nodes.len(), 1);
+        assert_eq!(workflow.nodes[0].kind, "agent");
+        assert!(!workflow.nodes[0].params["characterId"].as_str().unwrap().is_empty());
+        assert!(workflow.nodes[0].params["prompt"].is_string());
+        assert_eq!(workflow.nodes[0].params["showResult"], true);
+    }
 }
