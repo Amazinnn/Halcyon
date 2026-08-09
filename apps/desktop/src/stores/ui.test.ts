@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
-const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const { invoke, emit } = vi.hoisted(() => ({ invoke: vi.fn(), emit: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn(), listen: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ emit, listen: vi.fn() }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({ label: "desktop" }),
 }));
@@ -15,6 +15,7 @@ describe("focus pause transition", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     invoke.mockReset();
+    emit.mockReset();
     Object.assign(globalThis, {
       window: {
         clearInterval: vi.fn(),
@@ -45,6 +46,58 @@ describe("focus pause transition", () => {
     releaseUnlock();
     await pause;
     expect(ui.timerPaused).toBe(true);
+  });
+
+  it("finishes the final focus tick in rest once a pending pause unlock completes", async () => {
+    let releasePauseUnlock!: () => void;
+    let releaseCompletionUnlock!: () => void;
+    const pauseUnlockPending = new Promise<void>((resolve) => { releasePauseUnlock = resolve; });
+    const completionUnlockPending = new Promise<void>((resolve) => { releaseCompletionUnlock = resolve; });
+    let observeCompletedRest!: () => void;
+    const completedRest = new Promise<void>((resolve) => { observeCompletedRest = resolve; });
+    let unlockCount = 0;
+    invoke.mockImplementation((command: string, args?: { mode?: string }) => {
+      if (command === "desktop_set_focus_lock" && args?.mode === "none") {
+        unlockCount += 1;
+        return unlockCount === 1 ? pauseUnlockPending : completionUnlockPending;
+      }
+      return Promise.resolve();
+    });
+    emit.mockImplementation((event: string, payload?: { state?: string; completed?: boolean }) => {
+      if (event === "focus:state_changed" && payload?.state === "rest" && payload.completed) {
+        observeCompletedRest();
+      }
+    });
+    const ui = useUiStore();
+    ui.focusState = "focus";
+    ui.focusRemainingSec = 1;
+    ui._ticker = 7;
+
+    const pause = ui.pause();
+    await Promise.resolve();
+    await Promise.resolve();
+    ui.tick();
+
+    expect(ui.focusRemainingSec).toBe(0);
+    expect(unlockCount).toBe(1);
+
+    releasePauseUnlock();
+    await pause;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(unlockCount).toBe(2);
+
+    releaseCompletionUnlock();
+    await completedRest;
+
+    expect(ui.focusState).toBe("rest");
+    expect(ui.timerPaused).toBe(false);
+    expect(ui.desktopLockTransitionPending).toBe(false);
+    expect(emit.mock.calls.filter(([event, payload]) =>
+      event === "focus:state_changed"
+      && payload?.state === "rest"
+      && payload?.completed === true,
+    )).toHaveLength(1);
   });
 
   it("queues skip behind a pending pause instead of dropping the final action", async () => {
