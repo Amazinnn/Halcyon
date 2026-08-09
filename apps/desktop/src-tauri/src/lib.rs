@@ -62,6 +62,9 @@ pub struct AppState {
     pub workflow: Mutex<Option<std::sync::Arc<workflow::WorkflowManager>>>,
     /// M5 (ADR-0022): the shared SQLite store (characters/session hashes).
     pub store: std::sync::Arc<std::sync::Mutex<storage::Store>>,
+    /// v1.12.3: desktop-lock Drop guard kept alive for the process lifetime
+    /// (a local in setup() would drop when setup returns, never restoring).
+    pub _desktop_lock_guard: Mutex<Option<desktop_lock::DesktopLock>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1718,16 +1721,28 @@ pub fn run() {
     }
     // v1.12 dev-only watchdog mode: restore the desktop if the parent dies.
     // The watchdog child re-launches this exe with --focus-watchdog <pid>.
+    // v1.12.3: poll with WaitForSingleObject(h, 0) instead of blocking
+    // forever — a process object only signals when the LAST handle closes,
+    // and the watchdog's own handle would deadlock a blocking wait.
     let mut args = std::env::args();
     if args.nth(1).as_deref() == Some("--focus-watchdog") {
         let pid: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         if pid != 0 {
             unsafe {
+                use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
                 use windows::Win32::System::Threading::{
                     OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
                 };
                 if let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
-                    WaitForSingleObject(h, u32::MAX);
+                    loop {
+                        // WAIT_TIMEOUT = parent still alive; else dead.
+                        let r = WaitForSingleObject(h, 0);
+                        if r != WAIT_TIMEOUT {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                    let _ = CloseHandle(h);
                 }
             }
             let _ = desktop_lock::unlock_desktop();
@@ -1806,6 +1821,8 @@ pub fn run() {
                 agent_fallback: AtomicBool::new(false),
                 workflow: Mutex::new(None),
                 store: store_arc,
+                // v1.12.3: guard lives with AppState → dropped only at process exit.
+                _desktop_lock_guard: Mutex::new(Some(desktop_lock::DesktopLock)),
             };
             app.manage(state);
             // M5 (ADR-0022): no upfront runtime — agents are built lazily per
@@ -2006,11 +2023,10 @@ pub fn run() {
                 }
             });
 
-            // v1.12: desktop lock Drop guard lives for the process lifetime —
-            // normal exit restores taskbar/desktop if locked.
-            let _lock_guard = desktop_lock::DesktopLock;
-            // v1.12 dev-only crash defenses (panic hook / watchdog / escape
-            // file). Removed after development — see desktop_lock_escapes.rs.
+            // v1.12: desktop lock Drop guard lives in AppState (dropped only
+            // at process exit — see _desktop_lock_guard). Dev-only crash
+            // defenses (panic hook / watchdog / escape file) installed here;
+            // removed after development — see desktop_lock_escapes.rs.
             desktop_lock_escapes::install_all();
 
             Ok(())
