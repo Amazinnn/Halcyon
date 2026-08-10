@@ -245,6 +245,38 @@ impl Store {
                 [],
             )?;
         }
+
+        // 0008 (ADR-0025): keep daily session ids independent for each
+        // character/provider pair. Legacy character columns remain during
+        // this release and are backfilled as the Codex provider.
+        let has0008: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = '0008_character_provider_sessions')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has0008 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS character_provider_sessions (
+                    character_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    session_hash TEXT NOT NULL,
+                    session_date TEXT NOT NULL,
+                    PRIMARY KEY (character_id, provider),
+                    FOREIGN KEY (character_id) REFERENCES characters(id)
+                );
+                INSERT OR IGNORE INTO character_provider_sessions
+                    (character_id, provider, session_hash, session_date)
+                    SELECT id, 'codex', current_session_hash, session_date
+                    FROM characters
+                    WHERE current_session_hash IS NOT NULL
+                      AND session_date IS NOT NULL;",
+            )?;
+            self.conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (name, applied_at)
+                 VALUES ('0008_character_provider_sessions', datetime('now'))",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -600,6 +632,16 @@ pub struct CharacterRow {
     pub session_date: Option<String>,
 }
 
+/// The daily session id for one character using one Agent provider.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSessionRow {
+    pub character_id: String,
+    pub provider: String,
+    pub session_hash: String,
+    pub session_date: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowRunRow {
@@ -666,6 +708,48 @@ impl Store {
                     session_date = ?4
              WHERE id = ?1",
             params![id, workspace_dir, session_hash, session_date],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_provider_session(
+        &self,
+        character_id: &str,
+        provider: &str,
+    ) -> rusqlite::Result<Option<ProviderSessionRow>> {
+        self.conn
+            .query_row(
+                "SELECT character_id, provider, session_hash, session_date
+                 FROM character_provider_sessions
+                 WHERE character_id = ?1 AND provider = ?2",
+                params![character_id, provider],
+                |r| {
+                    Ok(ProviderSessionRow {
+                        character_id: r.get(0)?,
+                        provider: r.get(1)?,
+                        session_hash: r.get(2)?,
+                        session_date: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn upsert_provider_session(
+        &self,
+        character_id: &str,
+        provider: &str,
+        session_hash: &str,
+        session_date: &str,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO character_provider_sessions
+                (character_id, provider, session_hash, session_date)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(character_id, provider) DO UPDATE SET
+                session_hash = excluded.session_hash,
+                session_date = excluded.session_date",
+            params![character_id, provider, session_hash, session_date],
         )?;
         Ok(())
     }
@@ -1212,6 +1296,67 @@ mod tests {
         assert_eq!(c.workspace_dir.as_deref(), Some("C:/ws"));
         assert_eq!(c.current_session_hash.as_deref(), Some("hash-1"));
         assert_eq!(c.session_date.as_deref(), Some("2026-08-08"));
+    }
+
+    #[test]
+    fn provider_session_migration_backfills_legacy_codex_session() {
+        let s = temp_store();
+        let cid = s.ensure_character("pet-provider-migration", "test-pet").unwrap();
+        s.update_character_agent(&cid, None, Some("legacy-codex-session"), Some("2026-08-10"))
+            .unwrap();
+
+        // Simulate a database that has completed 0007 but not the new
+        // provider-session migration.
+        s.conn
+            .execute("DROP TABLE IF EXISTS character_provider_sessions", [])
+            .unwrap();
+        s.conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE name = '0008_character_provider_sessions'",
+                [],
+            )
+            .unwrap();
+        s.migrate().unwrap();
+
+        assert_eq!(
+            s.load_provider_session(&cid, "codex").unwrap(),
+            Some(ProviderSessionRow {
+                character_id: cid,
+                provider: "codex".into(),
+                session_hash: "legacy-codex-session".into(),
+                session_date: "2026-08-10".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn provider_sessions_are_scoped_by_provider() {
+        let s = temp_store();
+        let cid = s.ensure_character("pet-provider-scope", "test-pet").unwrap();
+
+        s.upsert_provider_session(&cid, "codex", "codex-session", "2026-08-10")
+            .unwrap();
+        s.upsert_provider_session(&cid, "claude", "claude-session", "2026-08-10")
+            .unwrap();
+
+        assert_eq!(
+            s.load_provider_session(&cid, "codex").unwrap(),
+            Some(ProviderSessionRow {
+                character_id: cid.clone(),
+                provider: "codex".into(),
+                session_hash: "codex-session".into(),
+                session_date: "2026-08-10".into(),
+            })
+        );
+        assert_eq!(
+            s.load_provider_session(&cid, "claude").unwrap(),
+            Some(ProviderSessionRow {
+                character_id: cid,
+                provider: "claude".into(),
+                session_hash: "claude-session".into(),
+                session_date: "2026-08-10".into(),
+            })
+        );
     }
 
     #[test]
