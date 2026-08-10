@@ -266,10 +266,9 @@ impl Store {
                 );
                 INSERT OR IGNORE INTO character_provider_sessions
                     (character_id, provider, session_hash, session_date)
-                    SELECT id, 'codex', current_session_hash, session_date
+                    SELECT id, 'codex', current_session_hash, COALESCE(session_date, '')
                     FROM characters
-                    WHERE current_session_hash IS NOT NULL
-                      AND session_date IS NOT NULL;",
+                    WHERE current_session_hash IS NOT NULL;",
             )?;
             self.conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations (name, applied_at)
@@ -1325,6 +1324,35 @@ mod tests {
                 provider: "codex".into(),
                 session_hash: "legacy-codex-session".into(),
                 session_date: "2026-08-10".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn provider_session_migration_backfills_legacy_hash_without_date() {
+        let s = temp_store();
+        let cid = s.ensure_character("pet-provider-null-date", "test-pet").unwrap();
+        s.update_character_agent(&cid, None, Some("legacy-codex-session"), None)
+            .unwrap();
+
+        s.conn
+            .execute("DROP TABLE IF EXISTS character_provider_sessions", [])
+            .unwrap();
+        s.conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE name = '0008_character_provider_sessions'",
+                [],
+            )
+            .unwrap();
+        s.migrate().unwrap();
+
+        assert_eq!(
+            s.load_provider_session(&cid, "codex").unwrap(),
+            Some(ProviderSessionRow {
+                character_id: cid,
+                provider: "codex".into(),
+                session_hash: "legacy-codex-session".into(),
+                session_date: String::new(),
             })
         );
     }
