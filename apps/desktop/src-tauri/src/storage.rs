@@ -1350,7 +1350,7 @@ mod tests {
             name: "other pet".into(),
             persona: "other persona".into(),
             pet_pack_id: Some("pet-other".into()),
-            tool: "codex".into(),
+            tool: "claude".into(),
             workspace_dir: None,
             current_session_hash: None,
             session_date: None,
@@ -1372,7 +1372,7 @@ mod tests {
             (updated.name, updated.persona, updated.pet_pack_id),
             preserved
         );
-        assert_eq!(s.get_character("char-other").unwrap().unwrap().tool, "codex");
+        assert_eq!(s.get_character("char-other").unwrap().unwrap().tool, "claude");
     }
 
     #[test]
