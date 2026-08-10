@@ -315,10 +315,30 @@ fn ensure_runtime_serialized(
     character_id: &str,
     build: impl FnOnce() -> Result<agents::AgentRuntime, String>,
 ) -> Result<agents::AgentRuntime, String> {
-    registry
-        .lock()
-        .unwrap()
-        .get_or_try_insert_with(character_id, build)
+    with_agent_runtime_serialized(
+        registry,
+        character_id,
+        build,
+        || {},
+        |runtime| Ok(runtime.shared_clone()),
+    )
+}
+
+fn with_agent_runtime_serialized<R>(
+    registry: &Mutex<agents::AgentRegistry>,
+    character_id: &str,
+    build: impl FnOnce() -> Result<agents::AgentRuntime, String>,
+    after_runtime_acquired: impl FnOnce(),
+    action: impl FnOnce(&agents::AgentRuntime) -> Result<R, String>,
+) -> Result<R, String> {
+    let mut registry = registry.lock().unwrap();
+    let runtime = registry.get_or_try_insert_with(character_id, build)?;
+    after_runtime_acquired();
+    let result = action(&runtime);
+    if let Err(error) = &result {
+        discard_runtime_after_provider_error(&mut registry, character_id, error);
+    }
+    result
 }
 
 pub fn ensure_agent_runtime(
@@ -326,47 +346,54 @@ pub fn ensure_agent_runtime(
     character_id: &str,
 ) -> Result<agents::AgentRuntime, String> {
     let state = app.state::<AppState>();
-    let tx = state.events_tx.clone();
     ensure_runtime_serialized(&state.agents, character_id, || {
-        // Keep provider selection and runtime insertion serializable with
-        // set_agent_provider. Lock order: registry -> store.
-        let row = state
-            .store
-            .lock()
-            .unwrap()
-            .get_character(character_id)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("角色 {character_id} 不存在"))?;
-        let workspace = ensure_agent_workspace(&state, &row)?;
-        match row.tool.as_str() {
-            "codex" => {
-                // M5 (ADR-0022): no fallback — if Codex is missing, the call
-                // fails with a clear error; next use rebuilds lazily.
-                let exe = agents::codex::find_codex_exe()
-                    .ok_or_else(|| "未找到 Codex（%LOCALAPPDATA%/OpenAI/Codex/bin）".to_string())?;
-                let p = agents::codex::CodexProvider::new(tx, exe, character_id.to_string());
-                Ok(agents::AgentRuntime::Codex(std::sync::Arc::new(
-                    std::sync::Mutex::new(p),
-                )))
-            }
-            "claude" => {
-                let exe = agents::claude::find_claude_exe().ok_or_else(|| {
-                    "未在 PATH 中找到 Claude CLI（claude.exe/claude.cmd）".to_string()
-                })?;
-                let p = agents::claude::ClaudeProvider::new(
-                    tx,
-                    exe,
-                    character_id.to_string(),
-                    workspace,
-                );
-                Ok(agents::AgentRuntime::Claude(std::sync::Arc::new(
-                    std::sync::Mutex::new(p),
-                )))
-            }
-            "mock" => Err("Mock provider is test-only; production requires a real provider".into()),
-            other => Err(format!("未知 Agent provider: {other}")),
-        }
+        build_agent_runtime(&state, character_id)
     })
+}
+
+fn build_agent_runtime(
+    state: &AppState,
+    character_id: &str,
+) -> Result<agents::AgentRuntime, String> {
+    // Keep provider selection and runtime insertion serializable with
+    // set_agent_provider. Lock order: registry -> store.
+    let row = state
+        .store
+        .lock()
+        .unwrap()
+        .get_character(character_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("角色 {character_id} 不存在"))?;
+    let workspace = ensure_agent_workspace(state, &row)?;
+    let tx = state.events_tx.clone();
+    match row.tool.as_str() {
+        "codex" => {
+            // M5 (ADR-0022): no fallback — if Codex is missing, the call
+            // fails with a clear error; next use rebuilds lazily.
+            let exe = agents::codex::find_codex_exe()
+                .ok_or_else(|| "未找到 Codex（%LOCALAPPDATA%/OpenAI/Codex/bin）".to_string())?;
+            let p = agents::codex::CodexProvider::new(tx, exe, character_id.to_string());
+            Ok(agents::AgentRuntime::Codex(std::sync::Arc::new(
+                std::sync::Mutex::new(p),
+            )))
+        }
+        "claude" => {
+            let exe = agents::claude::find_claude_exe().ok_or_else(|| {
+                "未在 PATH 中找到 Claude CLI（claude.exe/claude.cmd）".to_string()
+            })?;
+            let p = agents::claude::ClaudeProvider::new(
+                tx,
+                exe,
+                character_id.to_string(),
+                workspace,
+            );
+            Ok(agents::AgentRuntime::Claude(std::sync::Arc::new(
+                std::sync::Mutex::new(p),
+            )))
+        }
+        "mock" => Err("Mock provider is test-only; production requires a real provider".into()),
+        other => Err(format!("未知 Agent provider: {other}")),
+    }
 }
 
 /// M5 (ADR-0022): lazy-create `%USERPROFILE%/Focus-Agents/<agent-id>/AGENTS.md`.
@@ -374,7 +401,7 @@ pub fn ensure_agent_runtime(
 pub const AGENTS_MD_TEMPLATE: &str = "你是 Focus 桌宠 Agent「{name}」。请用简洁中文短句回答，句间用单个换行分隔；不要使用 Markdown、列表、代码块或长段落；总长度不超过约 200 字；只输出需要直接展示给用户看的内容。\n";
 
 fn ensure_agent_workspace(
-    state: &tauri::State<'_, AppState>,
+    state: &AppState,
     row: &storage::CharacterRow,
 ) -> Result<String, String> {
     let home = user_home();
@@ -419,17 +446,14 @@ pub fn with_agent_for<R>(
     character_id: &str,
     f: impl FnOnce(&agents::AgentRuntime) -> Result<R, String>,
 ) -> Result<R, String> {
-    let rt = ensure_agent_runtime(app, character_id)?;
-    let r = f(&rt);
-    if let Err(error) = &r {
-        // Dead process — drop this Agent's runtime; next use rebuilds.
-        discard_runtime_after_provider_error(
-            &mut app.state::<AppState>().agents.lock().unwrap(),
-            character_id,
-            error,
-        );
-    }
-    r
+    let state = app.state::<AppState>();
+    with_agent_runtime_serialized(
+        &state.agents,
+        character_id,
+        || build_agent_runtime(&state, character_id),
+        || {},
+        f,
+    )
 }
 
 fn discard_runtime_after_provider_error(
@@ -459,55 +483,59 @@ fn agent_start_thread(
     // ADR-0025: daily sessions are scoped by both character and provider.
     let state = app.state::<AppState>();
     let today = today_local();
-    let rt = ensure_agent_runtime(&app, &character_id)?;
-    let provider = rt.kind();
-    let saved_session = {
-        let store = state.store.lock().unwrap();
-        let row = store
-            .load_provider_session(&character_id, provider.as_str())
-            .map_err(|error| error.to_string())?;
-        saved_session_for_today(row, &today)
-    };
-    let ws = {
-        let store = state.store.lock().unwrap();
-        store
-            .get_character(&character_id)
-            .ok()
-            .flatten()
-            .and_then(|c| c.workspace_dir)
-            .unwrap_or_else(user_home)
-    };
     // M5 (ADR-0022): conversation = full display (stream + result both shown).
     let display = agents::agent_display_full();
-    let info = if let Some(session_id) = saved_session {
-        with_agent_for(&app, &character_id, |runtime| {
-            resume_with_initial_message(runtime, &session_id, &initial_message, display)
-        })?
-    } else {
-        let info = with_agent_for(&app, &character_id, |runtime| {
-            runtime.start_thread(&ws, &initial_message, display)
-        })?;
-        let store = state.store.lock().unwrap();
-        store
-            .upsert_provider_session(
-                &character_id,
-                provider.as_str(),
-                &info.id,
-                &today,
-            )
-            .map_err(|error| error.to_string())?;
-        if provider == agents::AgentProviderKind::Codex {
-            store
-                .update_character_agent(
-                    &character_id,
-                    Some(&ws),
-                    Some(&info.id),
-                    Some(&today),
-                )
+    let (info, persistence) = with_agent_for(&app, &character_id, |runtime| {
+        let provider = runtime.kind();
+        let (saved_session, ws) = {
+            let store = state.store.lock().unwrap();
+            let row = store
+                .load_provider_session(&character_id, provider.as_str())
                 .map_err(|error| error.to_string())?;
+            let ws = store
+                .get_character(&character_id)
+                .ok()
+                .flatten()
+                .and_then(|character| character.workspace_dir)
+                .unwrap_or_else(user_home);
+            (saved_session_for_today(row, &today), ws)
+        };
+        if let Some(session_id) = saved_session {
+            let info = resume_with_initial_message(
+                runtime,
+                &session_id,
+                &initial_message,
+                display,
+            )?;
+            Ok((info, Ok(())))
+        } else {
+            let info = runtime.start_thread(&ws, &initial_message, display)?;
+            let persistence = (|| -> Result<(), String> {
+                let store = state.store.lock().unwrap();
+                store
+                    .upsert_provider_session(
+                        &character_id,
+                        provider.as_str(),
+                        &info.id,
+                        &today,
+                    )
+                    .map_err(|error| error.to_string())?;
+                if provider == agents::AgentProviderKind::Codex {
+                    store
+                        .update_character_agent(
+                            &character_id,
+                            Some(&ws),
+                            Some(&info.id),
+                            Some(&today),
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            })();
+            Ok((info, persistence))
         }
-        info
-    };
+    })?;
+    persistence?;
     Ok(info)
 }
 
@@ -542,23 +570,6 @@ fn with_agent_rt<R>(
         #[cfg(test)]
         agents::AgentRuntime::Mock(_) => f(rt),
     }
-}
-
-pub(crate) fn with_existing_agent_for<R>(
-    app: &tauri::AppHandle,
-    character_id: &str,
-    rt: &agents::AgentRuntime,
-    f: impl FnOnce(&agents::AgentRuntime) -> Result<R, String>,
-) -> Result<R, String> {
-    let result = with_agent_rt(rt, f);
-    if let Err(error) = &result {
-        discard_runtime_after_provider_error(
-            &mut app.state::<AppState>().agents.lock().unwrap(),
-            character_id,
-            error,
-        );
-    }
-    result
 }
 
 #[tauri::command]
@@ -2513,6 +2524,7 @@ mod tests {
         discard_runtime_after_provider_error, elapsed_sec, ensure_runtime_serialized,
         provider_ready, resume_with_initial_message, saved_session_for_today,
         select_status_character, set_agent_provider_serialized_with, topbar_visible,
+        with_agent_runtime_serialized,
     };
 
     fn status_character(id: &str, tool: &str) -> crate::storage::CharacterRow {
@@ -2571,6 +2583,227 @@ mod tests {
             )),
             AgentProviderKind::Mock => panic!("production provider required"),
         }
+    }
+
+    #[cfg(windows)]
+    fn long_running_claude_runtime(
+        character_id: &str,
+        label: &str,
+    ) -> (std::path::PathBuf, agents::AgentRuntime) {
+        let workspace = std::env::temp_dir().join(format!(
+            "focus-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let shim = workspace.join("claude.cmd");
+        std::fs::write(
+            &shim,
+            concat!(
+                "@echo off\r\n",
+                "more > nul\r\n",
+                "echo {\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"guarded-session\"}\r\n",
+                "for /L %%i in (1,1,10000000) do @rem\r\n",
+            ),
+        )
+        .unwrap();
+        let (tx, _) = tokio::sync::broadcast::channel(8);
+        let runtime = agents::AgentRuntime::Claude(std::sync::Arc::new(
+            std::sync::Mutex::new(agents::claude::ClaudeProvider::new(
+                tx,
+                shim,
+                character_id.into(),
+                workspace.to_string_lossy().into_owned(),
+            )),
+        ));
+        (workspace, runtime)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn direct_turn_claim_blocks_switch_and_persists_the_runtime_provider() {
+        let character_id = "char-claim-switch";
+        let (db_path, store) = provider_race_store(character_id, "claude");
+        let (workspace, runtime) = long_running_claude_runtime(character_id, "claim-switch");
+        let registry = std::sync::Arc::new(std::sync::Mutex::new(
+            agents::AgentRegistry::new(),
+        ));
+        registry
+            .lock()
+            .unwrap()
+            .insert(character_id.into(), runtime.shared_clone());
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let (claim_tx, claim_rx) = std::sync::mpsc::channel();
+
+        let claim_registry = registry.clone();
+        let claim_store = store.clone();
+        let claim_workspace = workspace.clone();
+        let claim = std::thread::spawn(move || {
+            with_agent_runtime_serialized(
+                &claim_registry,
+                character_id,
+                || panic!("existing runtime must be reused"),
+                || {
+                    acquired_tx.send(()).unwrap();
+                    claim_rx.recv().unwrap();
+                },
+                |actual_runtime| {
+                    let actual_provider = actual_runtime.kind();
+                    let info = actual_runtime.start_thread(
+                        &claim_workspace.to_string_lossy(),
+                        "claim before switch",
+                        agents::agent_display_full(),
+                    )?;
+                    claim_store
+                        .lock()
+                        .unwrap()
+                        .upsert_provider_session(
+                            character_id,
+                            actual_provider.as_str(),
+                            &info.id,
+                            "2026-08-10",
+                        )
+                        .map_err(|error| error.to_string())?;
+                    Ok((actual_provider, info))
+                },
+            )
+        });
+        acquired_rx.recv().unwrap();
+
+        let (switch_locked_tx, switch_locked_rx) = std::sync::mpsc::channel();
+        let switch_registry = registry.clone();
+        let switch_store = store.clone();
+        let switch = std::thread::spawn(move || {
+            set_agent_provider_serialized_with(
+                &switch_registry,
+                &switch_store,
+                Some(character_id),
+                AgentProviderKind::Codex,
+                || switch_locked_tx.send(()).unwrap(),
+            )
+        });
+        assert!(
+            switch_locked_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "switch must wait until the acquired runtime claims its turn"
+        );
+
+        claim_tx.send(()).unwrap();
+        let (actual_provider, info) = claim.join().unwrap().unwrap();
+        assert_eq!(actual_provider, AgentProviderKind::Claude);
+        let switch_error = switch.join().unwrap().unwrap_err();
+        switch_locked_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(switch_error, agents::PROVIDER_SWITCH_BUSY_ERROR);
+        let store_guard = store.lock().unwrap();
+        assert_eq!(
+            store_guard
+                .get_character(character_id)
+                .unwrap()
+                .unwrap()
+                .tool,
+            "claude"
+        );
+        assert_eq!(
+            store_guard
+                .load_provider_session(character_id, "claude")
+                .unwrap()
+                .unwrap()
+                .session_hash,
+            info.id
+        );
+        assert!(store_guard
+            .load_provider_session(character_id, "codex")
+            .unwrap()
+            .is_none());
+        drop(store_guard);
+
+        runtime.interrupt(&info.id).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while runtime.has_active_turn() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(runtime);
+        drop(registry);
+        drop(store);
+        std::fs::remove_dir_all(workspace).unwrap();
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workflow_turn_start_reloads_after_switch_instead_of_using_escaped_arc() {
+        let character_id = "char-workflow-switch";
+        let (db_path, store) = provider_race_store(character_id, "codex");
+        let registry = std::sync::Mutex::new(agents::AgentRegistry::new());
+        let escaped_old_runtime = inert_runtime(AgentProviderKind::Codex, character_id);
+        registry
+            .lock()
+            .unwrap()
+            .insert(character_id.into(), escaped_old_runtime.shared_clone());
+
+        set_agent_provider_serialized_with(
+            &registry,
+            &store,
+            Some(character_id),
+            AgentProviderKind::Claude,
+            || {},
+        )
+        .unwrap();
+        let (workspace, replacement) =
+            long_running_claude_runtime(character_id, "workflow-switch");
+        let replacement_for_build = replacement.shared_clone();
+        let (actual_provider, info) = with_agent_runtime_serialized(
+            &registry,
+            character_id,
+            || Ok(replacement_for_build),
+            || {},
+            |actual_runtime| {
+                let _turn_done = actual_runtime
+                    .subscribe_turn_done()
+                    .ok_or_else(|| "runtime must expose turn completion".to_string())?;
+                let info = actual_runtime.start_thread(
+                    &workspace.to_string_lossy(),
+                    "workflow guarded start",
+                    agents::agent_display_full(),
+                )?;
+                Ok((actual_runtime.kind(), info))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(escaped_old_runtime.kind(), AgentProviderKind::Codex);
+        assert!(!escaped_old_runtime.has_active_turn());
+        assert_eq!(actual_provider, AgentProviderKind::Claude);
+        assert!(replacement.has_active_turn());
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap()
+                .get(character_id)
+                .unwrap()
+                .kind(),
+            AgentProviderKind::Claude
+        );
+
+        replacement.interrupt(&info.id).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while replacement.has_active_turn() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(replacement);
+        drop(escaped_old_runtime);
+        drop(registry);
+        drop(store);
+        std::fs::remove_dir_all(workspace).unwrap();
+        std::fs::remove_file(db_path).unwrap();
     }
 
     #[test]

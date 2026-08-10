@@ -13,7 +13,6 @@ use tauri::{AppHandle, Manager};
 
 use crate::event_bus::CoreEvent;
 use crate::storage::{CharacterRow, Store, WorkflowRunRow};
-use crate::agents::AgentRuntime;
 use crate::workflow_engine::engine::{execute_run, AgentCall, EventSink, RunOutcome, SystemActions, WindowOps};
 use crate::workflow_engine::model::{
     CharacterInfo, RunStatus, WorkflowDef, guard_matches, next_daily_run, next_interval_run,
@@ -485,18 +484,11 @@ impl AgentCall for WorkflowManager {
         // provider (agents::OUTPUT_DISCIPLINE); the AGENTS.md identity lives
         // in the workspace — persona is no longer injected here.
         let full = prompt.to_string();
-        let (info, mut rx) = {
+        let (info, mut rx) = crate::with_agent_for(&self.app, &character.id, |runtime| {
             // M5 (ADR-0022): per-character Agent runtime (lazy-built; creates
             // workspace + AGENTS.md on first use). The workspace for this call
             // is the character's own Focus-Agents/<id>/ dir.
-            let rt = crate::ensure_agent_runtime(&self.app, &character.id)?;
-            let rt = match &rt {
-                AgentRuntime::Codex(p) => AgentRuntime::Codex(p.clone()),
-                AgentRuntime::Claude(p) => AgentRuntime::Claude(p.clone()),
-                #[cfg(test)]
-                AgentRuntime::Mock(provider) => AgentRuntime::Mock(provider.clone()),
-            };
-            let rx = rt
+            let rx = runtime
                 .subscribe_turn_done()
                 .ok_or_else(|| "Agent 运行时未就绪".to_string())?;
             let workspace = {
@@ -508,17 +500,12 @@ impl AgentCall for WorkflowManager {
                     .and_then(|c| c.workspace_dir)
                     .unwrap_or_else(user_home_default)
             };
-            let info = crate::with_existing_agent_for(
-                &self.app,
-                &character.id,
-                &rt,
-                |runtime| runtime.start_thread(&workspace, &full, display),
-            )?;
+            let info = runtime.start_thread(&workspace, &full, display)?;
             if let Ok(s) = self.store.lock() {
                 let _ = s.record_automation_thread(&info.id, &character.id, None);
             }
-            (info, rx)
-        };
+            Ok((info, rx))
+        })?;
         if !wait {
             return Ok(None);
         }
