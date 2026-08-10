@@ -1,10 +1,11 @@
-//! Agent providers (ADR-0007): Focus embeds a real agent CLI (Codex app-server)
-//! and keeps the scripted mock for Rust test injection. Both implement the same
+//! Agent providers (ADR-0007/0025): Focus embeds real Codex and Claude CLIs
+//! and keeps the scripted mock for Rust test injection. All implement the same
 //! `AgentProvider` trait; events are published as AgentEvent v1 envelopes over
 //! the core event bus (`agent:event` / `pet:state_changed` /
 //! `bubble:requested`).
 
 pub mod codex;
+pub mod claude;
 pub mod mock;
 
 use serde::Serialize;
@@ -43,6 +44,7 @@ pub fn is_busy_turn_error(error: &str) -> bool {
 #[serde(rename_all = "lowercase")]
 pub enum AgentProviderKind {
     Codex,
+    Claude,
     #[cfg(test)]
     Mock,
 }
@@ -51,6 +53,7 @@ impl AgentProviderKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             AgentProviderKind::Codex => "codex",
+            AgentProviderKind::Claude => "claude",
             #[cfg(test)]
             AgentProviderKind::Mock => "mock",
         }
@@ -59,6 +62,7 @@ impl AgentProviderKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "codex" => Some(Self::Codex),
+            "claude" => Some(Self::Claude),
             _ => None,
         }
     }
@@ -125,10 +129,11 @@ pub trait AgentProvider: Send + Sync {
     fn interrupt(&mut self, thread_id: &str) -> Result<(), String>;
 }
 
-/// The provider slot held in AppState. Codex is Arc<Mutex<..>> so a slow
-/// in-flight request never blocks the whole agent state (e.g. interrupt).
+/// The provider slot held in AppState. Real providers are Arc<Mutex<..>> so
+/// each character owns an isolated runtime while the registry remains cheap to clone.
 pub enum AgentRuntime {
     Codex(std::sync::Arc<std::sync::Mutex<codex::CodexProvider>>),
+    Claude(std::sync::Arc<std::sync::Mutex<claude::ClaudeProvider>>),
     #[cfg(test)]
     Mock(std::sync::Mutex<mock::MockProvider>),
 }
@@ -160,6 +165,7 @@ impl AgentRuntime {
     pub fn kind(&self) -> AgentProviderKind {
         match self {
             AgentRuntime::Codex(_) => AgentProviderKind::Codex,
+            AgentRuntime::Claude(_) => AgentProviderKind::Claude,
             #[cfg(test)]
             AgentRuntime::Mock(_) => AgentProviderKind::Mock,
         }
@@ -173,6 +179,7 @@ impl AgentRuntime {
     ) -> Result<AgentThreadInfo, String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().start_thread(workspace_dir, initial_message, display),
+            AgentRuntime::Claude(p) => p.lock().unwrap().start_thread(workspace_dir, initial_message, display),
             #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().start_thread(workspace_dir, initial_message, display),
         }
@@ -181,6 +188,7 @@ impl AgentRuntime {
     pub fn resume_thread(&self, thread_id: &str) -> Result<AgentThreadInfo, String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().resume_thread(thread_id),
+            AgentRuntime::Claude(p) => p.lock().unwrap().resume_thread(thread_id),
             #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().resume_thread(thread_id),
         }
@@ -194,6 +202,7 @@ impl AgentRuntime {
     ) -> Result<AgentThreadInfo, String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().resume_and_send(thread_id, text, display),
+            AgentRuntime::Claude(p) => p.lock().unwrap().resume_and_send(thread_id, text, display),
             #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().resume_and_send(thread_id, text, display),
         }
@@ -202,6 +211,7 @@ impl AgentRuntime {
     pub fn list_threads(&self) -> Result<Vec<AgentThreadInfo>, String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().list_threads(),
+            AgentRuntime::Claude(p) => p.lock().unwrap().list_threads(),
             #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().list_threads(),
         }
@@ -210,6 +220,7 @@ impl AgentRuntime {
     pub fn send(&self, thread_id: &str, text: &str, display: crate::workflow_engine::engine::AgentDisplay) -> Result<(), String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().send(thread_id, text, display),
+            AgentRuntime::Claude(p) => p.lock().unwrap().send(thread_id, text, display),
             #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().send(thread_id, text, display),
         }
@@ -219,6 +230,7 @@ impl AgentRuntime {
     pub fn subscribe_turn_done(&self) -> Option<tokio::sync::broadcast::Receiver<TurnDone>> {
         match self {
             AgentRuntime::Codex(p) => Some(p.lock().unwrap().subscribe_turn_done()),
+            AgentRuntime::Claude(p) => Some(p.lock().unwrap().subscribe_turn_done()),
             #[cfg(test)]
             AgentRuntime::Mock(p) => Some(p.lock().unwrap().subscribe_turn_done()),
         }
@@ -227,6 +239,7 @@ impl AgentRuntime {
     pub fn interrupt(&self, thread_id: &str) -> Result<(), String> {
         match self {
             AgentRuntime::Codex(p) => p.lock().unwrap().interrupt(thread_id),
+            AgentRuntime::Claude(p) => p.lock().unwrap().interrupt(thread_id),
             #[cfg(test)]
             AgentRuntime::Mock(p) => p.lock().unwrap().interrupt(thread_id),
         }

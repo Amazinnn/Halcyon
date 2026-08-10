@@ -84,7 +84,7 @@ pub fn is_unavailable_error(err: &str) -> bool {
 
 /// Embedded focus-cli skill asset (installed into ~/.codex/skills so the
 /// agent can orchestrate Focus, Paseo-style; ADR-0007).
-pub const FOCUS_CLI_SKILL: &str = include_str!("../../assets/agent-skills/focus-cli/SKILL.md");
+pub const FOCUS_CLI_SKILL: &str = include_str!("../assets/agent-skills/focus-cli/SKILL.md");
 
 /// Install the focus-cli skill into `<base>/.codex/skills/focus-cli/SKILL.md`.
 pub fn install_focus_cli_skill_into(base: &Path) -> Result<PathBuf, String> {

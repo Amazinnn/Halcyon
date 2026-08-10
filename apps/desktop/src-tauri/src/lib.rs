@@ -229,17 +229,37 @@ fn current_workspace_dir(state: &AppState) -> String {
 fn agent_status_view(app: &tauri::AppHandle) -> AgentStatusView {
     let state = app.state::<AppState>();
     let ws = current_workspace_dir(&state);
-    let exe_path = agents::codex::find_codex_exe().map(|p| p.to_string_lossy().to_string());
+    let provider = agents::AgentProviderKind::parse(
+        &state.settings.lock().unwrap().agent_provider,
+    )
+    .unwrap_or(agents::AgentProviderKind::Codex);
+    let codex_path = agents::codex::find_codex_exe().map(|p| p.to_string_lossy().to_string());
+    let claude_path = agents::claude::find_claude_exe().map(|p| p.to_string_lossy().to_string());
+    let exe_path = match provider {
+        agents::AgentProviderKind::Codex => codex_path.clone(),
+        agents::AgentProviderKind::Claude => claude_path.clone(),
+        #[cfg(test)]
+        agents::AgentProviderKind::Mock => None,
+    };
     AgentStatusView {
-        provider: "codex".to_string(),
-        ready: codex_ready(&exe_path),
+        provider: provider.as_str().to_string(),
+        ready: provider_ready(provider, &codex_path, &claude_path),
         exe_path,
         workspace_dir: ws,
     }
 }
 
-fn codex_ready(exe_path: &Option<String>) -> bool {
-    exe_path.is_some()
+fn provider_ready(
+    provider: agents::AgentProviderKind,
+    codex_path: &Option<String>,
+    claude_path: &Option<String>,
+) -> bool {
+    match provider {
+        agents::AgentProviderKind::Codex => codex_path.is_some(),
+        agents::AgentProviderKind::Claude => claude_path.is_some(),
+        #[cfg(test)]
+        agents::AgentProviderKind::Mock => false,
+    }
 }
 
 fn emit_agent_status(app: &tauri::AppHandle) {
@@ -258,6 +278,7 @@ pub fn ensure_agent_runtime(
     if let Some(rt) = state.agents.lock().unwrap().get(character_id) {
         return Ok(match rt {
             agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
+            agents::AgentRuntime::Claude(p) => agents::AgentRuntime::Claude(p.clone()),
             #[cfg(test)]
             agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(
                 agents::mock::MockProvider::new(state.events_tx.clone()),
@@ -274,12 +295,11 @@ pub fn ensure_agent_runtime(
             .ok_or_else(|| format!("角色 {character_id} 不存在"))?
     };
     // Lazily create workspace + AGENTS.md (also persists workspace_dir).
-    ensure_agent_workspace(&state, &row)?;
+    let workspace = ensure_agent_workspace(&state, &row)?;
     // Build the runtime.
     let tx = state.events_tx.clone();
     let rt = match row.tool.as_str() {
-        "mock" => return Err("Mock provider is test-only; production requires real Codex".into()),
-        _ => {
+        "codex" => {
             // M5 (ADR-0022): no fallback — if Codex is missing, the call
             // fails with a clear error; next use rebuilds lazily.
             let exe = agents::codex::find_codex_exe()
@@ -287,11 +307,25 @@ pub fn ensure_agent_runtime(
             let p = agents::codex::CodexProvider::new(tx, exe, character_id.to_string());
             agents::AgentRuntime::Codex(std::sync::Arc::new(std::sync::Mutex::new(p)))
         }
+        "claude" => {
+            let exe = agents::claude::find_claude_exe()
+                .ok_or_else(|| "未在 PATH 中找到 Claude CLI（claude.exe/claude.cmd）".to_string())?;
+            let p = agents::claude::ClaudeProvider::new(
+                tx,
+                exe,
+                character_id.to_string(),
+                workspace,
+            );
+            agents::AgentRuntime::Claude(std::sync::Arc::new(std::sync::Mutex::new(p)))
+        }
+        "mock" => return Err("Mock provider is test-only; production requires a real provider".into()),
+        other => return Err(format!("未知 Agent provider: {other}")),
     };
     state.agents.lock().unwrap().insert(
         character_id.to_string(),
         match &rt {
             agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
+            agents::AgentRuntime::Claude(p) => agents::AgentRuntime::Claude(p.clone()),
             #[cfg(test)]
             agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(
                 agents::mock::MockProvider::new(state.events_tx.clone()),
@@ -331,6 +365,16 @@ fn ensure_agent_workspace(
 
 fn today_local() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+fn saved_session_for_today(
+    row: Option<storage::ProviderSessionRow>,
+    today: &str,
+) -> Option<String> {
+    row.filter(|session| {
+        session.session_date == today && !session.session_hash.trim().is_empty()
+    })
+    .map(|session| session.session_hash)
 }
 
 /// Runs a provider call for a specific character's Agent. M5 (ADR-0022):
@@ -375,21 +419,18 @@ fn agent_start_thread(
     character_id: String,
     initial_message: String,
 ) -> Result<agents::AgentThreadInfo, String> {
-    // M5 (ADR-0022): daily session rotation — a new session hash is created
-    // when the stored session date is not today (or missing).
+    // ADR-0025: daily sessions are scoped by both character and provider.
     let state = app.state::<AppState>();
     let today = today_local();
-    let needs_new = {
-        let store = state.store.lock().unwrap();
-        match store.get_character(&character_id) {
-            Ok(Some(c)) => {
-                c.current_session_hash.is_none()
-                    || c.session_date.as_deref() != Some(today.as_str())
-            }
-            _ => true,
-        }
-    };
     let rt = ensure_agent_runtime(&app, &character_id)?;
+    let provider = rt.kind();
+    let saved_session = {
+        let store = state.store.lock().unwrap();
+        let row = store
+            .load_provider_session(&character_id, provider.as_str())
+            .map_err(|error| error.to_string())?;
+        saved_session_for_today(row, &today)
+    };
     let ws = {
         let store = state.store.lock().unwrap();
         store
@@ -401,29 +442,34 @@ fn agent_start_thread(
     };
     // M5 (ADR-0022): conversation = full display (stream + result both shown).
     let display = agents::agent_display_full();
-    let info = if needs_new {
-        let info = with_agent_rt(&rt, |r| r.start_thread(&ws, &initial_message, display))?;
-        let store = state.store.lock().unwrap();
-        let _ = store.update_character_agent(&character_id, None, Some(&info.id), Some(&today));
-        info
+    let info = if let Some(session_id) = saved_session {
+        with_agent_for(&app, &character_id, |runtime| {
+            resume_with_initial_message(runtime, &session_id, &initial_message, display)
+        })?
     } else {
-        let hash = state
-            .store
-            .lock()
-            .unwrap()
-            .get_character(&character_id)
-            .ok()
-            .flatten()
-            .and_then(|c| c.current_session_hash)
-            .unwrap_or_default();
-        if hash.is_empty() {
-            let info = with_agent_rt(&rt, |r| r.start_thread(&ws, &initial_message, display))?;
-            let store = state.store.lock().unwrap();
-            let _ = store.update_character_agent(&character_id, None, Some(&info.id), Some(&today));
-            info
-        } else {
-            resume_with_initial_message(&rt, &hash, &initial_message, display)?
+        let info = with_agent_for(&app, &character_id, |runtime| {
+            runtime.start_thread(&ws, &initial_message, display)
+        })?;
+        let store = state.store.lock().unwrap();
+        store
+            .upsert_provider_session(
+                &character_id,
+                provider.as_str(),
+                &info.id,
+                &today,
+            )
+            .map_err(|error| error.to_string())?;
+        if provider == agents::AgentProviderKind::Codex {
+            store
+                .update_character_agent(
+                    &character_id,
+                    Some(&ws),
+                    Some(&info.id),
+                    Some(&today),
+                )
+                .map_err(|error| error.to_string())?;
         }
+        info
     };
     Ok(info)
 }
@@ -451,9 +497,31 @@ fn with_agent_rt<R>(
             let tmp = agents::AgentRuntime::Codex(p2);
             f(&tmp)
         }
+        agents::AgentRuntime::Claude(p) => {
+            let p2 = p.clone();
+            let tmp = agents::AgentRuntime::Claude(p2);
+            f(&tmp)
+        }
         #[cfg(test)]
         agents::AgentRuntime::Mock(_) => f(rt),
     }
+}
+
+pub(crate) fn with_existing_agent_for<R>(
+    app: &tauri::AppHandle,
+    character_id: &str,
+    rt: &agents::AgentRuntime,
+    f: impl FnOnce(&agents::AgentRuntime) -> Result<R, String>,
+) -> Result<R, String> {
+    let result = with_agent_rt(rt, f);
+    if let Err(error) = &result {
+        discard_runtime_after_provider_error(
+            &mut app.state::<AppState>().agents.lock().unwrap(),
+            character_id,
+            error,
+        );
+    }
+    result
 }
 
 #[tauri::command]
@@ -609,7 +677,7 @@ fn desktop_set_focus_lock(mode: String) -> Result<(), String> {
 #[tauri::command]
 fn set_agent_provider(app: tauri::AppHandle, provider: String) -> Result<(), String> {
     let kind = agents::AgentProviderKind::parse(&provider)
-        .ok_or("provider must be codex; mock is test-only and production requires real Codex")?;
+        .ok_or("provider must be codex or claude; mock is test-only")?;
     {
         let state = app.state::<AppState>();
         let mut s = state.settings.lock().unwrap();
@@ -2379,8 +2447,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agents, agents::AgentProviderKind, codex_ready, discard_runtime_after_provider_error,
-        elapsed_sec, resume_with_initial_message, topbar_visible,
+        agents, agents::AgentProviderKind, discard_runtime_after_provider_error,
+        elapsed_sec, provider_ready, resume_with_initial_message, saved_session_for_today,
+        topbar_visible,
     };
 
     #[test]
@@ -2389,9 +2458,55 @@ mod tests {
     }
 
     #[test]
+    fn claude_is_a_real_runtime_kind_with_independent_readiness() {
+        use std::path::PathBuf;
+        use std::sync::{Arc, Mutex};
+
+        assert_eq!(AgentProviderKind::parse("claude"), Some(AgentProviderKind::Claude));
+        assert_eq!(AgentProviderKind::Claude.as_str(), "claude");
+        assert!(provider_ready(
+            AgentProviderKind::Claude,
+            &None,
+            &Some(r"C:\Tools\claude.exe".into()),
+        ));
+        assert!(!provider_ready(AgentProviderKind::Claude, &Some("codex.exe".into()), &None));
+
+        let (tx, _) = tokio::sync::broadcast::channel(8);
+        let runtime = agents::AgentRuntime::Claude(Arc::new(Mutex::new(
+            agents::claude::ClaudeProvider::new(
+                tx,
+                PathBuf::from("claude.exe"),
+                "char-claude".into(),
+                r"C:\Focus-Agents\char-claude".into(),
+            ),
+        )));
+        assert_eq!(runtime.kind(), AgentProviderKind::Claude);
+    }
+
+    #[test]
+    fn provider_session_resumes_only_on_the_same_day() {
+        let row = crate::storage::ProviderSessionRow {
+            character_id: "char-claude".into(),
+            provider: "claude".into(),
+            session_hash: "claude-session".into(),
+            session_date: "2026-08-10".into(),
+        };
+        assert_eq!(
+            saved_session_for_today(Some(row.clone()), "2026-08-10").as_deref(),
+            Some("claude-session")
+        );
+        assert_eq!(saved_session_for_today(Some(row), "2026-08-11"), None);
+        assert_eq!(saved_session_for_today(None, "2026-08-10"), None);
+    }
+
+    #[test]
     fn codex_readiness_reflects_executable_availability() {
-        assert!(codex_ready(&Some(r"C:\\Codex\\codex.exe".into())));
-        assert!(!codex_ready(&None));
+        assert!(provider_ready(
+            AgentProviderKind::Codex,
+            &Some(r"C:\\Codex\\codex.exe".into()),
+            &None,
+        ));
+        assert!(!provider_ready(AgentProviderKind::Codex, &None, &Some("claude.exe".into())));
     }
 
     #[test]

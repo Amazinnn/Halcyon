@@ -13,7 +13,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::event_bus::CoreEvent;
 use crate::storage::{CharacterRow, Store, WorkflowRunRow};
-use crate::agents::{AgentProvider, AgentRuntime};
+use crate::agents::AgentRuntime;
 use crate::workflow_engine::engine::{execute_run, AgentCall, EventSink, RunOutcome, SystemActions, WindowOps};
 use crate::workflow_engine::model::{
     CharacterInfo, RunStatus, WorkflowDef, guard_matches, next_daily_run, next_interval_run,
@@ -28,6 +28,14 @@ pub const AGENT_TIMEOUT_SEC: u64 = 600;
 pub const SCHEDULER_TICK_SEC: u64 = 15;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn initial_provider_for_pet(pet_pack_id: &str, display_name: &str) -> &'static str {
+    if pet_pack_id == "focus-demo-pet" && display_name == "Focus Demo Pet" {
+        "claude"
+    } else {
+        "codex"
+    }
+}
 
 /// Short unique id (millis + counter) for workflows/runs/characters.
 pub fn new_id() -> String {
@@ -85,7 +93,18 @@ impl WorkflowManager {
             // list on a poisoned lock — recover the guard so defaults are ensured.
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             for p in &packs {
+                let existed = store
+                    .list_characters()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|character| character.pet_pack_id.as_deref() == Some(p.id.as_str()));
                 if let Ok(id) = store.ensure_character(&p.id, &p.display_name) {
+                    if !existed {
+                        let _ = store.update_character_tool(
+                            &id,
+                            initial_provider_for_pet(&p.id, &p.display_name),
+                        );
+                    }
                     if let Ok(Some(c)) = store.get_character(&id) {
                         out.push(c);
                     }
@@ -475,6 +494,7 @@ impl AgentCall for WorkflowManager {
             let rt = crate::ensure_agent_runtime(&self.app, &character.id)?;
             let rt = match &rt {
                 AgentRuntime::Codex(p) => AgentRuntime::Codex(p.clone()),
+                AgentRuntime::Claude(p) => AgentRuntime::Claude(p.clone()),
                 #[cfg(test)]
                 AgentRuntime::Mock(_) => AgentRuntime::Mock(std::sync::Mutex::new(crate::agents::mock::MockProvider::new(app_state.events_tx.clone()))),
             };
@@ -490,11 +510,12 @@ impl AgentCall for WorkflowManager {
                     .and_then(|c| c.workspace_dir)
                     .unwrap_or_else(user_home_default)
             };
-            let info = match &rt {
-                AgentRuntime::Codex(p) => p.lock().unwrap().start_thread(&workspace, &full, display)?,
-                #[cfg(test)]
-                AgentRuntime::Mock(m) => m.lock().unwrap().start_thread(&workspace, &full, display)?,
-            };
+            let info = crate::with_existing_agent_for(
+                &self.app,
+                &character.id,
+                &rt,
+                |runtime| runtime.start_thread(&workspace, &full, display),
+            )?;
             if let Ok(s) = self.store.lock() {
                 let _ = s.record_automation_thread(&info.id, &character.id, None);
             }
@@ -897,6 +918,14 @@ mod tests {
     fn workflow_from_payload_rejects_missing_or_invalid() {
         assert!(workflow_from_payload(None).is_err());
         assert!(workflow_from_payload(Some(&serde_json::json!({"nodes": 1}))).is_err());
+    }
+
+    #[test]
+    fn focus_demo_pet_alone_gets_claude_as_its_initial_provider() {
+        assert_eq!(initial_provider_for_pet("focus-demo-pet", "Focus Demo Pet"), "claude");
+        assert_eq!(initial_provider_for_pet("other-pet", "Other Pet"), "codex");
+        assert_eq!(initial_provider_for_pet("focus-demo-pet", "Renamed Pet"), "codex");
+        assert_eq!(initial_provider_for_pet("", "Focus 助手"), "codex");
     }
 
     #[test]
