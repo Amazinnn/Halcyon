@@ -135,7 +135,7 @@ pub enum AgentRuntime {
     Codex(std::sync::Arc<std::sync::Mutex<codex::CodexProvider>>),
     Claude(std::sync::Arc<std::sync::Mutex<claude::ClaudeProvider>>),
     #[cfg(test)]
-    Mock(std::sync::Mutex<mock::MockProvider>),
+    Mock(std::sync::Arc<std::sync::Mutex<mock::MockProvider>>),
 }
 
 /// M5 (ADR-0022): multi-Agent registry — one runtime per character (pet).
@@ -159,9 +159,32 @@ impl AgentRegistry {
     pub fn insert(&mut self, character_id: String, rt: AgentRuntime) {
         self.runtimes.insert(character_id, rt);
     }
+
+    pub fn get_or_try_insert_with(
+        &mut self,
+        character_id: &str,
+        build: impl FnOnce() -> Result<AgentRuntime, String>,
+    ) -> Result<AgentRuntime, String> {
+        if let Some(runtime) = self.runtimes.get(character_id) {
+            return Ok(runtime.shared_clone());
+        }
+        let runtime = build()?;
+        self.runtimes
+            .insert(character_id.to_string(), runtime.shared_clone());
+        Ok(runtime)
+    }
 }
 
 impl AgentRuntime {
+    pub fn shared_clone(&self) -> Self {
+        match self {
+            AgentRuntime::Codex(provider) => AgentRuntime::Codex(provider.clone()),
+            AgentRuntime::Claude(provider) => AgentRuntime::Claude(provider.clone()),
+            #[cfg(test)]
+            AgentRuntime::Mock(provider) => AgentRuntime::Mock(provider.clone()),
+        }
+    }
+
     pub fn kind(&self) -> AgentProviderKind {
         match self {
             AgentRuntime::Codex(_) => AgentProviderKind::Codex,
@@ -347,4 +370,57 @@ fn kind_name(ev_type: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod runtime_registry_tests {
+    use super::{AgentRegistry, AgentRuntime};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier, Mutex};
+
+    #[test]
+    fn concurrent_runtime_registry_builds_once_and_returns_one_shared_turn_guard() {
+        let registry = Arc::new(Mutex::new(AgentRegistry::new()));
+        let barrier = Arc::new(Barrier::new(3));
+        let builds = Arc::new(AtomicUsize::new(0));
+        let (tx, _) = tokio::sync::broadcast::channel(8);
+        let mut workers = Vec::new();
+
+        for _ in 0..2 {
+            let registry = registry.clone();
+            let barrier = barrier.clone();
+            let builds = builds.clone();
+            let tx = tx.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                let runtime = registry
+                    .lock()
+                    .unwrap()
+                    .get_or_try_insert_with("char-race", || {
+                        builds.fetch_add(1, Ordering::SeqCst);
+                        Ok(AgentRuntime::Claude(Arc::new(Mutex::new(
+                            super::claude::ClaudeProvider::new(
+                                tx,
+                                PathBuf::from("claude.exe"),
+                                "char-race".into(),
+                                r"C:\Focus-Agents\char-race".into(),
+                            ),
+                        ))))
+                    })
+                    .unwrap();
+                match runtime {
+                    AgentRuntime::Claude(provider) => provider,
+                    _ => panic!("expected Claude runtime"),
+                }
+            }));
+        }
+
+        barrier.wait();
+        let first = workers.remove(0).join().unwrap();
+        let second = workers.remove(0).join().unwrap();
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(registry.lock().unwrap().runtimes.len(), 1);
+    }
 }

@@ -181,6 +181,13 @@ fn get_bootstrap(
         .lock()
         .map(|st| st.list_shortcuts().unwrap_or_default())
         .unwrap_or_default();
+    let agent_provider = store
+        .lock()
+        .ok()
+        .and_then(|st| st.list_characters().ok())
+        .and_then(|characters| characters.into_iter().next())
+        .map(|character| character.tool)
+        .unwrap_or_else(|| "codex".to_string());
     Bootstrap {
         grid: s.grid.clone(),
         topmost: s.topmost.clone(),
@@ -200,7 +207,7 @@ fn get_bootstrap(
         sound_enabled: s.sound_enabled,
         show_topbar: s.show_topbar.clone(),
         focus_mode: s.focus_mode.clone(),
-        agent_provider: s.agent_provider.clone(),
+        agent_provider,
         agent_workspace_dir: s.agent_workspace_dir.clone(),
         pet_bg_fade: s.pet_bg_fade,
     }
@@ -221,32 +228,64 @@ fn user_home() -> String {
         .unwrap_or_else(|_| ".".into())
 }
 
-fn current_workspace_dir(state: &AppState) -> String {
-    let s = state.settings.lock().unwrap();
-    s.agent_workspace_dir.clone().unwrap_or_else(user_home)
+fn select_status_character<'a>(
+    characters: &'a [storage::CharacterRow],
+    character_id: Option<&str>,
+) -> Result<&'a storage::CharacterRow, String> {
+    match character_id {
+        Some(character_id) => characters
+            .iter()
+            .find(|character| character.id == character_id)
+            .ok_or_else(|| format!("角色 {character_id} 不存在")),
+        None => characters
+            .first()
+            .ok_or_else(|| "没有可用的 Agent 角色".to_string()),
+    }
 }
 
-fn agent_status_view(app: &tauri::AppHandle) -> AgentStatusView {
-    let state = app.state::<AppState>();
-    let ws = current_workspace_dir(&state);
-    let provider = agents::AgentProviderKind::parse(
-        &state.settings.lock().unwrap().agent_provider,
-    )
-    .unwrap_or(agents::AgentProviderKind::Codex);
-    let codex_path = agents::codex::find_codex_exe().map(|p| p.to_string_lossy().to_string());
-    let claude_path = agents::claude::find_claude_exe().map(|p| p.to_string_lossy().to_string());
+fn agent_status_for_character(
+    character: &storage::CharacterRow,
+    codex_path: &Option<String>,
+    claude_path: &Option<String>,
+) -> Result<AgentStatusView, String> {
+    let provider = agents::AgentProviderKind::parse(&character.tool)
+        .ok_or_else(|| format!("未知 Agent provider: {}", character.tool))?;
+    let workspace_dir = character.workspace_dir.clone().unwrap_or_else(|| {
+        PathBuf::from(user_home())
+            .join("Focus-Agents")
+            .join(&character.id)
+            .to_string_lossy()
+            .to_string()
+    });
     let exe_path = match provider {
         agents::AgentProviderKind::Codex => codex_path.clone(),
         agents::AgentProviderKind::Claude => claude_path.clone(),
         #[cfg(test)]
         agents::AgentProviderKind::Mock => None,
     };
-    AgentStatusView {
+    Ok(AgentStatusView {
         provider: provider.as_str().to_string(),
-        ready: provider_ready(provider, &codex_path, &claude_path),
+        ready: provider_ready(provider, codex_path, claude_path),
         exe_path,
-        workspace_dir: ws,
-    }
+        workspace_dir,
+    })
+}
+
+fn agent_status_view(
+    app: &tauri::AppHandle,
+    character_id: Option<&str>,
+) -> Result<AgentStatusView, String> {
+    let characters = app
+        .state::<AppState>()
+        .store
+        .lock()
+        .unwrap()
+        .list_characters()
+        .map_err(|error| error.to_string())?;
+    let character = select_status_character(&characters, character_id)?;
+    let codex_path = agents::codex::find_codex_exe().map(|p| p.to_string_lossy().to_string());
+    let claude_path = agents::claude::find_claude_exe().map(|p| p.to_string_lossy().to_string());
+    agent_status_for_character(character, &codex_path, &claude_path)
 }
 
 fn provider_ready(
@@ -262,8 +301,10 @@ fn provider_ready(
     }
 }
 
-fn emit_agent_status(app: &tauri::AppHandle) {
-    let _ = app.emit("agent:status", agent_status_view(app));
+fn emit_agent_status(app: &tauri::AppHandle, character_id: Option<&str>) {
+    if let Ok(status) = agent_status_view(app, character_id) {
+        let _ = app.emit("agent:status", status);
+    }
 }
 
 /// M5 (ADR-0022): build (or reuse) the runtime for a character's Agent.
@@ -276,14 +317,7 @@ pub fn ensure_agent_runtime(
     let state = app.state::<AppState>();
     // Existing runtime?
     if let Some(rt) = state.agents.lock().unwrap().get(character_id) {
-        return Ok(match rt {
-            agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
-            agents::AgentRuntime::Claude(p) => agents::AgentRuntime::Claude(p.clone()),
-            #[cfg(test)]
-            agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(
-                agents::mock::MockProvider::new(state.events_tx.clone()),
-            )),
-        });
+        return Ok(rt.shared_clone());
     }
     // Character row (must exist — workflow ensures char-default).
     let row = {
@@ -298,41 +332,39 @@ pub fn ensure_agent_runtime(
     let workspace = ensure_agent_workspace(&state, &row)?;
     // Build the runtime.
     let tx = state.events_tx.clone();
-    let rt = match row.tool.as_str() {
-        "codex" => {
-            // M5 (ADR-0022): no fallback — if Codex is missing, the call
-            // fails with a clear error; next use rebuilds lazily.
-            let exe = agents::codex::find_codex_exe()
-                .ok_or_else(|| "未找到 Codex（%LOCALAPPDATA%/OpenAI/Codex/bin）".to_string())?;
-            let p = agents::codex::CodexProvider::new(tx, exe, character_id.to_string());
-            agents::AgentRuntime::Codex(std::sync::Arc::new(std::sync::Mutex::new(p)))
-        }
-        "claude" => {
-            let exe = agents::claude::find_claude_exe()
-                .ok_or_else(|| "未在 PATH 中找到 Claude CLI（claude.exe/claude.cmd）".to_string())?;
-            let p = agents::claude::ClaudeProvider::new(
-                tx,
-                exe,
-                character_id.to_string(),
-                workspace,
-            );
-            agents::AgentRuntime::Claude(std::sync::Arc::new(std::sync::Mutex::new(p)))
-        }
-        "mock" => return Err("Mock provider is test-only; production requires a real provider".into()),
-        other => return Err(format!("未知 Agent provider: {other}")),
-    };
-    state.agents.lock().unwrap().insert(
-        character_id.to_string(),
-        match &rt {
-            agents::AgentRuntime::Codex(p) => agents::AgentRuntime::Codex(p.clone()),
-            agents::AgentRuntime::Claude(p) => agents::AgentRuntime::Claude(p.clone()),
-            #[cfg(test)]
-            agents::AgentRuntime::Mock(_) => agents::AgentRuntime::Mock(std::sync::Mutex::new(
-                agents::mock::MockProvider::new(state.events_tx.clone()),
-            )),
-        },
-    );
-    Ok(rt)
+    let runtime = state
+        .agents
+        .lock()
+        .unwrap()
+        .get_or_try_insert_with(character_id, || match row.tool.as_str() {
+            "codex" => {
+                // M5 (ADR-0022): no fallback — if Codex is missing, the call
+                // fails with a clear error; next use rebuilds lazily.
+                let exe = agents::codex::find_codex_exe()
+                    .ok_or_else(|| "未找到 Codex（%LOCALAPPDATA%/OpenAI/Codex/bin）".to_string())?;
+                let p = agents::codex::CodexProvider::new(tx, exe, character_id.to_string());
+                Ok(agents::AgentRuntime::Codex(std::sync::Arc::new(
+                    std::sync::Mutex::new(p),
+                )))
+            }
+            "claude" => {
+                let exe = agents::claude::find_claude_exe().ok_or_else(|| {
+                    "未在 PATH 中找到 Claude CLI（claude.exe/claude.cmd）".to_string()
+                })?;
+                let p = agents::claude::ClaudeProvider::new(
+                    tx,
+                    exe,
+                    character_id.to_string(),
+                    workspace,
+                );
+                Ok(agents::AgentRuntime::Claude(std::sync::Arc::new(
+                    std::sync::Mutex::new(p),
+                )))
+            }
+            "mock" => Err("Mock provider is test-only; production requires a real provider".into()),
+            other => Err(format!("未知 Agent provider: {other}")),
+        })?;
+    Ok(runtime)
 }
 
 /// M5 (ADR-0022): lazy-create `%USERPROFILE%/Focus-Agents/<agent-id>/AGENTS.md`.
@@ -409,8 +441,11 @@ fn discard_runtime_after_provider_error(
 }
 
 #[tauri::command]
-fn agent_status(app: tauri::AppHandle) -> AgentStatusView {
-    agent_status_view(&app)
+fn agent_status(
+    app: tauri::AppHandle,
+    character_id: Option<String>,
+) -> Result<AgentStatusView, String> {
+    agent_status_view(&app, character_id.as_deref())
 }
 
 #[tauri::command]
@@ -675,24 +710,32 @@ fn desktop_set_focus_lock(mode: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_agent_provider(app: tauri::AppHandle, provider: String) -> Result<(), String> {
+fn set_agent_provider(
+    app: tauri::AppHandle,
+    provider: String,
+    character_id: Option<String>,
+) -> Result<(), String> {
     let kind = agents::AgentProviderKind::parse(&provider)
         .ok_or("provider must be codex or claude; mock is test-only")?;
-    {
-        let state = app.state::<AppState>();
-        let mut s = state.settings.lock().unwrap();
-        s.agent_provider = kind.as_str().to_string();
-        let _ = s.save(&state.data_dir);
-    }
-    // M5 (ADR-0022): provider change drops all cached runtimes; new ones are
-    // rebuilt lazily per character on next use.
-    app.state::<AppState>()
+    let state = app.state::<AppState>();
+    let selected_id = {
+        let store = state.store.lock().unwrap();
+        let characters = store.list_characters().map_err(|error| error.to_string())?;
+        select_status_character(&characters, character_id.as_deref())?.id.clone()
+    };
+    state
+        .store
+        .lock()
+        .unwrap()
+        .update_character_tool(&selected_id, kind.as_str())
+        .map_err(|error| error.to_string())?;
+    state
         .agents
         .lock()
         .unwrap()
         .runtimes
-        .clear();
-    emit_agent_status(&app);
+        .remove(&selected_id);
+    emit_agent_status(&app, Some(&selected_id));
     Ok(())
 }
 
@@ -2180,7 +2223,7 @@ pub fn run() {
             let tx = app.state::<AppState>().events_tx.clone();
             tauri::async_runtime::spawn(event_bus::relay_task(app_handle.clone(), rx));
 
-            emit_agent_status(&app_handle);
+            emit_agent_status(&app_handle, None);
 
             // v1.5: local CLI control plane (focus-cli)
             cli::spawn(app_handle.clone(), store.clone(), data_dir_clone);
@@ -2447,10 +2490,56 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agents, agents::AgentProviderKind, discard_runtime_after_provider_error,
-        elapsed_sec, provider_ready, resume_with_initial_message, saved_session_for_today,
+        agent_status_for_character, agents, agents::AgentProviderKind,
+        discard_runtime_after_provider_error, elapsed_sec, provider_ready,
+        resume_with_initial_message, saved_session_for_today, select_status_character,
         topbar_visible,
     };
+
+    fn status_character(id: &str, tool: &str) -> crate::storage::CharacterRow {
+        crate::storage::CharacterRow {
+            id: id.into(),
+            name: id.into(),
+            persona: String::new(),
+            pet_pack_id: None,
+            tool: tool.into(),
+            workspace_dir: Some(format!(r"C:\Focus-Agents\{id}")),
+            current_session_hash: None,
+            session_date: None,
+        }
+    }
+
+    #[test]
+    fn character_provider_status_follows_the_supplied_target_not_global_precedence() {
+        let characters = vec![
+            status_character("char-codex", "codex"),
+            status_character("char-claude", "claude"),
+        ];
+        let codex_path = Some(r"C:\Tools\codex.exe".to_string());
+        let claude_path = None;
+
+        let selected = select_status_character(&characters, Some("char-claude")).unwrap();
+        let claude = agent_status_for_character(selected, &codex_path, &claude_path).unwrap();
+        assert_eq!(claude.provider, "claude");
+        assert!(!claude.ready, "Codex availability must not make Claude ready");
+        assert_eq!(claude.workspace_dir, r"C:\Focus-Agents\char-claude");
+
+        let default = select_status_character(&characters, None).unwrap();
+        let codex = agent_status_for_character(default, &codex_path, &claude_path).unwrap();
+        assert_eq!(codex.provider, "codex");
+        assert!(codex.ready);
+        assert_eq!(default.id, "char-codex", "no-target status is deterministic");
+    }
+
+    #[test]
+    fn character_provider_status_rejects_unknown_character_tool() {
+        let unknown = status_character("char-unknown", "legacy-global");
+        let error = match agent_status_for_character(&unknown, &None, &None) {
+            Ok(_) => panic!("unknown provider must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "未知 Agent provider: legacy-global");
+    }
 
     #[test]
     fn legacy_mock_provider_is_not_a_production_provider() {
@@ -2515,7 +2604,9 @@ mod tests {
         let mut registry = agents::AgentRegistry::new();
         registry.insert(
             "char-test".into(),
-            agents::AgentRuntime::Mock(std::sync::Mutex::new(agents::mock::MockProvider::new(tx))),
+            agents::AgentRuntime::Mock(std::sync::Arc::new(std::sync::Mutex::new(
+                agents::mock::MockProvider::new(tx),
+            ))),
         );
 
         discard_runtime_after_provider_error(
@@ -2536,7 +2627,9 @@ mod tests {
 
         let (tx, _) = tokio::sync::broadcast::channel(32);
         let mut events = tx.subscribe();
-        let runtime = agents::AgentRuntime::Mock(Mutex::new(agents::mock::MockProvider::new(tx)));
+        let runtime = agents::AgentRuntime::Mock(std::sync::Arc::new(Mutex::new(
+            agents::mock::MockProvider::new(tx),
+        )));
 
         let info = resume_with_initial_message(
             &runtime,

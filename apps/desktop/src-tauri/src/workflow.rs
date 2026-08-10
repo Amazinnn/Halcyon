@@ -481,8 +481,6 @@ impl AgentCall for WorkflowManager {
         cancel: &AtomicBool,
         display: crate::workflow_engine::engine::AgentDisplay,
     ) -> Result<Option<(String, String)>, String> {
-        #[cfg(test)]
-        let app_state = self.app.state::<AppState>();
         // M5 (ADR-0022): output discipline is injected system-wide by the
         // provider (agents::OUTPUT_DISCIPLINE); the AGENTS.md identity lives
         // in the workspace — persona is no longer injected here.
@@ -496,7 +494,7 @@ impl AgentCall for WorkflowManager {
                 AgentRuntime::Codex(p) => AgentRuntime::Codex(p.clone()),
                 AgentRuntime::Claude(p) => AgentRuntime::Claude(p.clone()),
                 #[cfg(test)]
-                AgentRuntime::Mock(_) => AgentRuntime::Mock(std::sync::Mutex::new(crate::agents::mock::MockProvider::new(app_state.events_tx.clone()))),
+                AgentRuntime::Mock(provider) => AgentRuntime::Mock(provider.clone()),
             };
             let rx = rt
                 .subscribe_turn_done()

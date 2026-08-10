@@ -58,30 +58,6 @@ pub fn install_focus_cli_skill() -> Result<PathBuf, String> {
     install_focus_cli_skill_into(Path::new(&home))
 }
 
-fn write_thread_marker_into(base: &Path, session_id: &str) -> Result<PathBuf, String> {
-    let dir = base.join(".codex");
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    let path = dir.join("focus-thread.json");
-    std::fs::write(
-        &path,
-        json!({
-            "threadId": session_id,
-            "updatedAt": chrono::Utc::now()
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        })
-        .to_string(),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(path)
-}
-
-fn write_thread_marker(session_id: &str) -> Result<PathBuf, String> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "USERPROFILE/HOME 未设置".to_string())?;
-    write_thread_marker_into(Path::new(&home), session_id)
-}
-
 fn claude_path_with_focus_cli(
     focus_exe: &Path,
     existing_path: Option<OsString>,
@@ -300,6 +276,11 @@ impl ClaudeProvider {
         let args = claude_turn_args(prompt, resume_session);
         let full_prompt = claude_turn_prompt(prompt);
         let mut command = command_for(&self.exe_path, &args);
+        let focus_thread = resume_session
+            .filter(|session_id| !session_id.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| turn.session_id());
+        command.env("FOCUS_AGENT_THREAD", focus_thread);
         let workspace = self.shared.workspace_dir.lock().unwrap().clone();
         if !workspace.trim().is_empty() {
             command.current_dir(&workspace);
@@ -381,9 +362,6 @@ impl ClaudeProvider {
                 let initialized = dispatch_stream_message(&tx, &reader_turn, &done, message);
                 if let Some(session_id) = initialized {
                     *shared.current_thread.lock().unwrap() = Some(session_id.clone());
-                    if let Err(error) = write_thread_marker(&session_id) {
-                        eprintln!("[claude] focus thread marker 写入跳过: {error}");
-                    }
                     if let Some(sender) = init_tx.take() {
                         let _ = sender.send(Ok(session_id));
                     }
@@ -715,14 +693,27 @@ fn result_text(message: &Value) -> String {
     message
         .get("result")
         .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|result| !result.is_empty())
         .or_else(|| {
             message
                 .get("errors")
                 .and_then(Value::as_array)
-                .and_then(|errors| errors.first())
-                .and_then(Value::as_str)
+                .and_then(|errors| {
+                    errors
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .find(|error| !error.is_empty())
+                })
         })
-        .or_else(|| message.get("subtype").and_then(Value::as_str))
+        .or_else(|| {
+            message
+                .get("subtype")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|subtype| !subtype.is_empty())
+        })
         .unwrap_or("Claude CLI 执行失败")
         .to_string()
 }
@@ -976,6 +967,7 @@ mod tests {
             concat!(
                 "@echo off\r\n",
                 "more > \"%~dp0prompt.txt\"\r\n",
+                "echo %FOCUS_AGENT_THREAD%> \"%~dp0thread.txt\"\r\n",
                 "echo {\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-shim-session\"}\r\n",
                 "echo {\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"claude-shim-session\",\"result\":\"done\"}\r\n",
                 "for /L %%i in (1,1,10000000) do @rem\r\n",
@@ -1068,6 +1060,98 @@ mod tests {
         provider.interrupt(&thread.id).unwrap();
         wait_until_idle(&mut provider);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn claude_child_thread_environment_is_distinct_and_never_mutates_codex_marker() {
+        const PROBE_ENV: &str = "FOCUS_CLAUDE_THREAD_ENV_PROBE";
+        if std::env::var(PROBE_ENV).as_deref() != Ok("1") {
+            let base = std::env::temp_dir().join(format!(
+                "focus-claude-thread-env-parent-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&base).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("agents::claude::tests::claude_child_thread_environment_is_distinct_and_never_mutates_codex_marker")
+                .arg("--nocapture")
+                .env(PROBE_ENV, "1")
+                .env("USERPROFILE", &base)
+                .env("HOME", &base)
+                .env("TEMP", &base)
+                .env("TMP", &base)
+                .output()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&base);
+            assert!(
+                output.status.success(),
+                "isolated probe failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let home = PathBuf::from(std::env::var("USERPROFILE").unwrap());
+        let marker = home.join(".codex").join("focus-thread.json");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"codex-sentinel").unwrap();
+
+        let (first_dir, first_shim) = claude_cmd_shim();
+        let (second_dir, second_shim) = claude_cmd_shim();
+        let (tx, _) = tokio::sync::broadcast::channel::<CoreEvent>(32);
+        let mut first = ClaudeProvider::new(
+            tx.clone(),
+            first_shim,
+            "char-first".into(),
+            first_dir.to_string_lossy().into_owned(),
+        );
+        let mut second = ClaudeProvider::new(
+            tx,
+            second_shim,
+            "char-second".into(),
+            second_dir.to_string_lossy().into_owned(),
+        );
+        let first_thread = first
+            .start_thread(&first_dir.to_string_lossy(), "first", full_display())
+            .unwrap();
+        let second_thread = second
+            .start_thread(&second_dir.to_string_lossy(), "second", full_display())
+            .unwrap();
+        let first_env = std::fs::read_to_string(first_dir.join("thread.txt"))
+            .unwrap()
+            .trim()
+            .to_string();
+        let second_env = std::fs::read_to_string(second_dir.join("thread.txt"))
+            .unwrap()
+            .trim()
+            .to_string();
+
+        assert!(first_env.starts_with("focus-claude-char-first-"));
+        assert!(second_env.starts_with("focus-claude-char-second-"));
+        assert_ne!(first_env, second_env);
+        assert_eq!(std::fs::read(&marker).unwrap(), b"codex-sentinel");
+
+        first.interrupt(&first_thread.id).unwrap();
+        second.interrupt(&second_thread.id).unwrap();
+        wait_until_idle(&mut first);
+        wait_until_idle(&mut second);
+        std::fs::remove_dir_all(first_dir).unwrap();
+        std::fs::remove_dir_all(second_dir).unwrap();
+    }
+
+    #[test]
+    fn focus_cli_skill_prefers_child_thread_environment_before_codex_fallback() {
+        let env_at = FOCUS_CLI_SKILL.find("FOCUS_AGENT_THREAD").unwrap();
+        let marker_at = FOCUS_CLI_SKILL.find("~/.codex/focus-thread.json").unwrap();
+        assert!(env_at < marker_at);
+        assert!(FOCUS_CLI_SKILL.contains("仅当该环境变量为空或不存在"));
+        assert_eq!(FOCUS_CLI_SKILL, crate::agents::codex::FOCUS_CLI_SKILL);
     }
 
     #[test]
@@ -1190,6 +1274,40 @@ mod tests {
     }
 
     #[test]
+    fn claude_empty_result_uses_nonempty_native_errors() {
+        let (events, done) = dispatch_recorded(
+            full_display(),
+            vec![
+                json!({
+                    "type": "system",
+                    "subtype": "init",
+                    "session_id": "failed-empty-result"
+                }),
+                json!({
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "is_error": true,
+                    "session_id": "failed-empty-result",
+                    "result": "  ",
+                    "errors": ["native provider permission failure"]
+                }),
+            ],
+        );
+
+        assert_eq!(done.status, "error");
+        assert_eq!(
+            done.result.as_deref(),
+            Some("native provider permission failure")
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            CoreEvent::AgentEvent(value)
+                if value["event"]["type"] == "session.error"
+                    && value["event"]["message"] == "native provider permission failure"
+        )));
+    }
+
+    #[test]
     fn claude_skill_install_and_path_match_the_codex_asset() {
         let base = std::env::temp_dir().join(format!(
             "focus-claude-skill-{}",
@@ -1209,21 +1327,6 @@ mod tests {
         let entries: Vec<_> = std::env::split_paths(&path).collect();
         assert_eq!(entries.first(), Some(&PathBuf::from(r"C:\Focus")));
         assert_eq!(entries[1..], std::env::split_paths(&existing).collect::<Vec<_>>());
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn claude_thread_marker_matches_the_shared_skill_contract() {
-        let base = std::env::temp_dir().join(format!(
-            "focus-claude-marker-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&base);
-        let marker = write_thread_marker_into(&base, "claude-session-marker").unwrap();
-        assert!(marker.ends_with(Path::new(".codex/focus-thread.json")));
-        let value: Value =
-            serde_json::from_str(&std::fs::read_to_string(marker).unwrap()).unwrap();
-        assert_eq!(value["threadId"], "claude-session-marker");
         let _ = std::fs::remove_dir_all(&base);
     }
 

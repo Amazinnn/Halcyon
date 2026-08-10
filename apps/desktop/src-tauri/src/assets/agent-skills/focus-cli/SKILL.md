@@ -9,7 +9,7 @@ Focus Desktop 运行期间提供 `focus-cli` 本地控制面（localhost TCP + t
 
 ## 获取当前线程 id
 
-每次调用前读取 `~/.codex/focus-thread.json`；使用其中 `threadId` 的值。文件不存在时使用 `focus`。命令形式为：
+每次调用前优先读取当前进程的 `FOCUS_AGENT_THREAD` 环境变量；非空时使用它的值。仅当该环境变量为空或不存在时，读取 `~/.codex/focus-thread.json` 并使用其中 `threadId` 的值；两者均不存在时使用 `focus`。命令形式为：
 
 ```text
 focus-cli --agent-thread <thread_id> <command>
