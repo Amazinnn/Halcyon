@@ -711,6 +711,14 @@ impl Store {
         Ok(())
     }
 
+    pub fn update_character_tool(&self, id: &str, tool: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE characters SET tool = ?2 WHERE id = ?1",
+            params![id, tool],
+        )?;
+        Ok(())
+    }
+
     pub fn load_provider_session(
         &self,
         character_id: &str,
@@ -755,9 +763,9 @@ impl Store {
 
     pub fn insert_character(&self, row: &CharacterRow) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT INTO characters (id, name, persona, pet_pack_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, datetime('now','localtime'))",
-            params![row.id, row.name, row.persona, row.pet_pack_id],
+            "INSERT INTO characters (id, name, persona, pet_pack_id, tool, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now','localtime'))",
+            params![row.id, row.name, row.persona, row.pet_pack_id, row.tool],
         )?;
         Ok(())
     }
@@ -1295,6 +1303,44 @@ mod tests {
         assert_eq!(c.workspace_dir.as_deref(), Some("C:/ws"));
         assert_eq!(c.current_session_hash.as_deref(), Some("hash-1"));
         assert_eq!(c.session_date.as_deref(), Some("2026-08-08"));
+    }
+
+    #[test]
+    fn character_tool_insert_roundtrips_supplied_provider() {
+        let s = temp_store();
+        s.insert_character(&CharacterRow {
+            id: "char-claude".into(),
+            name: "claude pet".into(),
+            persona: "test persona".into(),
+            pet_pack_id: Some("pet-claude".into()),
+            tool: "claude".into(),
+            workspace_dir: None,
+            current_session_hash: None,
+            session_date: None,
+        })
+        .unwrap();
+
+        assert_eq!(s.get_character("char-claude").unwrap().unwrap().tool, "claude");
+    }
+
+    #[test]
+    fn character_tool_update_persists_supplied_provider() {
+        let s = temp_store();
+        s.insert_character(&CharacterRow {
+            id: "char-switch".into(),
+            name: "switch pet".into(),
+            persona: "test persona".into(),
+            pet_pack_id: Some("pet-switch".into()),
+            tool: "claude".into(),
+            workspace_dir: None,
+            current_session_hash: None,
+            session_date: None,
+        })
+        .unwrap();
+
+        s.update_character_tool("char-switch", "codex").unwrap();
+
+        assert_eq!(s.get_character("char-switch").unwrap().unwrap().tool, "codex");
     }
 
     #[test]
