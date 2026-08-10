@@ -12,22 +12,32 @@ vi.mock("@tauri-apps/api/event", () => ({ emit, listen }));
 
 import { useAgentStore } from "./agent";
 
-describe("workflow result messages", () => {
-  const handlers = new Map<string, ((event: { payload: unknown }) => void)[]>();
-  const storage = new Map<string, string>();
+const handlers = new Map<string, ((event: { payload: unknown }) => void)[]>();
+const storage = new Map<string, string>();
 
+function installEventHarness() {
+  handlers.clear();
+  listen.mockReset();
+  listen.mockImplementation(async (event: string, handler: (event: { payload: unknown }) => void) => {
+    (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler);
+    return () => undefined;
+  });
+  Object.assign(globalThis, {
+    localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+    },
+  });
+}
+
+describe("workflow result messages", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    handlers.clear();
+    installEventHarness();
     storage.clear();
     storage.set("focus-agent", "char-a");
     invoke.mockReset();
     emit.mockReset();
-    listen.mockReset();
-    listen.mockImplementation(async (event: string, handler: (event: { payload: unknown }) => void) => {
-      (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler);
-      return () => undefined;
-    });
     emit.mockImplementation(async (event: string, payload: unknown) => {
       for (const handler of handlers.get(event) ?? []) handler({ payload });
     });
@@ -40,8 +50,8 @@ describe("workflow result messages", () => {
       }
       if (command === "agent_status") {
         return {
+          characterId: "char-a",
           provider: "codex",
-          fallback: false,
           ready: true,
           exePath: null,
           workspaceDir: "D:\\Agent",
@@ -187,12 +197,17 @@ describe("interrupt lifecycle", () => {
 describe("per-character provider selection", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    installEventHarness();
+    storage.clear();
+    storage.set("focus-agent", "char-a");
     invoke.mockReset();
   });
 
-  it("calls the explicit provider command then refreshes characters and that character status", async () => {
+  it("updates an inactive provider without overwriting the current chat status", async () => {
     const agent = useAgentStore();
-    agent.characterId = "char-b";
+    agent.characterId = "char-a";
+    agent.provider = "codex";
+    agent.workspaceDir = "D:\\Agents\\char-a";
     agent.characters = [
       { id: "char-a", name: "Codex pet", tool: "codex" },
       { id: "char-b", name: "Claude pet", tool: "claude" },
@@ -200,7 +215,7 @@ describe("per-character provider selection", () => {
     invoke.mockImplementation(async (command: string, args?: unknown) => {
       if (command === "agent_set_provider") {
         expect(args).toEqual({ characterId: "char-b", provider: "claude" });
-        return { provider: "claude", ready: true, exePath: "C:\\Tools\\claude.exe", workspaceDir: "D:\\Agents\\char-b" };
+        return { characterId: "char-b", provider: "claude", ready: true, exePath: "C:\\Tools\\claude.exe", workspaceDir: "D:\\Agents\\char-b" };
       }
       if (command === "characters_list") {
         return [
@@ -210,7 +225,7 @@ describe("per-character provider selection", () => {
       }
       if (command === "agent_status") {
         expect(args).toEqual({ characterId: "char-b" });
-        return { provider: "claude", ready: true, exePath: "C:\\Tools\\claude.exe", workspaceDir: "D:\\Agents\\char-b" };
+        return { characterId: "char-b", provider: "claude", ready: true, exePath: "C:\\Tools\\claude.exe", workspaceDir: "D:\\Agents\\char-b" };
       }
       return undefined;
     });
@@ -221,7 +236,70 @@ describe("per-character provider selection", () => {
       { id: "char-a", name: "Codex pet", tool: "codex" },
       { id: "char-b", name: "Claude pet", tool: "claude" },
     ]);
+    expect(agent.provider).toBe("codex");
+    expect(agent.workspaceDir).toBe("D:\\Agents\\char-a");
+  });
+
+  it("clears the active conversation when the selected character changes provider", async () => {
+    const agent = useAgentStore();
+    agent.characterId = "char-a";
+    agent.currentThreadId = "codex-thread";
+    agent.sessionId = "codex-thread";
+    agent.messages = [{ role: "agent", text: "old", kind: "completed" }];
+    agent.phase = "completed";
+    agent.characters = [{ id: "char-a", name: "Pet", tool: "codex" }];
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "agent_set_provider") return { characterId: "char-a", provider: "claude", ready: true, exePath: null, workspaceDir: "" };
+      if (command === "characters_list") return [{ id: "char-a", name: "Pet", tool: "claude" }];
+      if (command === "agent_status") return { characterId: "char-a", provider: "claude", ready: true, exePath: null, workspaceDir: "" };
+      return undefined;
+    });
+
+    await agent.setProvider("char-a", "claude");
+
+    expect(agent.currentThreadId).toBeNull();
+    expect(agent.sessionId).toBe("");
+    expect(agent.messages).toEqual([]);
+    expect(agent.phase).toBe("idle");
+  });
+
+  it("refreshes Provider status when chat selects another character", async () => {
+    const agent = useAgentStore();
+    agent.characterId = "char-a";
+    agent.provider = "codex";
+    agent.characters = [
+      { id: "char-a", name: "Codex pet", tool: "codex" },
+      { id: "char-b", name: "Claude pet", tool: "claude" },
+    ];
+    invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "agent_status") {
+        expect(args).toEqual({ characterId: "char-b" });
+        return { characterId: "char-b", provider: "claude", ready: true, exePath: null, workspaceDir: "claude-workspace" };
+      }
+      return undefined;
+    });
+
+    await agent.selectCharacter("char-b", false);
+
     expect(agent.provider).toBe("claude");
-    expect(agent.workspaceDir).toBe("D:\\Agents\\char-b");
+    expect(agent.workspaceDir).toBe("claude-workspace");
+  });
+
+  it("ignores status events for a different character", async () => {
+    const agent = useAgentStore();
+    agent.characterId = "char-a";
+    agent.provider = "codex";
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "characters_list") return [{ id: "char-a", name: "Pet", tool: "codex" }];
+      if (command === "agent_status") return { characterId: "char-a", provider: "codex", ready: true, exePath: null, workspaceDir: "current" };
+      if (command === "agent_list_skills") return [];
+      return undefined;
+    });
+    await agent.init();
+    const statusHandler = handlers.get("agent:status")?.[0];
+    expect(statusHandler).toBeDefined();
+    statusHandler?.({ payload: { characterId: "char-b", provider: "claude", ready: true, exePath: null, workspaceDir: "other" } });
+    expect(agent.provider).toBe("codex");
+    expect(agent.workspaceDir).not.toBe("other");
   });
 });

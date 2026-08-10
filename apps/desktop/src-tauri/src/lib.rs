@@ -207,6 +207,7 @@ fn get_bootstrap(
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentStatusView {
+    character_id: String,
     provider: String,
     ready: bool,
     exe_path: Option<String>,
@@ -255,6 +256,7 @@ fn agent_status_for_character(
         agents::AgentProviderKind::Mock => None,
     };
     Ok(AgentStatusView {
+        character_id: character.id.clone(),
         provider: provider.as_str().to_string(),
         ready: provider_ready(provider, codex_path, claude_path),
         exe_path,
@@ -298,46 +300,18 @@ fn emit_agent_status(app: &tauri::AppHandle, character_id: Option<&str>) {
     }
 }
 
-/// Upgrade the one exact pre-provider Demo Pet once. The completion flag is
-/// intentionally set even when no matching historical character exists so a
-/// later imported pet is treated as a new character (already Claude by
-/// `workflow::initial_provider_for_pet`) rather than a migration target.
-fn bootstrap_existing_demo_pet_provider(
-    settings: &mut settings::Settings,
-    store: &storage::Store,
-) -> Result<bool, String> {
-    if settings.demo_pet_claude_bootstrap_complete {
-        return Ok(false);
-    }
-    if let Some(character) = store
-        .list_characters()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|character| {
-            character.name == "Focus Demo Pet"
-                && character.pet_pack_id.as_deref() == Some("focus-demo-pet")
-        })
-    {
-        store
-            .update_character_tool(&character.id, "claude")
-            .map_err(|error| error.to_string())?;
-    }
-    settings.demo_pet_claude_bootstrap_complete = true;
-    Ok(true)
+/// Upgrade the one exact pre-provider Demo Pet once. The SQLite marker and
+/// row update are committed together, so an unrelated settings write cannot
+/// make a later launch repeat the migration.
+fn bootstrap_existing_demo_pet_provider(store: &mut storage::Store) -> Result<bool, String> {
+    store
+        .upgrade_existing_demo_pet_to_claude_once()
+        .map_err(|error| error.to_string())
 }
 
 fn bootstrap_existing_demo_pet_provider_durably(state: &AppState) -> Result<(), String> {
-    let mut settings = state.settings.lock().unwrap();
-    if settings.demo_pet_claude_bootstrap_complete {
-        return Ok(());
-    }
-    let store = state.store.lock().unwrap();
-    if bootstrap_existing_demo_pet_provider(&mut settings, &store)? {
-        if let Err(error) = settings.save(&state.data_dir) {
-            settings.demo_pet_claude_bootstrap_complete = false;
-            return Err(error);
-        }
-    }
+    let mut store = state.store.lock().unwrap();
+    bootstrap_existing_demo_pet_provider(&mut store)?;
     Ok(())
 }
 
@@ -3113,13 +3087,12 @@ mod tests {
     #[test]
     fn existing_exact_demo_pet_bootstraps_to_claude_only_once() {
         let (db_path, store) = existing_demo_pet_store();
-        let mut settings = crate::settings::Settings::default();
 
-        assert!(bootstrap_existing_demo_pet_provider(&mut settings, &store.lock().unwrap()).unwrap());
+        assert!(bootstrap_existing_demo_pet_provider(&mut store.lock().unwrap()).unwrap());
         assert_eq!(store.lock().unwrap().get_character("focus-demo-pet").unwrap().unwrap().tool, "claude");
         store.lock().unwrap().update_character_tool("focus-demo-pet", "codex").unwrap();
 
-        assert!(!bootstrap_existing_demo_pet_provider(&mut settings, &store.lock().unwrap()).unwrap());
+        assert!(!bootstrap_existing_demo_pet_provider(&mut store.lock().unwrap()).unwrap());
         assert_eq!(store.lock().unwrap().get_character("focus-demo-pet").unwrap().unwrap().tool, "codex");
         drop(store);
         std::fs::remove_file(db_path).unwrap();

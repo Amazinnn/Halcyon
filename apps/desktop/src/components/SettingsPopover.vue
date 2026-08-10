@@ -226,7 +226,14 @@ async function setAgentProvider(id: string, provider: "codex" | "claude") {
     await agent.refreshStatus();
   } catch (e) {
     agentError.value = String(e);
+    await refreshAgents();
+    if (id === agent.characterId) await agent.refreshStatus();
   }
+}
+
+function onAgentProviderChange(id: string, event: Event) {
+  const provider = (event.target as HTMLSelectElement).value;
+  if (provider === "codex" || provider === "claude") void setAgentProvider(id, provider);
 }
 
 async function deleteAgent(id: string) {
@@ -427,7 +434,7 @@ onMounted(load);
       <div v-if="agentList.length" class="pack-list">
         <div v-for="a in agentList" :key="a.id" class="pack-row">
           <span class="pack-name" :class="{ active: a.id === agent.characterId }">{{ a.name }}</span>
-          <select v-model="a.tool" class="provider-select" @change="setAgentProvider(a.id, a.tool)">
+          <select :value="a.tool" class="provider-select" @change="onAgentProviderChange(a.id, $event)">
             <option value="codex">Codex</option>
             <option value="claude">Claude</option>
           </select>

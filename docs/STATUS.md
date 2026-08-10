@@ -1,5 +1,11 @@
 # Focus Desktop 当前状态（压缩交接页）
 
+> 更新：2026-08-10（Claude Code 作为第二个真实 Provider 已接入；需求 #79/#80，ADR-0025）。每个桌宠在设置页固定选择 Codex 或 Claude；Focus Demo Pet 的历史迁移使用 SQLite 原子标记，按“桌宠 x Provider”隔离当日 session。聊天窗口不提供 Provider 切换。
+>
+> 本轮修复：切换当前桌宠的 Provider 后立即清空 UI 会话，防止将 Codex thread 交给 Claude（或反向）恢复；`agent:status` 带 `characterId`，非当前桌宠的状态不会覆盖当前聊天；设置页失败切换会回读持久 Provider。
+>
+> 已验证：`npm run build`、`cargo test --lib`（158）、`packages/event-schema` 测试。实机控制面已用 `Focus Demo Pet` 的真实 Claude 完成一次成功运行，并完成临时工作流的创建、读取、更新、运行、删除，删除后列表为空；不得以 Mock 代替。仍待人工确认聊天窗口的直接发送、来源消息与宠物气泡视觉回流。
+
 > 更新：2026-08-09（Agent 对话与工作流闭合已实现，真实 Codex 实机验收待执行：#76–#78，ADR-0024；v1.12.6 已实现待验收：#75 三档专注锁机模式；v1.12.4 已实现待验收：#73 桌面锁退出残留黑屏修复）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 

@@ -276,6 +276,28 @@ impl Store {
                 [],
             )?;
         }
+
+        // 0009: the pre-provider Demo Pet upgrade is durable database state.
+        // It must not depend on settings.json because that file can fail to
+        // save after the character row has already been updated.
+        let has0009: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = '0009_demo_pet_claude_marker')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has0009 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS agent_bootstrap_markers (
+                    name TEXT PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );",
+            )?;
+            self.conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (name, applied_at)
+                 VALUES ('0009_demo_pet_claude_marker', datetime('now'))",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -717,6 +739,27 @@ impl Store {
             params![id, tool],
         )?;
         Ok(())
+    }
+
+    /// Claim the historical Demo Pet migration and update its provider in one
+    /// transaction. New Demo Pets are created with their configured provider,
+    /// so only the exact pre-provider row is eligible here.
+    pub fn upgrade_existing_demo_pet_to_claude_once(&mut self) -> rusqlite::Result<bool> {
+        let tx = self.conn.transaction()?;
+        let claimed = tx.execute(
+            "INSERT OR IGNORE INTO agent_bootstrap_markers (name, applied_at)
+             VALUES ('focus_demo_pet_claude', datetime('now'))",
+            [],
+        )? == 1;
+        if claimed {
+            tx.execute(
+                "UPDATE characters SET tool = 'claude'
+                 WHERE name = 'Focus Demo Pet' AND pet_pack_id = 'focus-demo-pet'",
+                [],
+            )?;
+        }
+        tx.commit()?;
+        Ok(claimed)
     }
 
     pub fn load_provider_session(
@@ -1373,6 +1416,27 @@ mod tests {
             preserved
         );
         assert_eq!(s.get_character("char-other").unwrap().unwrap().tool, "claude");
+    }
+
+    #[test]
+    fn demo_pet_provider_migration_is_atomic_and_one_time() {
+        let mut s = temp_store();
+        s.insert_character(&CharacterRow {
+            id: "focus-demo-pet".into(),
+            name: "Focus Demo Pet".into(),
+            persona: "demo".into(),
+            pet_pack_id: Some("focus-demo-pet".into()),
+            tool: "codex".into(),
+            workspace_dir: None,
+            current_session_hash: None,
+            session_date: None,
+        }).unwrap();
+
+        assert!(s.upgrade_existing_demo_pet_to_claude_once().unwrap());
+        assert_eq!(s.get_character("focus-demo-pet").unwrap().unwrap().tool, "claude");
+        s.update_character_tool("focus-demo-pet", "codex").unwrap();
+        assert!(!s.upgrade_existing_demo_pet_to_claude_once().unwrap());
+        assert_eq!(s.get_character("focus-demo-pet").unwrap().unwrap().tool, "codex");
     }
 
     #[test]

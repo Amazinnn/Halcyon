@@ -28,6 +28,7 @@ export interface AgentThread {
 }
 
 export interface AgentStatus {
+  characterId: string;
   provider: "codex" | "claude";
   ready: boolean;
   exePath: string | null;
@@ -106,8 +107,9 @@ export const useAgentStore = defineStore("agent", {
             const target = saved && chars.some((c) => c.id === saved) ? saved : chars[0].id;
             if (target !== this.characterId) {
               await this.selectCharacter(target, false);
+            } else {
+              await this.refreshStatus(target);
             }
-            await this.refreshStatus(target);
             return;
           }
         } catch (e) {
@@ -129,6 +131,7 @@ export const useAgentStore = defineStore("agent", {
       this.phase = "idle";
       const c = this.characters.find((x) => x.id === id);
       this.characterName = c?.name ?? "对话";
+      await this.refreshStatus(id);
       // Today's session hash is resumed server-side (lazy runtime build).
       this.pushSystem(`已切换到 ${this.characterName}`);
       const pending = this.pendingWorkflowResults[id] ?? [];
@@ -161,6 +164,7 @@ export const useAgentStore = defineStore("agent", {
         this.animation = e.payload.animation;
       });
       await listen<AgentStatus>("agent:status", (e) => {
+        if (e.payload.characterId !== this.characterId) return;
         this.provider = e.payload.provider;
         this.ready = e.payload.ready;
         this.workspaceDir = e.payload.workspaceDir;
@@ -183,6 +187,7 @@ export const useAgentStore = defineStore("agent", {
       try {
         const targetCharacterId = characterId ?? this.characterId;
         const s = await invoke<AgentStatus>("agent_status", targetCharacterId ? { characterId: targetCharacterId } : undefined);
+        if (s.characterId !== this.characterId) return;
         this.provider = s.provider;
         this.ready = s.ready;
         this.workspaceDir = s.workspaceDir;
@@ -284,7 +289,9 @@ export const useAgentStore = defineStore("agent", {
       this.workspaceDir = dir;
     },
     async setProvider(characterId: string, provider: "codex" | "claude") {
-      await invoke<AgentStatus>("agent_set_provider", { characterId, provider });
+      const previousProvider = this.characters.find((character) => character.id === characterId)?.tool;
+      const status = await invoke<AgentStatus>("agent_set_provider", { characterId, provider });
+      if (characterId === this.characterId && previousProvider !== status.provider) this.newThread();
       await this.refreshCharacters();
       await this.refreshStatus(characterId);
     },
