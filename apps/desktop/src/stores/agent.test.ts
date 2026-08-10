@@ -183,3 +183,45 @@ describe("interrupt lifecycle", () => {
     expect(agent.phase).toBe("idle");
   });
 });
+
+describe("per-character provider selection", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    invoke.mockReset();
+  });
+
+  it("calls the explicit provider command then refreshes characters and that character status", async () => {
+    const agent = useAgentStore();
+    agent.characterId = "char-b";
+    agent.characters = [
+      { id: "char-a", name: "Codex pet", tool: "codex" },
+      { id: "char-b", name: "Claude pet", tool: "claude" },
+    ];
+    invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "agent_set_provider") {
+        expect(args).toEqual({ characterId: "char-b", provider: "claude" });
+        return { provider: "claude", ready: true, exePath: "C:\\Tools\\claude.exe", workspaceDir: "D:\\Agents\\char-b" };
+      }
+      if (command === "characters_list") {
+        return [
+          { id: "char-a", name: "Codex pet", tool: "codex" },
+          { id: "char-b", name: "Claude pet", tool: "claude" },
+        ];
+      }
+      if (command === "agent_status") {
+        expect(args).toEqual({ characterId: "char-b" });
+        return { provider: "claude", ready: true, exePath: "C:\\Tools\\claude.exe", workspaceDir: "D:\\Agents\\char-b" };
+      }
+      return undefined;
+    });
+
+    await agent.setProvider("char-b", "claude");
+
+    expect(agent.characters).toEqual([
+      { id: "char-a", name: "Codex pet", tool: "codex" },
+      { id: "char-b", name: "Claude pet", tool: "claude" },
+    ]);
+    expect(agent.provider).toBe("claude");
+    expect(agent.workspaceDir).toBe("D:\\Agents\\char-b");
+  });
+});

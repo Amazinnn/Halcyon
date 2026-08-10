@@ -210,12 +210,23 @@ async function removePet(id: string) {
 }
 
 // M5 (ADR-0022): Agent management — list/delete/open workspace.
-const agentList = ref<{ id: string; name: string }[]>([]);
+const agentList = ref<{ id: string; name: string; tool: "codex" | "claude" }[]>([]);
 const agentError = ref("");
 
 async function refreshAgents() {
   await agent.refreshCharacters();
-  agentList.value = agent.characters.map((c) => ({ id: c.id, name: c.name }));
+  agentList.value = agent.characters.map((c) => ({ id: c.id, name: c.name, tool: c.tool }));
+}
+
+async function setAgentProvider(id: string, provider: "codex" | "claude") {
+  agentError.value = "";
+  try {
+    await agent.setProvider(id, provider);
+    await refreshAgents();
+    await agent.refreshStatus();
+  } catch (e) {
+    agentError.value = String(e);
+  }
 }
 
 async function deleteAgent(id: string) {
@@ -416,11 +427,26 @@ onMounted(load);
       <div v-if="agentList.length" class="pack-list">
         <div v-for="a in agentList" :key="a.id" class="pack-row">
           <span class="pack-name" :class="{ active: a.id === agent.characterId }">{{ a.name }}</span>
+          <select v-model="a.tool" class="provider-select" @change="setAgentProvider(a.id, a.tool)">
+            <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
+          </select>
           <button class="mini" title="打开工作区（编辑 AGENTS.md）" @click="openWorkspace(a.id)">打开工作区</button>
           <button class="mini" title="删除（连带删工作区）" @click="deleteAgent(a.id)">删除</button>
         </div>
       </div>
       <div v-else class="row"><span class="label">无 Agent</span></div>
+      <div class="row">
+        <span class="label">状态</span>
+        <span :class="agent.ready ? 'ok' : 'err'">{{ agent.ready ? `${agent.provider} ready` : `${agent.provider} unavailable` }}</span>
+      </div>
+      <div class="row">
+        <span class="label">工作区</span>
+        <input v-model="agentWorkspace" type="text" class="text-input" placeholder="默认用户主目录" />
+      </div>
+      <div class="row">
+        <button class="btn" @click="applyAgentWorkspace">应用工作区</button>
+      </div>
     </section>
 
     <section class="group">
@@ -453,24 +479,6 @@ onMounted(load);
       </div>
     </section>
 
-    <section class="group">
-      <h4>Agent</h4>
-      <div class="row">
-        <span class="label">Provider</span>
-        <span class="ok">Codex</span>
-      </div>
-      <div class="row">
-        <span class="label">状态</span>
-        <span :class="agent.ready ? 'ok' : 'err'">{{ agent.ready ? "已找到 Codex" : "未找到 Codex" }}</span>
-      </div>
-      <div class="row">
-        <span class="label">工作区</span>
-        <input v-model="agentWorkspace" type="text" class="text-input" placeholder="默认用户主目录" />
-      </div>
-      <div class="row">
-        <button class="btn" @click="applyAgentWorkspace">应用工作区</button>
-      </div>
-    </section>
     <div class="about">Focus Desktop {{ version }} · MIT</div>
   </div>
 </template>
@@ -602,6 +610,11 @@ onMounted(load);
 }
 .pack-name:hover { background: var(--accent-wash); color: var(--accent-bright); }
 .pack-name.active { background: var(--accent-wash); color: var(--accent-bright); }
+.provider-select {
+  border: 1px solid var(--glass-border); background: var(--glass-strong);
+  color: var(--text-hi); border-radius: var(--r-sm); padding: 2px 5px;
+  font-size: 11px; cursor: pointer;
+}
 .about { font-size: 11px; color: var(--text-low); border-top: 1px solid var(--glass-border); padding-top: 8px; }
 .mode-help { display: flex; flex-direction: column; gap: 5px; }
 .mode-help p { margin: 0; color: var(--text-mid); font-size: 12px; line-height: 1.45; }

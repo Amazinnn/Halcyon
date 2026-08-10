@@ -21,6 +21,10 @@ describe("simplified chat surface", () => {
       "useSkill",
       "tool-strip",
       "Mock",
+      "agent_set_provider",
+      "Provider",
+      "agent_set_model",
+      "agent_set_permission",
     ]) {
       expect(source).not.toContain(removed);
     }

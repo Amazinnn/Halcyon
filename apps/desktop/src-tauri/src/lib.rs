@@ -166,7 +166,6 @@ struct Bootstrap {
     sound_enabled: bool,
     show_topbar: String,
     focus_mode: String,
-    agent_provider: String,
     agent_workspace_dir: Option<String>,
     pet_bg_fade: bool,
 }
@@ -181,13 +180,6 @@ fn get_bootstrap(
         .lock()
         .map(|st| st.list_shortcuts().unwrap_or_default())
         .unwrap_or_default();
-    let agent_provider = store
-        .lock()
-        .ok()
-        .and_then(|st| st.list_characters().ok())
-        .and_then(|characters| characters.into_iter().next())
-        .map(|character| character.tool)
-        .unwrap_or_else(|| "codex".to_string());
     Bootstrap {
         grid: s.grid.clone(),
         topmost: s.topmost.clone(),
@@ -207,7 +199,6 @@ fn get_bootstrap(
         sound_enabled: s.sound_enabled,
         show_topbar: s.show_topbar.clone(),
         focus_mode: s.focus_mode.clone(),
-        agent_provider,
         agent_workspace_dir: s.agent_workspace_dir.clone(),
         pet_bg_fade: s.pet_bg_fade,
     }
@@ -305,6 +296,49 @@ fn emit_agent_status(app: &tauri::AppHandle, character_id: Option<&str>) {
     if let Ok(status) = agent_status_view(app, character_id) {
         let _ = app.emit("agent:status", status);
     }
+}
+
+/// Upgrade the one exact pre-provider Demo Pet once. The completion flag is
+/// intentionally set even when no matching historical character exists so a
+/// later imported pet is treated as a new character (already Claude by
+/// `workflow::initial_provider_for_pet`) rather than a migration target.
+fn bootstrap_existing_demo_pet_provider(
+    settings: &mut settings::Settings,
+    store: &storage::Store,
+) -> Result<bool, String> {
+    if settings.demo_pet_claude_bootstrap_complete {
+        return Ok(false);
+    }
+    if let Some(character) = store
+        .list_characters()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|character| {
+            character.name == "Focus Demo Pet"
+                && character.pet_pack_id.as_deref() == Some("focus-demo-pet")
+        })
+    {
+        store
+            .update_character_tool(&character.id, "claude")
+            .map_err(|error| error.to_string())?;
+    }
+    settings.demo_pet_claude_bootstrap_complete = true;
+    Ok(true)
+}
+
+fn bootstrap_existing_demo_pet_provider_durably(state: &AppState) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap();
+    if settings.demo_pet_claude_bootstrap_complete {
+        return Ok(());
+    }
+    let store = state.store.lock().unwrap();
+    if bootstrap_existing_demo_pet_provider(&mut settings, &store)? {
+        if let Err(error) = settings.save(&state.data_dir) {
+            settings.demo_pet_claude_bootstrap_complete = false;
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 /// M5 (ADR-0022): build (or reuse) the runtime for a character's Agent.
@@ -723,23 +757,40 @@ fn desktop_set_focus_lock(mode: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_agent_provider(
+fn agent_set_provider(
     app: tauri::AppHandle,
+    character_id: String,
     provider: String,
-    character_id: Option<String>,
-) -> Result<(), String> {
-    let kind = agents::AgentProviderKind::parse(&provider)
-        .ok_or("provider must be codex or claude; mock is test-only")?;
+) -> Result<AgentStatusView, String> {
     let state = app.state::<AppState>();
-    let selected_id = set_agent_provider_serialized_with(
+    let selected_id = agent_set_provider_serialized_with(
         &state.agents,
         &state.store,
-        character_id.as_deref(),
-        kind,
+        &character_id,
+        &provider,
         || {},
     )?;
-    emit_agent_status(&app, Some(&selected_id));
-    Ok(())
+    let status = agent_status_view(&app, Some(&selected_id))?;
+    let _ = app.emit("agent:status", status.clone());
+    Ok(status)
+}
+
+fn agent_set_provider_serialized_with(
+    registry: &Mutex<agents::AgentRegistry>,
+    store: &Mutex<storage::Store>,
+    character_id: &str,
+    provider: &str,
+    after_registry_lock: impl FnOnce(),
+) -> Result<String, String> {
+    let provider = agents::AgentProviderKind::parse(provider)
+        .ok_or_else(|| "provider must be codex or claude".to_string())?;
+    set_agent_provider_serialized_with(
+        registry,
+        store,
+        Some(character_id),
+        provider,
+        after_registry_lock,
+    )
 }
 
 fn set_agent_provider_serialized_with(
@@ -2209,6 +2260,9 @@ pub fn run() {
             ));
             wm.purge_incompatible();
             let _ = wm.ensure_characters();
+            if let Err(error) = bootstrap_existing_demo_pet_provider_durably(&app_handle.state::<AppState>()) {
+                eprintln!("[agent] Demo Pet provider bootstrap failed: {error}");
+            }
             *app_handle.state::<AppState>().workflow.lock().unwrap() = Some(wm.clone());
 
             create_windows(app)?;
@@ -2489,7 +2543,7 @@ pub fn run() {
             desktop_lock,
             desktop_unlock,
             desktop_set_focus_lock,
-            set_agent_provider,
+            agent_set_provider,
             set_agent_workspace_dir,
             pet_import_pack,
             pet_remove_pack,
@@ -2523,6 +2577,7 @@ mod tests {
         agent_status_for_character, agents, agents::AgentProviderKind,
         discard_runtime_after_provider_error, elapsed_sec, ensure_runtime_serialized,
         provider_ready, resume_with_initial_message, saved_session_for_today,
+        agent_set_provider_serialized_with, bootstrap_existing_demo_pet_provider,
         select_status_character, set_agent_provider_serialized_with, topbar_visible,
         with_agent_runtime_serialized,
     };
@@ -2557,6 +2612,24 @@ mod tests {
         store
             .insert_character(&status_character(character_id, tool))
             .unwrap();
+        (path, std::sync::Arc::new(std::sync::Mutex::new(store)))
+    }
+
+    fn existing_demo_pet_store() -> (std::path::PathBuf, std::sync::Arc<std::sync::Mutex<crate::storage::Store>>) {
+        let path = std::env::temp_dir().join(format!(
+            "focus-demo-pet-bootstrap-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = crate::storage::Store::open(&path).unwrap();
+        store.migrate().unwrap();
+        let mut row = status_character("focus-demo-pet", "codex");
+        row.name = "Focus Demo Pet".into();
+        row.pet_pack_id = Some("focus-demo-pet".into());
+        store.insert_character(&row).unwrap();
         (path, std::sync::Arc::new(std::sync::Mutex::new(store)))
     }
 
@@ -2992,6 +3065,63 @@ mod tests {
         drop(registry);
         drop(store);
         std::fs::remove_dir_all(workspace).unwrap();
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[test]
+    fn agent_set_provider_rejects_unknown_provider() {
+        let (db_path, store) = provider_race_store("char-a", "codex");
+        let registry = std::sync::Mutex::new(agents::AgentRegistry::new());
+
+        let error = agent_set_provider_serialized_with(
+            &registry,
+            &store,
+            "char-a",
+            "unknown",
+            || {},
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "provider must be codex or claude");
+        assert_eq!(store.lock().unwrap().get_character("char-a").unwrap().unwrap().tool, "codex");
+        drop(registry);
+        drop(store);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[test]
+    fn agent_set_provider_changes_only_the_selected_inactive_character() {
+        let (db_path, store) = provider_race_store("char-a", "codex");
+        store
+            .lock()
+            .unwrap()
+            .insert_character(&status_character("char-b", "codex"))
+            .unwrap();
+        let registry = std::sync::Mutex::new(agents::AgentRegistry::new());
+
+        agent_set_provider_serialized_with(&registry, &store, "char-b", "claude", || {}).unwrap();
+
+        let store_guard = store.lock().unwrap();
+        assert_eq!(store_guard.get_character("char-a").unwrap().unwrap().tool, "codex");
+        assert_eq!(store_guard.get_character("char-b").unwrap().unwrap().tool, "claude");
+        drop(store_guard);
+        drop(registry);
+        drop(store);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[test]
+    fn existing_exact_demo_pet_bootstraps_to_claude_only_once() {
+        let (db_path, store) = existing_demo_pet_store();
+        let mut settings = crate::settings::Settings::default();
+
+        assert!(bootstrap_existing_demo_pet_provider(&mut settings, &store.lock().unwrap()).unwrap());
+        assert_eq!(store.lock().unwrap().get_character("focus-demo-pet").unwrap().unwrap().tool, "claude");
+        store.lock().unwrap().update_character_tool("focus-demo-pet", "codex").unwrap();
+
+        assert!(!bootstrap_existing_demo_pet_provider(&mut settings, &store.lock().unwrap()).unwrap());
+        assert_eq!(store.lock().unwrap().get_character("focus-demo-pet").unwrap().unwrap().tool, "codex");
+        drop(store);
         std::fs::remove_file(db_path).unwrap();
     }
 

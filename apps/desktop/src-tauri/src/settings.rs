@@ -111,6 +111,9 @@ pub struct Settings {
     pub focus_mode: String,
     #[serde(default = "default_agent_provider")]
     pub agent_provider: String,
+    /// Marks the single bootstrap that upgrades a pre-provider Demo Pet.
+    #[serde(default)]
+    pub demo_pet_claude_bootstrap_complete: bool,
     #[serde(default)]
     pub agent_workspace_dir: Option<String>,
     #[serde(default)]
@@ -184,6 +187,7 @@ impl Default for Settings {
             show_topbar: "auto".into(),
             focus_mode: "standard".into(),
             agent_provider: "codex".into(),
+            demo_pet_claude_bootstrap_complete: false,
             agent_workspace_dir: None,
         pet_pack_id: None,
         pet_bg_fade: true,
@@ -320,5 +324,26 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.grid["stats"].cols, 5);
         assert_eq!(s.grid["stats"].rows, 4);
+    }
+
+    #[test]
+    fn demo_pet_provider_bootstrap_flag_defaults_false_and_round_trips() {
+        let dir = std::env::temp_dir().join(format!(
+            "focus-settings-demo-bootstrap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut settings = Settings::default();
+        assert!(!settings.demo_pet_claude_bootstrap_complete);
+        settings.demo_pet_claude_bootstrap_complete = true;
+        settings.save(&dir).unwrap();
+
+        assert!(Settings::load(&dir).demo_pet_claude_bootstrap_complete);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

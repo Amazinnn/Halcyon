@@ -28,7 +28,7 @@ export interface AgentThread {
 }
 
 export interface AgentStatus {
-  provider: "codex";
+  provider: "codex" | "claude";
   ready: boolean;
   exePath: string | null;
   workspaceDir: string;
@@ -64,7 +64,7 @@ export const useAgentStore = defineStore("agent", {
     // M5 (ADR-0022): one Agent per character; the current one is selected
     // from the dropdown. Messages/session state belong to the current Agent.
     characterId: "" as string,
-    characters: [] as { id: string; name: string }[],
+    characters: [] as { id: string; name: string; tool: "codex" | "claude" }[],
     agentId: "focus-codex",
     sessionId: "",
     state: "idle" as AgentState,
@@ -78,7 +78,7 @@ export const useAgentStore = defineStore("agent", {
     bubble: null as { text: string; priority: string; expiresAt: number } | null,
     reaction: null as PetReaction | null,
     lastEvent: null as AgentEventEnvelope | null,
-    provider: "codex" as "codex",
+    provider: "codex" as "codex" | "claude",
     ready: false,
     workspaceDir: "",
     threads: [] as AgentThread[],
@@ -98,7 +98,7 @@ export const useAgentStore = defineStore("agent", {
       // characterId empty and failing later with "角色不存在".
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const chars = await invoke<{ id: string; name: string }[]>("characters_list");
+          const chars = await invoke<{ id: string; name: string; tool: "codex" | "claude" }[]>("characters_list");
           this.characters = chars;
           if (chars.length) {
             // M5 (ADR-0022): restore the last-selected Agent, else pick first.
@@ -107,6 +107,7 @@ export const useAgentStore = defineStore("agent", {
             if (target !== this.characterId) {
               await this.selectCharacter(target, false);
             }
+            await this.refreshStatus(target);
             return;
           }
         } catch (e) {
@@ -178,9 +179,10 @@ export const useAgentStore = defineStore("agent", {
       await this.refreshSkills();
       await this.refreshCharacters();
     },
-    async refreshStatus() {
+    async refreshStatus(characterId?: string) {
       try {
-        const s = await invoke<AgentStatus>("agent_status");
+        const targetCharacterId = characterId ?? this.characterId;
+        const s = await invoke<AgentStatus>("agent_status", targetCharacterId ? { characterId: targetCharacterId } : undefined);
         this.provider = s.provider;
         this.ready = s.ready;
         this.workspaceDir = s.workspaceDir;
@@ -280,6 +282,11 @@ export const useAgentStore = defineStore("agent", {
     async setWorkspaceDir(dir: string) {
       await invoke("set_agent_workspace_dir", { dir });
       this.workspaceDir = dir;
+    },
+    async setProvider(characterId: string, provider: "codex" | "claude") {
+      await invoke<AgentStatus>("agent_set_provider", { characterId, provider });
+      await this.refreshCharacters();
+      await this.refreshStatus(characterId);
     },
     newThread() {
       this.currentThreadId = null;

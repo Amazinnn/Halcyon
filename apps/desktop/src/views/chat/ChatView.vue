@@ -59,7 +59,7 @@ function send() {
         <option v-for="c in agent.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
       </select>
       <button v-else class="ghost" @click="agent.refreshCharacters()">Agent 正在初始化，点击刷新</button>
-      <span class="badge">Codex</span>
+      <span class="badge">{{ agent.provider === "claude" ? "Claude" : "Codex" }}</span>
       <span class="phase" :class="agent.phase">{{ phaseText }}</span>
     </div>
 
