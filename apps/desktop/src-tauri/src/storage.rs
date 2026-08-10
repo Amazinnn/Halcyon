@@ -1308,7 +1308,7 @@ mod tests {
     #[test]
     fn character_tool_insert_roundtrips_supplied_provider() {
         let s = temp_store();
-        s.insert_character(&CharacterRow {
+        let expected = CharacterRow {
             id: "char-claude".into(),
             name: "claude pet".into(),
             persona: "test persona".into(),
@@ -1317,10 +1317,18 @@ mod tests {
             workspace_dir: None,
             current_session_hash: None,
             session_date: None,
-        })
-        .unwrap();
+        };
+        s.insert_character(&expected).unwrap();
 
-        assert_eq!(s.get_character("char-claude").unwrap().unwrap().tool, "claude");
+        let actual = s.get_character("char-claude").unwrap().unwrap();
+        assert_eq!(actual.id, expected.id);
+        assert_eq!(actual.name, expected.name);
+        assert_eq!(actual.persona, expected.persona);
+        assert_eq!(actual.pet_pack_id, expected.pet_pack_id);
+        assert_eq!(actual.tool, expected.tool);
+        assert_eq!(actual.workspace_dir, None);
+        assert_eq!(actual.current_session_hash, None);
+        assert_eq!(actual.session_date, None);
     }
 
     #[test]
@@ -1337,10 +1345,34 @@ mod tests {
             session_date: None,
         })
         .unwrap();
+        s.insert_character(&CharacterRow {
+            id: "char-other".into(),
+            name: "other pet".into(),
+            persona: "other persona".into(),
+            pet_pack_id: Some("pet-other".into()),
+            tool: "codex".into(),
+            workspace_dir: None,
+            current_session_hash: None,
+            session_date: None,
+        })
+        .unwrap();
+
+        let before = s.get_character("char-switch").unwrap().unwrap();
+        let preserved = (
+            before.name.clone(),
+            before.persona.clone(),
+            before.pet_pack_id.clone(),
+        );
 
         s.update_character_tool("char-switch", "codex").unwrap();
 
-        assert_eq!(s.get_character("char-switch").unwrap().unwrap().tool, "codex");
+        let updated = s.get_character("char-switch").unwrap().unwrap();
+        assert_eq!(updated.tool, "codex");
+        assert_eq!(
+            (updated.name, updated.persona, updated.pet_pack_id),
+            preserved
+        );
+        assert_eq!(s.get_character("char-other").unwrap().unwrap().tool, "codex");
     }
 
     #[test]
