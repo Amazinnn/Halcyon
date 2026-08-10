@@ -258,6 +258,10 @@ impl ClaudeProvider {
         self.turn_done.subscribe()
     }
 
+    pub fn has_active_turn(&self) -> bool {
+        self.shared.active_turn.lock().unwrap().is_some()
+    }
+
     fn spawn_turn(
         &mut self,
         workspace_dir: &str,

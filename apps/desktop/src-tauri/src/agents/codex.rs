@@ -146,6 +146,10 @@ impl CodexProvider {
         }
     }
 
+    pub fn has_active_turn(&self) -> bool {
+        *self.shared.turn_in_flight.lock().unwrap()
+    }
+
     /// Publish the active thread id so the agent can pass `--agent-thread`
     /// when invoking focus-cli (see the focus-cli skill).
     fn write_thread_marker(&self) {

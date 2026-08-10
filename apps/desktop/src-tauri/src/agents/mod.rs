@@ -35,6 +35,8 @@ pub const SCHEMA_JSON: &str =
 
 pub const ACTIVE_TURN_ERROR: &str =
     "Agent already has an active turn; wait for it to finish or stop it first";
+pub const PROVIDER_SWITCH_BUSY_ERROR: &str =
+    "该宠物的 Agent 正在运行；请等待完成或先中断，再切换 Provider";
 
 pub fn is_busy_turn_error(error: &str) -> bool {
     error == ACTIVE_TURN_ERROR
@@ -182,6 +184,15 @@ impl AgentRuntime {
             AgentRuntime::Claude(provider) => AgentRuntime::Claude(provider.clone()),
             #[cfg(test)]
             AgentRuntime::Mock(provider) => AgentRuntime::Mock(provider.clone()),
+        }
+    }
+
+    pub fn has_active_turn(&self) -> bool {
+        match self {
+            AgentRuntime::Codex(provider) => provider.lock().unwrap().has_active_turn(),
+            AgentRuntime::Claude(provider) => provider.lock().unwrap().has_active_turn(),
+            #[cfg(test)]
+            AgentRuntime::Mock(_) => false,
         }
     }
 

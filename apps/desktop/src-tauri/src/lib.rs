@@ -310,33 +310,35 @@ fn emit_agent_status(app: &tauri::AppHandle, character_id: Option<&str>) {
 /// M5 (ADR-0022): build (or reuse) the runtime for a character's Agent.
 /// Lazily creates the per-Agent workspace + AGENTS.md when missing.
 /// Returns the real Codex runtime. Mock runtimes exist only for Rust tests.
+fn ensure_runtime_serialized(
+    registry: &Mutex<agents::AgentRegistry>,
+    character_id: &str,
+    build: impl FnOnce() -> Result<agents::AgentRuntime, String>,
+) -> Result<agents::AgentRuntime, String> {
+    registry
+        .lock()
+        .unwrap()
+        .get_or_try_insert_with(character_id, build)
+}
+
 pub fn ensure_agent_runtime(
     app: &tauri::AppHandle,
     character_id: &str,
 ) -> Result<agents::AgentRuntime, String> {
     let state = app.state::<AppState>();
-    // Existing runtime?
-    if let Some(rt) = state.agents.lock().unwrap().get(character_id) {
-        return Ok(rt.shared_clone());
-    }
-    // Character row (must exist — workflow ensures char-default).
-    let row = {
-        let st = app.state::<AppState>().store.clone();
-        let store = st.lock().unwrap();
-        store
-            .get_character(character_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("角色 {character_id} 不存在"))?
-    };
-    // Lazily create workspace + AGENTS.md (also persists workspace_dir).
-    let workspace = ensure_agent_workspace(&state, &row)?;
-    // Build the runtime.
     let tx = state.events_tx.clone();
-    let runtime = state
-        .agents
-        .lock()
-        .unwrap()
-        .get_or_try_insert_with(character_id, || match row.tool.as_str() {
+    ensure_runtime_serialized(&state.agents, character_id, || {
+        // Keep provider selection and runtime insertion serializable with
+        // set_agent_provider. Lock order: registry -> store.
+        let row = state
+            .store
+            .lock()
+            .unwrap()
+            .get_character(character_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("角色 {character_id} 不存在"))?;
+        let workspace = ensure_agent_workspace(&state, &row)?;
+        match row.tool.as_str() {
             "codex" => {
                 // M5 (ADR-0022): no fallback — if Codex is missing, the call
                 // fails with a clear error; next use rebuilds lazily.
@@ -363,8 +365,8 @@ pub fn ensure_agent_runtime(
             }
             "mock" => Err("Mock provider is test-only; production requires a real provider".into()),
             other => Err(format!("未知 Agent provider: {other}")),
-        })?;
-    Ok(runtime)
+        }
+    })
 }
 
 /// M5 (ADR-0022): lazy-create `%USERPROFILE%/Focus-Agents/<agent-id>/AGENTS.md`.
@@ -718,25 +720,42 @@ fn set_agent_provider(
     let kind = agents::AgentProviderKind::parse(&provider)
         .ok_or("provider must be codex or claude; mock is test-only")?;
     let state = app.state::<AppState>();
-    let selected_id = {
-        let store = state.store.lock().unwrap();
-        let characters = store.list_characters().map_err(|error| error.to_string())?;
-        select_status_character(&characters, character_id.as_deref())?.id.clone()
-    };
-    state
-        .store
-        .lock()
-        .unwrap()
-        .update_character_tool(&selected_id, kind.as_str())
-        .map_err(|error| error.to_string())?;
-    state
-        .agents
-        .lock()
-        .unwrap()
-        .runtimes
-        .remove(&selected_id);
+    let selected_id = set_agent_provider_serialized_with(
+        &state.agents,
+        &state.store,
+        character_id.as_deref(),
+        kind,
+        || {},
+    )?;
     emit_agent_status(&app, Some(&selected_id));
     Ok(())
+}
+
+fn set_agent_provider_serialized_with(
+    registry: &Mutex<agents::AgentRegistry>,
+    store: &Mutex<storage::Store>,
+    character_id: Option<&str>,
+    provider: agents::AgentProviderKind,
+    after_registry_lock: impl FnOnce(),
+) -> Result<String, String> {
+    let mut registry = registry.lock().unwrap();
+    after_registry_lock();
+    let store = store.lock().unwrap();
+    let characters = store
+        .list_characters()
+        .map_err(|error| error.to_string())?;
+    let selected_id = select_status_character(&characters, character_id)?.id.clone();
+    if registry
+        .get(&selected_id)
+        .is_some_and(agents::AgentRuntime::has_active_turn)
+    {
+        return Err(agents::PROVIDER_SWITCH_BUSY_ERROR.to_string());
+    }
+    store
+        .update_character_tool(&selected_id, provider.as_str())
+        .map_err(|error| error.to_string())?;
+    registry.runtimes.remove(&selected_id);
+    Ok(selected_id)
 }
 
 #[tauri::command]
@@ -2491,9 +2510,9 @@ pub fn run() {
 mod tests {
     use super::{
         agent_status_for_character, agents, agents::AgentProviderKind,
-        discard_runtime_after_provider_error, elapsed_sec, provider_ready,
-        resume_with_initial_message, saved_session_for_today, select_status_character,
-        topbar_visible,
+        discard_runtime_after_provider_error, elapsed_sec, ensure_runtime_serialized,
+        provider_ready, resume_with_initial_message, saved_session_for_today,
+        select_status_character, set_agent_provider_serialized_with, topbar_visible,
     };
 
     fn status_character(id: &str, tool: &str) -> crate::storage::CharacterRow {
@@ -2507,6 +2526,240 @@ mod tests {
             current_session_hash: None,
             session_date: None,
         }
+    }
+
+    fn provider_race_store(
+        character_id: &str,
+        tool: &str,
+    ) -> (std::path::PathBuf, std::sync::Arc<std::sync::Mutex<crate::storage::Store>>) {
+        let path = std::env::temp_dir().join(format!(
+            "focus-provider-race-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = crate::storage::Store::open(&path).unwrap();
+        store.migrate().unwrap();
+        store
+            .insert_character(&status_character(character_id, tool))
+            .unwrap();
+        (path, std::sync::Arc::new(std::sync::Mutex::new(store)))
+    }
+
+    fn inert_runtime(
+        kind: AgentProviderKind,
+        character_id: &str,
+    ) -> agents::AgentRuntime {
+        let (tx, _) = tokio::sync::broadcast::channel(8);
+        match kind {
+            AgentProviderKind::Codex => agents::AgentRuntime::Codex(std::sync::Arc::new(
+                std::sync::Mutex::new(agents::codex::CodexProvider::new(
+                    tx,
+                    std::path::PathBuf::from("codex.exe"),
+                    character_id.into(),
+                )),
+            )),
+            AgentProviderKind::Claude => agents::AgentRuntime::Claude(std::sync::Arc::new(
+                std::sync::Mutex::new(agents::claude::ClaudeProvider::new(
+                    tx,
+                    std::path::PathBuf::from("claude.exe"),
+                    character_id.into(),
+                    format!(r"C:\Focus-Agents\{character_id}"),
+                )),
+            )),
+            AgentProviderKind::Mock => panic!("production provider required"),
+        }
+    }
+
+    #[test]
+    fn provider_switch_serializes_against_ensure_that_observed_old_tool() {
+        let character_id = "char-provider-race";
+        let (db_path, store) = provider_race_store(character_id, "codex");
+        let registry = std::sync::Arc::new(std::sync::Mutex::new(
+            agents::AgentRegistry::new(),
+        ));
+        let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+
+        let ensure_registry = registry.clone();
+        let ensure_store = store.clone();
+        let ensure = std::thread::spawn(move || {
+            ensure_runtime_serialized(&ensure_registry, character_id, || {
+                let row = ensure_store
+                    .lock()
+                    .unwrap()
+                    .get_character(character_id)
+                    .unwrap()
+                    .unwrap();
+                observed_tx.send(row.tool.clone()).unwrap();
+                continue_rx.recv().unwrap();
+                Ok(inert_runtime(
+                    AgentProviderKind::parse(&row.tool).unwrap(),
+                    character_id,
+                ))
+            })
+            .unwrap()
+        });
+        assert_eq!(observed_rx.recv().unwrap(), "codex");
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let switch_registry = registry.clone();
+        let switch_store = store.clone();
+        let switch = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            set_agent_provider_serialized_with(
+                &switch_registry,
+                &switch_store,
+                Some(character_id),
+                AgentProviderKind::Claude,
+                || locked_tx.send(()).unwrap(),
+            )
+        });
+        started_rx.recv().unwrap();
+        assert!(
+            locked_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "switch must wait behind the ensure serialization guard"
+        );
+
+        continue_tx.send(()).unwrap();
+        assert_eq!(ensure.join().unwrap().kind(), AgentProviderKind::Codex);
+        switch.join().unwrap().unwrap();
+        locked_rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+
+        let final_runtime = ensure_runtime_serialized(&registry, character_id, || {
+            let row = store
+                .lock()
+                .unwrap()
+                .get_character(character_id)
+                .unwrap()
+                .unwrap();
+            Ok(inert_runtime(
+                AgentProviderKind::parse(&row.tool).unwrap(),
+                character_id,
+            ))
+        })
+        .unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .get_character(character_id)
+                .unwrap()
+                .unwrap()
+                .tool,
+            "claude"
+        );
+        assert_eq!(final_runtime.kind(), AgentProviderKind::Claude);
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap()
+                .get(character_id)
+                .unwrap()
+                .kind(),
+            AgentProviderKind::Claude
+        );
+
+        drop(final_runtime);
+        drop(registry);
+        drop(store);
+        std::fs::remove_file(db_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn provider_switch_rejects_active_turn_without_changing_tool_or_runtime() {
+        let character_id = "char-active-switch";
+        let (db_path, store) = provider_race_store(character_id, "claude");
+        let workspace = std::env::temp_dir().join(format!(
+            "focus-active-provider-switch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let shim = workspace.join("claude.cmd");
+        std::fs::write(
+            &shim,
+            concat!(
+                "@echo off\r\n",
+                "more > nul\r\n",
+                "echo {\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"active-switch-session\"}\r\n",
+                "for /L %%i in (1,1,10000000) do @rem\r\n",
+            ),
+        )
+        .unwrap();
+        let (tx, _) = tokio::sync::broadcast::channel(8);
+        let runtime = agents::AgentRuntime::Claude(std::sync::Arc::new(
+            std::sync::Mutex::new(agents::claude::ClaudeProvider::new(
+                tx,
+                shim,
+                character_id.into(),
+                workspace.to_string_lossy().into_owned(),
+            )),
+        ));
+        let registry = std::sync::Mutex::new(agents::AgentRegistry::new());
+        registry
+            .lock()
+            .unwrap()
+            .insert(character_id.into(), runtime.shared_clone());
+        let thread = runtime
+            .start_thread(
+                &workspace.to_string_lossy(),
+                "stay active",
+                agents::agent_display_full(),
+            )
+            .unwrap();
+        assert!(runtime.has_active_turn());
+
+        let error = set_agent_provider_serialized_with(
+            &registry,
+            &store,
+            Some(character_id),
+            AgentProviderKind::Codex,
+            || {},
+        )
+        .unwrap_err();
+        assert_eq!(error, agents::PROVIDER_SWITCH_BUSY_ERROR);
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .get_character(character_id)
+                .unwrap()
+                .unwrap()
+                .tool,
+            "claude"
+        );
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap()
+                .get(character_id)
+                .unwrap()
+                .kind(),
+            AgentProviderKind::Claude
+        );
+        assert!(runtime.has_active_turn());
+
+        runtime.interrupt(&thread.id).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while runtime.has_active_turn() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(runtime);
+        drop(registry);
+        drop(store);
+        std::fs::remove_dir_all(workspace).unwrap();
+        std::fs::remove_file(db_path).unwrap();
     }
 
     #[test]
