@@ -1,12 +1,16 @@
 # 下一个对话初始化提示词（Focus Desktop）
 
-> 由 2026-08-08 会话收尾生成（v1.10.5 已实现待验收 + Agent 概念 / 工作流冻结讨论定稿）。把下面「提示词」直接粘贴到新对话即可；本文件同时归档在仓库，供压缩后自取。
+> 当前入口（2026-08-10）：把下面「当前提示词」复制到新对话。`docs/STATUS.md` 是唯一当前事实源；`docs/evals/README.md` 规定每轮任务结束前必须更新 Eval；`docs/production-incidents.md` 记录生产问题和回归状态。
 
-## 提示词
+## 当前提示词
 
-我是 Focus Desktop 项目的维护者。请先阅读仓库根目录的 `docs/STATUS.md`（当前状态与交接页，单一事实源），再按需查阅 `docs/next-phase.md`（路线）、`docs/requirements-verbatim.md`（需求原话 #1–#66）、`docs/decisions/`（ADR-0001~0019）与 `README.md`。
+我是 Focus Desktop 项目的维护者。请先阅读 `docs/STATUS.md`，再按需查阅 `docs/next-phase.md`、`docs/requirements-verbatim.md`（只追加，当前 #1–#82）、`docs/decisions/`（至 ADR-0025）、`docs/evals/README.md`、最新日期快照和 `docs/production-incidents.md`。每轮任务结束前必须更新受影响范围的 Eval；不得将 Mock 结果写成真实 Provider 验收。
 
-当前真实状态：**v1.10.5.1 已实现、待用户验收**（三样修复 + 文档固化；需求 #64–#66 + ADR-0019；前序 v1.10.5 需求 #59–#63 + ADR-0018）。M4 工作流引擎 v1 已实现（v1.10.4 工作流 v2 画布 + v1.10.5 收敛为 **7 类节点**：Agent / 显示窗口 / 等待 / 分支 / 专注 / 空闲 / 响铃——气泡与 IF 已彻底移除）。M5（外部 Agent 驱动的角色循环）尚未实施。
+当前真实状态：Claude Code 已作为第二个真实 Provider 接入，Focus Demo Pet 的真实 Claude 控制面工作流闭环已验证。聊天直接发送、来源消息、宠物气泡、桌面锁恢复与浮窗淡蓝标题条仍须按最新 Eval 快照逐项人工确认。不要修改权威设计稿 `local-focus-desktop-agent-design-v0.2.md`。
+
+## 2026-08-08 历史归档（不作为当前指令）
+
+> 以下内容保留当时的讨论上下文；当前状态、验收门槛和文档入口以前述“当前提示词”为准。
 
 ### 最新讨论定稿（2026-08-08 晚，必须遵守，勿再推翻）
 

@@ -4,9 +4,9 @@
 >
 > 本轮修复：切换当前桌宠的 Provider 后立即清空 UI 会话，防止将 Codex thread 交给 Claude（或反向）恢复；`agent:status` 带 `characterId`，非当前桌宠的状态不会覆盖当前聊天；设置页失败切换会回读持久 Provider。
 >
-> 已验证：`npm run build`、`cargo test --lib`（158）、`packages/event-schema` 测试。实机控制面已用 `Focus Demo Pet` 的真实 Claude 完成一次成功运行，并完成临时工作流的创建、读取、更新、运行、删除，删除后列表为空；不得以 Mock 代替。仍待人工确认聊天窗口的直接发送、来源消息与宠物气泡视觉回流。
+> 已验证：`npm run build`、`cargo test --lib`（158）、`packages/event-schema` 测试。实机控制面已用 `Focus Demo Pet` 的真实 Claude 完成一次成功运行，并完成临时工作流的创建、读取、更新、运行、删除，删除后列表为空；不得以 Mock 代替。仍待人工确认聊天窗口的直接发送、来源消息与宠物气泡视觉回流，以及桌面锁和浮窗的 Windows 手工回归。详见 [Eval 检查点](./evals/README.md) 与 [本轮快照](./evals/2026-08-10-claude-provider-checkpoint.md)。
 
-> 更新：2026-08-09（Agent 对话与工作流闭合已实现，真实 Codex 实机验收待执行：#76–#78，ADR-0024；v1.12.6 已实现待验收：#75 三档专注锁机模式；v1.12.4 已实现待验收：#73 桌面锁退出残留黑屏修复）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR。
+> 更新：2026-08-10（Claude 已成为第二个真实 Provider；#79/#80 已实现，#81/#82 建立文档与每轮 Eval 更新约束）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR、Eval 与生产事故台账。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 
 ## 项目一句话
@@ -14,7 +14,7 @@
 本地专注桌面 + Agent 桌宠系统（Windows 优先，MIT）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
 
 ## 当前实现与待验收清单
-- Agent 对话与工作流闭合（已实现，真实 Codex 实机验收待执行；需求 #76–#78，ADR-0024）：正式桌面路径只使用真实 Codex，Provider 不可用直接显示实际错误，Mock 仅供测试注入；聊天仅保留 Agent 选择、连接/生成状态、消息、停止与输入。工作流列表固定展示全部日程，新建日程不绑定 Agent；新 Agent 节点默认当前聊天 Agent、仍可改目标。工作流只在 `showResult` 时向目标 Agent 对话与宠物泡泡各回流一次带「日程 · 名称」来源的最终结果，过程事件不进入聊天；`workflow:changed` 立即刷新列表。**尚未完成真实 Codex 对话、Agent 经 focus-cli CRUD/运行/删除临时工作流的实机验收。**
+- Agent 对话与工作流闭合（已实现，需求 #76–#78，ADR-0024）：正式桌面路径只使用真实 Provider，Provider 不可用直接显示实际错误，Mock 仅供测试注入；聊天仅保留 Agent 选择、连接/生成状态、消息、停止与输入。工作流列表固定展示全部日程，新建日程不绑定 Agent；新 Agent 节点默认当前聊天 Agent、仍可改目标。工作流只在 `showResult` 时向目标 Agent 对话与宠物泡泡各回流一次带「日程 · 名称」来源的最终结果，过程事件不进入聊天；`workflow:changed` 立即刷新列表。真实 Claude 控制面闭环已通过；聊天窗口视觉回流仍待人工验收。
 - v1.12.4（桌面锁退出恢复，已实现待验收，需求 #73）：恢复 Shell_TrayWnd/Progman 的入口不再检查当前进程的 `LOCKED`；watchdog 在主进程被强制结束后调用该无状态入口；专注「跳过」和应用内退出先显式解锁。根因：watchdog 是独立进程，其 LOCKED 初值恒为 false，原先调用 unlock 会直接返回，导致桌面宿主持续隐藏。
 - v1.12.6（三档专注模式，已实现待验收，需求 #75）：轻度不锁定，标准只拦截 Win/Alt+Tab/Alt+F4/Ctrl+Esc，学霸模式额外隐藏 Shell；当前模式保存到设置，新用户默认标准。专注轮次快照模式；开始、暂停、恢复、跳过、自然结束及连续点击均通过串行转换，暂停/休息在可见状态变化前完成桌面恢复；既有 `focus-cli desktop lock/unlock/status` 仍是严格桌面锁语义。
 - v1.12.2（四问题修复，已实现待验收，需求 #71）：① 浮窗浅蓝条——position_window 尺寸路径原生化（SetWindowPos + SWP_NOACTIVATE，杜绝 Tauri set_size 激活画 caption）；② VPN 已解决（v1.12.1 env 合并，验证通过）；③ 「Agent 不存在」——refreshCharacters 空列表重试 3×500ms + ChatView 发送前校验 + selectCharacter 空保护；④ 锁接「开始专注」（startFocus/startFocusFor → desktop_lock；pause/专注结束 → desktop_unlock，新 Tauri 命令）。
@@ -73,23 +73,25 @@
 
 - M1 剩余：系统托盘（可做）；全局快捷键绑定**暂缓**（需求 #19，开发完成前不绑）。
 - M2：统计真实化（v1.8）已实现；本地音乐播放器（v1.9）已实现。
-- M3 剩余：plan mode / Diff / 终端面板 / Claude Code 接入。
+- M3 剩余：plan mode / Diff / 终端面板；Claude Code Provider 已由 ADR-0025 接入，后续只做按 Eval 的回归维护。
 - M4：内置工作流引擎（精简 n8n）——2026-08-07 方向锁定（#26/#28/#29），v1.10.5 已收敛为 7 类节点并实现（ADR-0012/0017/0018）；2026-08-08 起冻结不再更新（#64，ADR-0019），**v1.11 退化为 Agent 日程工具**（ADR-0020：空角色合法化 / 节点级目标 / JSON 文档+CLI 通道），**v1.11.1 修复环状执行语义**（ADR-0021：focus/idle/ring 阻塞 + 停止按钮 + 响铃正确性）。
-- M5：新的 Agent（外部 Agent 驱动的角色循环）——2026-08-07 已锁定方向（#27）：内核驱动 / 事件+兜底 / 先单角色；Journal/Task 全家桶保持外接 skill 不内置。2026-08-08 Agent 概念定稿（#65，ADR-0019）：每宠物↔一个 Agent、共享对话框、切换替换上下文、过去一天上下文存储但 UI 清空；v1.11.2/1.11.3 建立宠物=Agent、多实例、工作区、会话、隔离与管理；ADR-0024 已闭合真实 Provider、极简聊天、统一日程列表与最终结果回流。**下一门槛仅为真实 Codex 实机验收，不以 Mock 替代。**Claude Code 接入等 M3 剩余扩展冻结。
+- M5：新的 Agent（外部 Agent 驱动的角色循环）——2026-08-07 已锁定方向（#27）：内核驱动 / 事件+兜底 / 先单角色；Journal/Task 全家桶保持外接 skill 不内置。2026-08-08 Agent 概念定稿（#65，ADR-0019）：每宠物↔一个 Agent、共享对话框、切换替换上下文、过去一天上下文存储但 UI 清空；v1.11.2/1.11.3 建立宠物=Agent、多实例、工作区、会话、隔离与管理；ADR-0024 已闭合真实 Provider、极简聊天、统一日程列表与最终结果回流；ADR-0025 增加 Claude Provider。当前门槛按 [Eval 检查点](./evals/README.md) 执行，不以 Mock 替代。
 - 悬而未决：图标区是否恢复拖动（当前为居中 2×5 固定）；多屏验证；毛玻璃在部分驱动下透明性（FOCUS_NO_ACRYLIC=1 降级开关）。
 
 ## 文档索引
 
-- 需求原话：docs/requirements-verbatim.md（#1–#78，只追加、不改历史原话）。
-- ADR：docs/decisions/ADR-0001~0024（0012=M4 工作流引擎；0017=工作流 v2；0018=画布收敛；0019=Agent 概念+工作流冻结；0020=工作流退化为 Agent 日程工具；0021=环状工作流执行语义；0022=M5 Agent 看板；0023=桌面锁；0024=Agent 对话与工作流闭合）。
+- 需求原话：docs/requirements-verbatim.md（#1–#82，只追加、不改历史原话）。
+- ADR：docs/decisions/ADR-0001~0025（0012=M4 工作流引擎；0017=工作流 v2；0018=画布收敛；0019=Agent 概念+工作流冻结；0020=工作流退化为 Agent 日程工具；0021=环状工作流执行语义；0022=M5 Agent 看板；0023=桌面锁；0024=Agent 对话与工作流闭合；0025=Claude Code Provider）。
 - 设计稿：local-focus-desktop-agent-design-v0.2.md（权威，保持原样、不移动、不改章节编号）。
+- 质量：[docs/evals/README.md](./evals/README.md)（长期检查点）与 [docs/production-incidents.md](./production-incidents.md)（生产事故台账）。
 - 其它：README.md（版本摘要）、docs/next-phase.md（路线）、docs/architecture/（spike/风险/可行性）。
-## v1.12.5 验收状态（2026-08-09）
+## 质量检查点状态（2026-08-10）
 
 - #74 已实现待验收：桌面锁串行化、启动时无状态 Shell 恢复、浮窗无激活显示，以及 Agent 初始化竞态修复。
 - 原生浮窗验收可运行 `scripts/window-style-probe.ps1`；结果应无 caption/thick frame，且内部浮窗不应为前台窗口。
+- 本轮自动化与真实 Claude 控制面证据已写入 [2026-08-10 快照](./evals/2026-08-10-claude-provider-checkpoint.md)；直接聊天、来源消息、宠物气泡、桌面锁手工回归保持 `Pending`，不得写成通过。
 
-## Agent 对话与工作流验收状态（2026-08-09）
+## Agent 对话与工作流验收状态（2026-08-10）
 
-- 实现与自动测试已完成；控制器仍须进行真实 Codex Admission：当前宠物完成一次真实对话，并由其经 focus-cli 创建、读取、更新、运行、删除唯一命名的临时手动工作流。
+- 实现与自动测试已完成；真实 Claude 控制面已完成一次对话和临时工作流 create/read/update/run/delete 闭环。聊天窗口直接发送与视觉回流仍须手工验收；Codex 认证状态不作为 Claude 验收替代条件。
 - 该工作流仅含目标为当前宠物的 Agent 节点、无桌面副作用；应得到一次合理真实回复、一次「日程 · 名称」来源消息与宠物泡泡、自动刷新的列表、成功运行记录，最后确认临时数据已删除。Provider 不可用、Mock 回退、重复消息或清理失败均不通过。

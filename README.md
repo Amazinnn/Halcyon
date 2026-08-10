@@ -1,10 +1,12 @@
 # Focus Desktop
-> 当前 Agent/工作流语义以 [ADR-0024](./docs/decisions/ADR-0024-agent-workflow-closure.md) 为准：正式桌面仅使用真实 Codex，聊天保持极简；工作流 Agent 只在允许显示结果时向目标 Agent 投递一条带来源的最终消息。
+> 当前 Agent/工作流语义以 [ADR-0024](./docs/decisions/ADR-0024-agent-workflow-closure.md) 与 [ADR-0025](./docs/decisions/ADR-0025-claude-code-provider.md) 为准：每个桌宠在设置页固定选择真实 Codex 或 Claude；聊天保持极简；工作流 Agent 只在允许显示结果时向目标 Agent 投递一条带来源的最终消息。
 > GitHub：https://github.com/Amazinnn/Halcyon.git（private）
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**v1.12.2（当前）**：四问题修复 = 浮窗浅蓝条（position_window 尺寸路径原生化 SWP_NOACTIVATE）、Agent 选择兜底（空列表重试 + 发送前校验 + 空保护）、锁接「开始专注」（专注开始锁/暂停/结束解锁，desktop_lock/unlock 命令）、VPN 修复验证；需求 #71。
+**当前检查点（2026-08-10）**：Claude Code 已作为第二个真实 Provider 接入；按“桌宠 × Provider”隔离当天 session，切换 Provider 清空当前 UI 会话并保留各自 session。自动化、重建与真实 Claude 控制面工作流闭环已验证；聊天视觉回流、浮窗样式与桌面锁仍按 [Eval 检查点](./docs/evals/README.md) 人工验收。需求 #79–#82，ADR-0025。
+
+**v1.12.6**：三档专注锁机（轻度 / 标准 / 学霸）与串行状态转换；暂停完整解锁、恢复按本轮模式重新锁定。v1.12.4：桌面锁恢复不依赖跨进程 `LOCKED`，强杀后 watchdog 无状态恢复 Shell。v1.12.3：浮窗统一无激活显示，避免淡蓝标题条复发。
 
 **v1.12**：桌面锁后端 = 隐藏任务栏（Shell_TrayWnd）+ 桌面图标（Progman）+ 禁键（Win/Alt+Tab/Alt+F4/Ctrl+Esc，低级键盘钩子）、focus-cli `desktop lock/unlock/status`、六层崩溃检测/逃生（panic hook / Drop / watchdog 子进程 / focus-cli / 逃生文件 / explorer 重启）、核心 + 开发期防御双模块（产品期删防御文件即移除）；需求 #70 + ADR-0023。UI 触发 v1.12.2 已接。
 
@@ -79,11 +81,15 @@ src-tauri\target\debug\focus-cli.exe timer status   # 本地控制面（需应�
 
 ## 首轮硬性边界（未做）
 
-内置独立 Agent（M3 改为嵌入真实 Codex CLI，见 ADR-0007）、plan mode/Diff/终端面板、Claude Code 接入（后续）、锁机、替换 Shell、私有虚拟桌面 API、真实音乐播放控制、浏览器追踪、云同步。
+内置独立 Agent（M3 改为嵌入真实 Codex/Claude CLI，见 ADR-0007/0025）、plan mode/Diff/终端面板、替换 Shell、私有虚拟桌面 API、真实音乐播放控制、浏览器追踪、云同步。
 
 ## 需求原话记录
 
 用户每次提出的新需求以原话记录在 `docs/requirements-verbatim.md`（只追加、不改历史条目）。
+
+## 质量检查点
+
+每轮任务结束前都必须更新 [`docs/evals/`](./docs/evals/README.md)：前端/Rust 改动运行完整构建与测试，按影响范围补真实 Provider、窗口或桌面锁验收，并保存日期快照。历史生产事故及其回归状态见 [`docs/production-incidents.md`](./docs/production-incidents.md)。
 
 ## 诊断
 
