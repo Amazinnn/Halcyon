@@ -14,14 +14,14 @@
 
 状态只能为 `Open`、`Fixed pending verification`、`Verified` 或 `Accepted limitation`。`Fixed pending verification` 不等于用户验收通过。
 
-## 统计（2026-08-10 基线）
+## 统计（2026-08-10 当前）
 
 | 维度 | 统计 |
 | --- | --- |
-| 总事故数 | 12 |
-| 状态 | Open 0；Fixed pending verification 9；Verified 2；Accepted limitation 1 |
-| 严重性 | S1 2；S2 8；S3 2 |
-| 类别 | Window 4；Automation 1；Data 1；Launch 1；Pet 1；Desktop lock 2；Agent/workflow 2 |
+| 总事故数 | 15 |
+| 状态 | Open 0；Fixed pending verification 12；Verified 2；Accepted limitation 1 |
+| 严重性 | S1 2；S2 11；S3 2 |
+| 类别 | Window 5；Automation 2；Data 1；Launch 1；Pet 1；Desktop lock 2；Agent/workflow 3 |
 | 缺少自动回归覆盖 | 3（INC-001、INC-002、INC-005）；其余为自动或部分自动覆盖，仍可能要求 Windows 手工验收。 |
 
 ## 记录
@@ -31,11 +31,11 @@
 | 字段 | 内容 |
 | --- | --- |
 | 类别 / 严重性 / 状态 | Window / S3 / Fixed pending verification |
-| 首次报告 | 2026-08-06，需求 #5；后续 #49、#71、#74 复发。 |
+| 首次报告 | 2026-08-06，需求 #5；后续 #49、#71、#74、#83、#84 复发。 |
 | 影响与复现 | 内部浮窗重新出现普通窗口标题区、白边或激活时的淡蓝条；移动、隐藏时曾伴随异常。 |
 | 根因证据 | 非客户区样式、Tauri 尺寸路径和窗口激活路径曾分别遗留边框或 caption 高亮；见 ADR-0015、`157d173`、`7e97c1c`、`aef2512`。 |
-| 修复 | 清除完整边框样式、以 `WS_POPUP` 显示；尺寸和显示路径使用 `SWP_NOACTIVATE` / `WS_EX_NOACTIVATE`。 |
-| 验证与回归 | `scripts/window-style-probe.ps1` 和连续窗口交互手测；当前无自动 Windows 风格回归。关联 Eval：`evals/2026-08-10-claude-provider-checkpoint.md`。 |
+| 修复 | 清除完整边框样式、以 `WS_POPUP` 显示；隐藏创建后先配置非客户区和无激活样式，恢复、移动、缩放、置顶统一使用 `SetWindowPos(...SWP_NOACTIVATE)`。 |
+| 验证与回归 | `scripts/window-style-probe.ps1` 采集宿主/子窗口 style、exstyle、client/outer rect 与前台状态。2026-08-10 release 中所有浮窗宿主为 `WS_POPUP`、无 caption/thick frame 且未进入前台；淡蓝条仍待用户视觉复现闭环，关联 Eval：`evals/2026-08-10-window-regression-checkpoint.md`。 |
 
 ### INC-002 频繁打开或点击内部窗口导致 Focus 卡死
 
@@ -157,3 +157,36 @@
 | 根因证据 | 原实现缺少真实 Provider admission；Mock 成功不构成产品证据。见 ADR-0024/0025。 |
 | 修复 | 正式路径禁用 Mock 自动回退；接入 Claude Runtime、Provider 隔离 session 与最终结果回流。 |
 | 验证与回归 | 真实 Claude 已完成一次合理回复及 `focus-cli` 工作流 CRUD/运行/删除闭环；聊天窗口来源消息和宠物气泡仍待人工验收。 |
+
+### INC-013 同日聊天历史缺失且 Claude 每轮新建进程
+
+| 字段 | 内容 |
+| --- | --- |
+| 类别 / 严重性 / 状态 | Agent/workflow / S2 / Fixed pending verification |
+| 首次报告 | 2026-08-10，需求 #83。 |
+| 影响与复现 | 同一宠物当天重新打开聊天时没有可见历史；每次发送都像一次性新会话，无法稳定进行连续追问。 |
+| 根因证据 | SQLite 只保存 Provider session id，不保存可见消息；Claude Runtime 每个 turn 都启动新 CLI 进程，虽可 resume 但不保持 Focus 运行期间的进程上下文。 |
+| 修复 | 可见消息按宠物 x Provider x 本地日期落库并回放；Claude 改为 stdin `stream-json` 常驻进程，Focus 重启后只在首轮 `--resume`。 |
+| 验证与回归 | Rust 覆盖常驻多轮输入、取消后恢复、首轮 resume；前端覆盖 Provider 隔离回放、生命周期消息移除及跨午夜只写当天历史。仍待真实 Claude 三轮追问和 Focus 重启后的上下文恢复，关联 ADR-0026 与 `evals/2026-08-10-window-regression-checkpoint.md`。 |
+
+### INC-014 定时工作流重入遗留重复 `running` 记录
+
+| 字段 | 内容 |
+| --- | --- |
+| 类别 / 严重性 / 状态 | Automation / S2 / Fixed pending verification |
+| 首次报告 | 2026-08-10，需求 #83 的每周计划 release 验收中发现。 |
+| 影响与复现 | 已调度的工作流仍在运行时，每个 15 秒 scheduler tick 都插入一条新的 `running` 记录；实际节点只执行一次，但运行历史被污染且 UI 显示多个永不完成的条目。 |
+| 根因证据 | 旧 `run_workflow` 先持久化运行记录，`start_run` 随后发现 `running` 已含该工作流时返回 `Ok(())`；scheduler 忽略返回值。真实 release 在一个临时 Agent 日程中连续留下 13 条记录。 |
+| 修复 | 在持久化前原子领取 workflow id；未领取时直接返回“工作流正在运行”，启动函数只接受已领取的运行。写入失败会释放领取。 |
+| 验证与回归 | Rust 回归 `workflow_run_claim_prevents_scheduler_reentry_until_released`；重建 release 中临时每周 wait 日程运行 35 秒期间始终只有 1 条记录并以 success 收束，随后已删除。真实 Claude 日程仍受当前 Provider admission 阻塞，关联本轮 Eval。 |
+
+### INC-015 恢复浮窗时允许与现有窗口重叠
+
+| 字段 | 内容 |
+| --- | --- |
+| 类别 / 严重性 / 状态 | Window / S2 / Fixed pending verification |
+| 首次报告 | 2026-08-10，需求 #85。 |
+| 影响与复现 | 已有 chat、stats、pet 可见时，从视图托盘打开 music 或 workflow；保存位置无空位时，窗口仍以原位置显示并与其他窗口大面积重叠。 |
+| 根因证据 | `restore_window()` 调用 `find_free_slot()` 后只处理 `Some`，`None` 仍先移除 `collapsed` 并显示窗口。release 探针曾记录 workflow `155,105 933x527` 与 stats `311,211 778x421` 重叠。 |
+| 修复 | `GridManager::restore_slot()` 把无空位表示为明确失败；恢复在状态持久化前完成槽位决策。无空位时维持折叠，前端显示“没有可用位置，请先折叠一个窗口”。 |
+| 验证与回归 | Rust 覆盖满格拒绝；release UI Automation 验证打开 music 时提示可见、music 保持折叠；折叠 chat 后打开 music，三个可见浮窗的矩形两两不重叠。关联需求 #85 与 `evals/2026-08-10-window-regression-checkpoint.md`。 |

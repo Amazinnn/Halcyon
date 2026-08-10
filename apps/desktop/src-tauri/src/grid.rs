@@ -3,6 +3,7 @@
 
 use crate::settings::GridRect;
 use serde::Serialize;
+use std::collections::HashMap;
 
 pub const GRID_COLS: usize = 12;
 pub const GRID_ROWS: usize = 8;
@@ -120,6 +121,43 @@ impl GridManager {
         best.map(|(_, r)| r)
     }
 
+    /// Resolve the slot for a collapsed window before making it visible.
+    /// A full grid is an explicit refusal, never permission to overlap.
+    pub fn restore_slot(
+        &self,
+        label: &str,
+        desired: &GridRect,
+        occupied: &[GridRect],
+    ) -> Result<GridRect, ()> {
+        self.find_free_slot(label, desired, occupied).ok_or(())
+    }
+
+    /// Reconcile persisted visible floats before they are shown at startup.
+    /// Restores use the same nearest-free-slot rule; startup must not bypass it.
+    pub fn reconcile_visible_rects(
+        &self,
+        saved: &[(String, GridRect)],
+        collapsed: &[String],
+    ) -> (HashMap<String, GridRect>, Vec<String>) {
+        let mut resolved = HashMap::new();
+        let mut occupied = Vec::new();
+        let mut overflow = Vec::new();
+
+        for (label, desired) in saved {
+            if collapsed.contains(label) {
+                continue;
+            }
+            if let Some(rect) = self.find_free_slot(label, desired, &occupied) {
+                occupied.push(rect);
+                resolved.insert(label.clone(), rect);
+            } else {
+                overflow.push(label.clone());
+            }
+        }
+
+        (resolved, overflow)
+    }
+
 }
 
 pub fn overlap(a: &GridRect, b: &GridRect) -> bool {
@@ -208,6 +246,37 @@ mod tests {
             }
         }
         assert!(g.find_free_slot("music", &rect(1, 1, 3, 3), &occupied).is_none());
+    }
+
+    #[test]
+    fn restore_slot_refuses_to_overlap_when_the_grid_has_no_space() {
+        let g = gm();
+        let mut occupied = Vec::new();
+        for c in (0..GRID_COLS).step_by(3) {
+            for r in (0..GRID_ROWS).step_by(3) {
+                occupied.push(rect(c, r, 3, 3));
+            }
+        }
+
+        assert!(g
+            .restore_slot("music", &rect(1, 1, 3, 3), &occupied)
+            .is_err());
+    }
+
+    #[test]
+    fn reconcile_visible_rects_moves_a_saved_overlap_to_a_free_slot() {
+        let g = gm();
+        let saved = vec![
+            ("chat".to_string(), rect(0, 0, 3, 3)),
+            ("stats".to_string(), rect(0, 0, 3, 3)),
+        ];
+
+        let (resolved, overflow) = g.reconcile_visible_rects(&saved, &[]);
+
+        assert_eq!(resolved["chat"], rect(0, 0, 3, 3));
+        assert_eq!(resolved["stats"], rect(0, 3, 3, 3));
+        assert!(!overlap(&resolved["chat"], &resolved["stats"]));
+        assert!(overflow.is_empty());
     }
 
     #[test]

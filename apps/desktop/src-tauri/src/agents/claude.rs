@@ -21,8 +21,7 @@ use crate::workflow_engine::engine::AgentDisplay;
 
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 
-pub const FOCUS_CLI_SKILL: &str =
-    include_str!("../assets/agent-skills/focus-cli/SKILL.md");
+pub const FOCUS_CLI_SKILL: &str = include_str!("../assets/agent-skills/focus-cli/SKILL.md");
 
 pub fn find_claude_exe() -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
@@ -58,10 +57,7 @@ pub fn install_focus_cli_skill() -> Result<PathBuf, String> {
     install_focus_cli_skill_into(Path::new(&home))
 }
 
-fn claude_path_with_focus_cli(
-    focus_exe: &Path,
-    existing_path: Option<OsString>,
-) -> OsString {
+fn claude_path_with_focus_cli(focus_exe: &Path, existing_path: Option<OsString>) -> OsString {
     let mut paths = focus_exe
         .parent()
         .map(|parent| vec![parent.to_path_buf()])
@@ -72,9 +68,11 @@ fn claude_path_with_focus_cli(
     std::env::join_paths(paths).unwrap_or_else(|_| existing_path.unwrap_or_default())
 }
 
-fn claude_turn_args(prompt: &str, resume_session: Option<&str>) -> Vec<OsString> {
+fn claude_resident_args(resume_session: Option<&str>) -> Vec<OsString> {
     let mut args = vec![
         OsString::from("-p"),
+        OsString::from("--input-format"),
+        OsString::from("stream-json"),
         OsString::from("--output-format"),
         OsString::from("stream-json"),
         OsString::from("--include-partial-messages"),
@@ -84,8 +82,15 @@ fn claude_turn_args(prompt: &str, resume_session: Option<&str>) -> Vec<OsString>
         args.push(OsString::from("--resume"));
         args.push(OsString::from(session_id));
     }
-    let _ = prompt;
     args
+}
+
+fn claude_input_line(prompt: &str) -> String {
+    json!({
+        "type": "user",
+        "message": { "role": "user", "content": prompt },
+    })
+    .to_string()
 }
 
 fn claude_turn_prompt(prompt: &str) -> String {
@@ -102,9 +107,8 @@ fn command_for(executable: &Path, args: &[OsString]) -> Command {
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"));
     let command = if is_cmd {
-        let mut command = Command::new(
-            std::env::var_os("COMSPEC").unwrap_or_else(|| OsString::from("cmd.exe")),
-        );
+        let mut command =
+            Command::new(std::env::var_os("COMSPEC").unwrap_or_else(|| OsString::from("cmd.exe")));
         let invocation = std::iter::once(executable.as_os_str())
             .chain(args.iter().map(OsString::as_os_str))
             .map(cmd_quote)
@@ -127,8 +131,20 @@ fn command_for(executable: &Path, args: &[OsString]) -> Command {
 }
 
 fn kill_and_reap(child: &mut Child) {
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+fn resident_is_current<T>(current: Option<&Arc<T>>, reader: &Arc<T>) -> bool {
+    current.is_some_and(|current| Arc::ptr_eq(current, reader))
 }
 
 struct TurnState {
@@ -144,12 +160,7 @@ struct TurnState {
 }
 
 impl TurnState {
-    fn new(
-        sequence: u64,
-        character_id: String,
-        session_id: String,
-        display: AgentDisplay,
-    ) -> Self {
+    fn new(sequence: u64, character_id: String, session_id: String, display: AgentDisplay) -> Self {
         Self {
             sequence,
             character_id,
@@ -203,12 +214,19 @@ impl Shared {
             return Err(ACTIVE_TURN_ERROR.to_string());
         }
         let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
-        let session_id = format!(
-            "focus-claude-{}-{}-{}",
-            self.character_id,
-            std::process::id(),
-            sequence
-        );
+        let session_id = self
+            .current_thread
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| {
+                format!(
+                    "focus-claude-{}-{}-{}",
+                    self.character_id,
+                    std::process::id(),
+                    sequence
+                )
+            });
         let turn = Arc::new(TurnState::new(
             sequence,
             self.character_id.clone(),
@@ -234,8 +252,13 @@ pub struct ClaudeProvider {
     tx: Sender<CoreEvent>,
     exe_path: PathBuf,
     shared: Arc<Shared>,
-    children: Arc<Mutex<HashMap<u64, Child>>>,
+    resident: Arc<Mutex<Option<Arc<ResidentProcess>>>>,
     turn_done: Arc<tokio::sync::broadcast::Sender<TurnDone>>,
+}
+
+struct ResidentProcess {
+    child: Mutex<Child>,
+    stdin: Mutex<Option<std::process::ChildStdin>>,
 }
 
 impl ClaudeProvider {
@@ -249,7 +272,7 @@ impl ClaudeProvider {
             tx,
             exe_path,
             shared: Arc::new(Shared::new(character_id, workspace_dir)),
-            children: Arc::new(Mutex::new(HashMap::new())),
+            resident: Arc::new(Mutex::new(None)),
             turn_done: Arc::new(tokio::sync::broadcast::channel::<TurnDone>(64).0),
         }
     }
@@ -262,7 +285,41 @@ impl ClaudeProvider {
         self.shared.active_turn.lock().unwrap().is_some()
     }
 
-    fn spawn_turn(
+    fn resident_turn_info(&self, turn: &TurnState) -> AgentThreadInfo {
+        AgentThreadInfo {
+            id: self
+                .shared
+                .current_thread
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| turn.session_id()),
+            preview: String::new(),
+            cwd: self.shared.workspace_dir.lock().unwrap().clone(),
+            status: "running".to_string(),
+            updated_at: chrono::Utc::now().timestamp(),
+            automation: false,
+        }
+    }
+
+    fn write_resident_turn(&self, resident: &ResidentProcess, prompt: &str) -> Result<(), String> {
+        let input = claude_input_line(&claude_turn_prompt(prompt));
+        let mut stdin = resident.stdin.lock().unwrap();
+        let stdin = stdin
+            .as_mut()
+            .ok_or_else(|| "Claude stdin is closed".to_string())?;
+        writeln!(stdin, "{input}")
+            .and_then(|_| stdin.flush())
+            .map_err(|error| format!("Claude prompt write failed: {error}"))
+    }
+
+    fn stop_resident(resident: &ResidentProcess) {
+        let _ = resident.stdin.lock().unwrap().take();
+        let mut child = resident.child.lock().unwrap();
+        kill_and_reap(&mut child);
+    }
+
+    fn start_resident_turn(
         &mut self,
         workspace_dir: &str,
         prompt: &str,
@@ -273,19 +330,29 @@ impl ClaudeProvider {
         if !workspace_dir.trim().is_empty() {
             *self.shared.workspace_dir.lock().unwrap() = workspace_dir.trim().to_string();
         }
-        if let Err(error) = install_focus_cli_skill() {
-            eprintln!("[claude] focus-cli skill 安装跳过: {error}");
+
+        let existing_resident = self.resident.lock().unwrap().clone();
+        if let Some(resident) = existing_resident {
+            if let Err(error) = self.write_resident_turn(&resident, prompt) {
+                Self::stop_resident(&resident);
+                *self.resident.lock().unwrap() = None;
+                self.shared.release_turn(turn.sequence);
+                return Err(error);
+            }
+            return Ok(self.resident_turn_info(&turn));
         }
 
-        let args = claude_turn_args(prompt, resume_session);
-        let full_prompt = claude_turn_prompt(prompt);
-        let mut command = command_for(&self.exe_path, &args);
+        if let Err(error) = install_focus_cli_skill() {
+            eprintln!("[claude] focus-cli skill install skipped: {error}");
+        }
+        let args = claude_resident_args(resume_session);
+        let workspace = self.shared.workspace_dir.lock().unwrap().clone();
         let focus_thread = resume_session
             .filter(|session_id| !session_id.trim().is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| turn.session_id());
+        let mut command = command_for(&self.exe_path, &args);
         command.env("FOCUS_AGENT_THREAD", focus_thread);
-        let workspace = self.shared.workspace_dir.lock().unwrap().clone();
         if !workspace.trim().is_empty() {
             command.current_dir(&workspace);
         }
@@ -304,41 +371,34 @@ impl ClaudeProvider {
             Ok(child) => child,
             Err(error) => {
                 self.shared.release_turn(turn.sequence);
-                return Err(format!("Claude CLI 启动失败: {error}"));
+                return Err(format!("Claude CLI launch failed: {error}"));
             }
         };
-        let Some(mut stdin) = child.stdin.take() else {
+        let Some(stdin) = child.stdin.take() else {
             kill_and_reap(&mut child);
             self.shared.release_turn(turn.sequence);
-            return Err("Claude stdin 不可用".to_string());
+            return Err("Claude stdin is unavailable".to_string());
         };
         let Some(stdout) = child.stdout.take() else {
-            drop(stdin);
             kill_and_reap(&mut child);
             self.shared.release_turn(turn.sequence);
-            return Err("Claude stdout 不可用".to_string());
+            return Err("Claude stdout is unavailable".to_string());
         };
         let Some(stderr) = child.stderr.take() else {
-            drop(stdin);
-            drop(stdout);
             kill_and_reap(&mut child);
             self.shared.release_turn(turn.sequence);
-            return Err("Claude stderr 不可用".to_string());
+            return Err("Claude stderr is unavailable".to_string());
         };
-        if let Err(error) = stdin.write_all(full_prompt.as_bytes()) {
-            drop(stdin);
-            drop(stdout);
-            drop(stderr);
-            kill_and_reap(&mut child);
-            self.shared.release_turn(turn.sequence);
-            return Err(format!("Claude 提示词写入失败: {error}"));
-        }
-        drop(stdin);
-        self.children.lock().unwrap().insert(turn.sequence, child);
 
+        let resident = Arc::new(ResidentProcess {
+            child: Mutex::new(child),
+            stdin: Mutex::new(Some(stdin)),
+        });
+        *self.resident.lock().unwrap() = Some(resident.clone());
+        let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<String, String>>();
         let stderr_capture = Arc::new(Mutex::new(String::new()));
         let stderr_for_reader = stderr_capture.clone();
-        let stderr_reader = std::thread::spawn(move || {
+        let _stderr_reader = std::thread::spawn(move || {
             let mut reader = BufReader::new(stderr);
             let mut text = String::new();
             if reader.read_to_string(&mut text).is_ok() && !text.trim().is_empty() {
@@ -347,41 +407,51 @@ impl ClaudeProvider {
             }
         });
 
-        let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<String, String>>();
         let tx = self.tx.clone();
         let done = self.turn_done.clone();
         let shared = self.shared.clone();
-        let children = self.children.clone();
-        let reader_turn = turn.clone();
+        let residents = self.resident.clone();
+        let reader_resident = resident.clone();
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             let mut init_tx = Some(init_tx);
             for line in reader.lines() {
-                let Ok(line) = line else {
-                    break;
-                };
+                if !resident_is_current(residents.lock().unwrap().as_ref(), &reader_resident) {
+                    return;
+                }
+                let Ok(line) = line else { break };
                 let Ok(message) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                let initialized = dispatch_stream_message(&tx, &reader_turn, &done, message);
+                let active = shared.active_turn.lock().unwrap().clone();
+                let Some(active) = active else { continue };
+                let initialized = dispatch_stream_message(&tx, &active, &done, message.clone());
                 if let Some(session_id) = initialized {
                     *shared.current_thread.lock().unwrap() = Some(session_id.clone());
                     if let Some(sender) = init_tx.take() {
                         let _ = sender.send(Ok(session_id));
                     }
                 }
+                if message.get("type").and_then(Value::as_str) == Some("result") {
+                    shared.release_turn(active.sequence);
+                }
             }
-
-            let _ = stderr_reader.join();
             let stderr = stderr_capture.lock().unwrap().trim().to_string();
-            finish_after_eof(&tx, &reader_turn, &done, &stderr);
-            if let Some(mut child) = children.lock().unwrap().remove(&reader_turn.sequence) {
-                let _ = child.wait();
+            let is_current_resident =
+                resident_is_current(residents.lock().unwrap().as_ref(), &reader_resident);
+            if !is_current_resident {
+                return;
             }
-            shared.release_turn(reader_turn.sequence);
+            let active_after_eof = shared.active_turn.lock().unwrap().clone();
+            if let Some(active) = active_after_eof {
+                finish_after_eof(&tx, &active, &done, &stderr);
+                shared.release_turn(active.sequence);
+            }
+            *residents.lock().unwrap() = None;
+            let _ = reader_resident.child.lock().unwrap().wait();
             if let Some(sender) = init_tx.take() {
                 let message = if stderr.is_empty() {
-                    "Claude CLI 在返回会话 id 前退出".to_string()
+                    "Claude CLI exited before session initialization".to_string()
                 } else {
                     stderr
                 };
@@ -389,39 +459,29 @@ impl ClaudeProvider {
             }
         });
 
-        let session_id = match init_rx.recv_timeout(START_TIMEOUT) {
-            Ok(Ok(session_id)) => session_id,
-            Ok(Err(error)) => return Err(error),
+        if let Err(error) = self.write_resident_turn(&resident, prompt) {
+            Self::stop_resident(&resident);
+            *self.resident.lock().unwrap() = None;
+            self.shared.release_turn(turn.sequence);
+            return Err(error);
+        }
+        match init_rx.recv_timeout(START_TIMEOUT) {
+            Ok(Ok(_)) => Ok(self.resident_turn_info(&turn)),
+            Ok(Err(error)) => Err(error),
             Err(_) => {
                 turn.mark_interrupted();
-                if let Some(child) = self.children.lock().unwrap().get_mut(&turn.sequence) {
-                    let _ = child.kill();
-                }
-                finish_error(
-                    &self.tx,
-                    &turn,
-                    &self.turn_done,
-                    "Claude CLI 启动超时",
-                );
-                return Err("Claude CLI 启动超时".to_string());
+                Self::stop_resident(&resident);
+                self.shared.release_turn(turn.sequence);
+                Err("Claude CLI initialization timed out".to_string())
             }
-        };
-
-        Ok(AgentThreadInfo {
-            id: session_id,
-            preview: String::new(),
-            cwd: workspace,
-            status: "running".to_string(),
-            updated_at: chrono::Utc::now().timestamp(),
-            automation: false,
-        })
+        }
     }
 }
 
 impl Drop for ClaudeProvider {
     fn drop(&mut self) {
-        for child in self.children.lock().unwrap().values_mut() {
-            let _ = child.kill();
+        if let Some(resident) = self.resident.lock().unwrap().take() {
+            Self::stop_resident(&resident);
         }
     }
 }
@@ -433,7 +493,7 @@ impl AgentProvider for ClaudeProvider {
         initial_message: &str,
         display: AgentDisplay,
     ) -> Result<AgentThreadInfo, String> {
-        self.spawn_turn(workspace_dir, initial_message, None, display)
+        self.start_resident_turn(workspace_dir, initial_message, None, display)
     }
 
     fn resume_thread(&mut self, thread_id: &str) -> Result<AgentThreadInfo, String> {
@@ -457,8 +517,17 @@ impl AgentProvider for ClaudeProvider {
         text: &str,
         display: AgentDisplay,
     ) -> Result<AgentThreadInfo, String> {
+        if self.shared.active_turn.lock().unwrap().is_some() {
+            return Err(ACTIVE_TURN_ERROR.to_string());
+        }
+        *self.shared.current_thread.lock().unwrap() = Some(thread_id.to_string());
         let workspace = self.shared.workspace_dir.lock().unwrap().clone();
-        self.spawn_turn(&workspace, text, Some(thread_id), display)
+        let resume = if self.resident.lock().unwrap().is_some() {
+            None
+        } else {
+            Some(thread_id)
+        };
+        self.start_resident_turn(&workspace, text, resume, display)
     }
 
     fn list_threads(&mut self) -> Result<Vec<AgentThreadInfo>, String> {
@@ -480,14 +549,18 @@ impl AgentProvider for ClaudeProvider {
         }])
     }
 
-    fn send(
-        &mut self,
-        thread_id: &str,
-        text: &str,
-        display: AgentDisplay,
-    ) -> Result<(), String> {
+    fn send(&mut self, thread_id: &str, text: &str, display: AgentDisplay) -> Result<(), String> {
+        if self.shared.active_turn.lock().unwrap().is_some() {
+            return Err(ACTIVE_TURN_ERROR.to_string());
+        }
+        *self.shared.current_thread.lock().unwrap() = Some(thread_id.to_string());
         let workspace = self.shared.workspace_dir.lock().unwrap().clone();
-        self.spawn_turn(&workspace, text, Some(thread_id), display)?;
+        let resume = if self.resident.lock().unwrap().is_some() {
+            None
+        } else {
+            Some(thread_id)
+        };
+        self.start_resident_turn(&workspace, text, resume, display)?;
         Ok(())
     }
 
@@ -496,17 +569,15 @@ impl AgentProvider for ClaudeProvider {
         let Some(turn) = active else {
             return Ok(());
         };
-        let current_thread = self.shared.current_thread.lock().unwrap().clone();
-        if current_thread.as_deref().is_some_and(|current| current != thread_id) {
-            return Ok(());
-        }
+        let _ = thread_id;
         turn.mark_interrupted();
-        if let Some(child) = self.children.lock().unwrap().get_mut(&turn.sequence) {
-            child
-                .kill()
-                .map_err(|error| format!("Claude CLI 中断失败: {error}"))?;
+        let existing_resident = self.resident.lock().unwrap().clone();
+        if let Some(resident) = existing_resident {
+            Self::stop_resident(&resident);
+            *self.resident.lock().unwrap() = None;
         }
         finish_after_eof(&self.tx, &turn, &self.turn_done, "");
+        self.shared.release_turn(turn.sequence);
         Ok(())
     }
 }
@@ -613,11 +684,7 @@ fn handle_stream_event(tx: &Sender<CoreEvent>, turn: &TurnState, event: &Value) 
             };
             *first = true;
             if allowed {
-                emit_envelope(
-                    tx,
-                    turn,
-                    json!({ "type": "message.delta", "text": text }),
-                );
+                emit_envelope(tx, turn, json!({ "type": "message.delta", "text": text }));
             }
         }
         "content_block_start" => {
@@ -756,11 +823,7 @@ fn finish_success(
     });
 }
 
-fn finish_cancelled(
-    tx: &Sender<CoreEvent>,
-    turn: &TurnState,
-    turn_done: &Sender<TurnDone>,
-) {
+fn finish_cancelled(tx: &Sender<CoreEvent>, turn: &TurnState, turn_done: &Sender<TurnDone>) {
     if !begin_terminal(turn) {
         return;
     }
@@ -967,14 +1030,28 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let shim = dir.join("claude.cmd");
         std::fs::write(
+            dir.join("claude.ps1"),
+            concat!(
+                "$promptPath = Join-Path $PSScriptRoot 'prompt.txt'\r\n",
+                "$argsPath = Join-Path $PSScriptRoot 'args.txt'\r\n",
+                "[IO.File]::AppendAllText($argsPath, (($args -join ' ') + [Environment]::NewLine))\r\n",
+                "[Console]::Out.WriteLine('{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-shim-session\"}')\r\n",
+                "[Console]::Out.Flush()\r\n",
+                "while (($line = [Console]::In.ReadLine()) -ne $null) {\r\n",
+                "  [IO.File]::AppendAllText($promptPath, $line + [Environment]::NewLine)\r\n",
+                "  if ($line -match 'hold-open') { continue }\r\n",
+                "  [Console]::Out.WriteLine('{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"claude-shim-session\",\"result\":\"done\"}')\r\n",
+                "  [Console]::Out.Flush()\r\n",
+                "}\r\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
             &shim,
             concat!(
                 "@echo off\r\n",
-                "more > \"%~dp0prompt.txt\"\r\n",
                 "echo %FOCUS_AGENT_THREAD%> \"%~dp0thread.txt\"\r\n",
-                "echo {\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-shim-session\"}\r\n",
-                "echo {\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"claude-shim-session\",\"result\":\"done\"}\r\n",
-                "for /L %%i in (1,1,10000000) do @rem\r\n",
+                "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0claude.ps1\" %*\r\n",
             ),
         )
         .unwrap();
@@ -982,9 +1059,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn wait_for_turn_done(
-        receiver: &mut tokio::sync::broadcast::Receiver<TurnDone>,
-    ) -> TurnDone {
+    fn wait_for_turn_done(receiver: &mut tokio::sync::broadcast::Receiver<TurnDone>) -> TurnDone {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             match receiver.try_recv() {
@@ -1000,23 +1075,6 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn wait_until_idle(provider: &mut ClaudeProvider) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let idle = provider
-                .list_threads()
-                .unwrap()
-                .first()
-                .is_some_and(|thread| thread.status == "idle");
-            if idle {
-                return;
-            }
-            assert!(std::time::Instant::now() < deadline, "Claude child was not reaped");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    #[cfg(windows)]
     #[test]
     fn claude_cmd_receives_prompt_over_stdin_without_shell_expansion() {
         let (dir, shim) = claude_cmd_shim();
@@ -1028,18 +1086,22 @@ mod tests {
             dir.to_string_lossy().into_owned(),
         );
         let prompt = r#"literal \"quotes\" %PATH% & | < > ^ !"#;
-        let thread = provider
+        let mut done = provider.subscribe_turn_done();
+        let _thread = provider
             .start_thread(&dir.to_string_lossy(), prompt, full_display())
             .unwrap();
+        assert_eq!(wait_for_turn_done(&mut done).status, "completed");
 
-        let captured = std::fs::read(dir.join("prompt.txt")).unwrap();
+        let captured = std::fs::read_to_string(dir.join("prompt.txt")).unwrap();
+        let input: Value = serde_json::from_str(captured.lines().next().unwrap()).unwrap();
         assert!(
-            captured.windows(prompt.len()).any(|window| window == prompt.as_bytes()),
+            input["message"]["content"]
+                .as_str()
+                .is_some_and(|content| content.contains(prompt)),
             "the literal ASCII prompt was not preserved"
         );
-        provider.interrupt(&thread.id).unwrap();
-        wait_until_idle(&mut provider);
-        std::fs::remove_dir_all(dir).unwrap();
+        drop(provider);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[cfg(windows)]
@@ -1059,11 +1121,109 @@ mod tests {
             .unwrap();
         assert_eq!(wait_for_turn_done(&mut done).status, "completed");
 
-        let busy = provider.resume_and_send(&thread.id, "second", full_display());
-        assert_eq!(busy.unwrap_err(), ACTIVE_TURN_ERROR);
+        let resumed = provider
+            .resume_and_send(&thread.id, "second", full_display())
+            .unwrap();
+        assert_eq!(resumed.id, thread.id);
+        assert_eq!(wait_for_turn_done(&mut done).status, "completed");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("prompt.txt"))
+                .unwrap()
+                .lines()
+                .count(),
+            2,
+            "two turns must share one resident stdin stream"
+        );
+        drop(provider);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn claude_new_provider_resumes_the_saved_session_on_its_first_turn() {
+        let (dir, shim) = claude_cmd_shim();
+        let (tx, _) = tokio::sync::broadcast::channel::<CoreEvent>(32);
+        let mut first_provider = ClaudeProvider::new(
+            tx.clone(),
+            shim.clone(),
+            "char-claude".into(),
+            dir.to_string_lossy().into_owned(),
+        );
+        let mut first_done = first_provider.subscribe_turn_done();
+        let first_thread = first_provider
+            .start_thread(&dir.to_string_lossy(), "first turn", full_display())
+            .unwrap();
+        assert_eq!(wait_for_turn_done(&mut first_done).status, "completed");
+        drop(first_provider);
+
+        let mut restarted_provider = ClaudeProvider::new(
+            tx,
+            shim,
+            "char-claude".into(),
+            dir.to_string_lossy().into_owned(),
+        );
+        let mut restarted_done = restarted_provider.subscribe_turn_done();
+        restarted_provider
+            .resume_and_send(&first_thread.id, "after Focus restart", full_display())
+            .unwrap();
+        assert_eq!(wait_for_turn_done(&mut restarted_done).status, "completed");
+
+        let invocations: Vec<_> = std::fs::read_to_string(dir.join("args.txt"))
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(invocations.len(), 2);
+        assert!(!invocations[0].contains("--resume"));
+        assert!(
+            invocations[1].contains("--resume claude-shim-session"),
+            "the restarted provider must resume the saved provider session: {}",
+            invocations[1]
+        );
+
+        drop(restarted_provider);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn claude_interruption_restarts_with_saved_session_and_accepts_the_next_turn() {
+        let (dir, shim) = claude_cmd_shim();
+        let (tx, _) = tokio::sync::broadcast::channel::<CoreEvent>(32);
+        let mut provider = ClaudeProvider::new(
+            tx,
+            shim,
+            "char-claude".into(),
+            dir.to_string_lossy().into_owned(),
+        );
+        let mut done = provider.subscribe_turn_done();
+        let thread = provider
+            .start_thread(&dir.to_string_lossy(), "hold-open", full_display())
+            .unwrap();
+
         provider.interrupt(&thread.id).unwrap();
-        wait_until_idle(&mut provider);
-        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(wait_for_turn_done(&mut done).status, "interrupted");
+
+        provider
+            .send(&thread.id, "continue after cancel", full_display())
+            .unwrap();
+        assert_eq!(wait_for_turn_done(&mut done).status, "completed");
+
+        let invocations: Vec<_> = std::fs::read_to_string(dir.join("args.txt"))
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(invocations.len(), 2, "cancel must replace the resident CLI");
+        assert!(!invocations[0].contains("--resume"));
+        assert!(
+            invocations[1].contains("--resume claude-shim-session"),
+            "the replacement CLI must restore the saved provider session: {}",
+            invocations[1]
+        );
+
+        drop(provider);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[cfg(windows)]
@@ -1121,10 +1281,10 @@ mod tests {
             "char-second".into(),
             second_dir.to_string_lossy().into_owned(),
         );
-        let first_thread = first
+        let _first_thread = first
             .start_thread(&first_dir.to_string_lossy(), "first", full_display())
             .unwrap();
-        let second_thread = second
+        let _second_thread = second
             .start_thread(&second_dir.to_string_lossy(), "second", full_display())
             .unwrap();
         let first_env = std::fs::read_to_string(first_dir.join("thread.txt"))
@@ -1141,12 +1301,10 @@ mod tests {
         assert_ne!(first_env, second_env);
         assert_eq!(std::fs::read(&marker).unwrap(), b"codex-sentinel");
 
-        first.interrupt(&first_thread.id).unwrap();
-        second.interrupt(&second_thread.id).unwrap();
-        wait_until_idle(&mut first);
-        wait_until_idle(&mut second);
-        std::fs::remove_dir_all(first_dir).unwrap();
-        std::fs::remove_dir_all(second_dir).unwrap();
+        drop(first);
+        drop(second);
+        let _ = std::fs::remove_dir_all(first_dir);
+        let _ = std::fs::remove_dir_all(second_dir);
     }
 
     #[test]
@@ -1159,22 +1317,69 @@ mod tests {
     }
 
     #[test]
+    fn claude_resident_protocol_uses_realtime_input_and_one_json_line_per_turn() {
+        let args = claude_resident_args(Some("claude-session-1"));
+        let args: Vec<_> = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--input-format", "stream-json"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--output-format", "stream-json"]));
+        assert_eq!(
+            args[args.iter().position(|arg| arg == "--resume").unwrap() + 1],
+            "claude-session-1"
+        );
+
+        let input: Value = serde_json::from_str(&claude_input_line("next question")).unwrap();
+        assert_eq!(input["type"], "user");
+        assert_eq!(input["message"]["role"], "user");
+        assert_eq!(input["message"]["content"], "next question");
+    }
+
+    #[test]
+    fn stale_resident_reader_never_owns_a_replacement_process() {
+        let old = Arc::new(());
+        let replacement = Arc::new(());
+
+        assert!(resident_is_current(Some(&old), &old));
+        assert!(!resident_is_current(Some(&replacement), &old));
+        assert!(!resident_is_current(None, &old));
+    }
+
+    #[test]
     fn claude_command_uses_stream_json_and_resumes_only_saved_sessions() {
-        let new_args = claude_turn_args("hello", None);
+        let new_args = claude_resident_args(None);
         let new_args: Vec<_> = new_args
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(&new_args[..4], ["-p", "--output-format", "stream-json", "--include-partial-messages"]);
+        assert_eq!(
+            &new_args[..6],
+            [
+                "-p",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--include-partial-messages"
+            ]
+        );
         assert!(new_args.contains(&"--verbose".to_string()));
         assert!(!new_args.contains(&"--resume".to_string()));
 
-        let resumed_args = claude_turn_args("again", Some("claude-session-1"));
+        let resumed_args = claude_resident_args(Some("claude-session-1"));
         let resumed_args: Vec<_> = resumed_args
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        let resume_at = resumed_args.iter().position(|arg| arg == "--resume").unwrap();
+        let resume_at = resumed_args
+            .iter()
+            .position(|arg| arg == "--resume")
+            .unwrap();
         assert_eq!(resumed_args[resume_at + 1], "claude-session-1");
         for forbidden in [
             "--dangerously-skip-permissions",
@@ -1207,7 +1412,10 @@ mod tests {
             "message.completed",
             "session.completed",
         ] {
-            assert!(event_types.iter().any(|actual| actual == expected), "missing {expected}");
+            assert!(
+                event_types.iter().any(|actual| actual == expected),
+                "missing {expected}"
+            );
         }
         assert_eq!(done.thread_id.as_deref(), Some("claude-session-1"));
         assert_eq!(done.status, "completed");
@@ -1263,7 +1471,10 @@ mod tests {
 
         let cancelled = done_rx.try_recv().expect("cancel TurnDone");
         assert_eq!(cancelled.status, "interrupted");
-        assert_eq!(cancelled.thread_id.as_deref(), Some("claude-session-cancel"));
+        assert_eq!(
+            cancelled.thread_id.as_deref(),
+            Some("claude-session-cancel")
+        );
         let mut completed_count = 0;
         while let Ok(event) = events.try_recv() {
             if let CoreEvent::AgentEvent(value) = event {
@@ -1313,14 +1524,14 @@ mod tests {
 
     #[test]
     fn claude_skill_install_and_path_match_the_codex_asset() {
-        let base = std::env::temp_dir().join(format!(
-            "focus-claude-skill-{}",
-            std::process::id()
-        ));
+        let base = std::env::temp_dir().join(format!("focus-claude-skill-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let installed = install_focus_cli_skill_into(&base).unwrap();
         assert!(installed.ends_with(Path::new(".claude/skills/focus-cli/SKILL.md")));
-        assert_eq!(std::fs::read_to_string(&installed).unwrap(), FOCUS_CLI_SKILL);
+        assert_eq!(
+            std::fs::read_to_string(&installed).unwrap(),
+            FOCUS_CLI_SKILL
+        );
         assert_eq!(FOCUS_CLI_SKILL, crate::agents::codex::FOCUS_CLI_SKILL);
 
         let existing = std::ffi::OsString::from(r"C:\Windows\System32;C:\Tools");
@@ -1330,7 +1541,10 @@ mod tests {
         );
         let entries: Vec<_> = std::env::split_paths(&path).collect();
         assert_eq!(entries.first(), Some(&PathBuf::from(r"C:\Focus")));
-        assert_eq!(entries[1..], std::env::split_paths(&existing).collect::<Vec<_>>());
+        assert_eq!(
+            entries[1..],
+            std::env::split_paths(&existing).collect::<Vec<_>>()
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1399,10 +1613,12 @@ mod tests {
             }),
         );
         let completed = std::iter::from_fn(|| events.try_recv().ok())
-            .filter(|event| matches!(
-                event,
-                CoreEvent::AgentEvent(value) if value["event"]["type"] == "tool.completed"
-            ))
+            .filter(|event| {
+                matches!(
+                    event,
+                    CoreEvent::AgentEvent(value) if value["event"]["type"] == "tool.completed"
+                )
+            })
             .count();
         assert_eq!(completed, 1);
     }

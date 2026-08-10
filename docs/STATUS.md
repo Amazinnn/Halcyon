@@ -1,5 +1,11 @@
 # Focus Desktop 当前状态（压缩交接页）
 
+> 更新：2026-08-10（需求 #84/#85，窗口回归修复）。浮窗折叠改用异步原生隐藏，release UI Automation 已确认对话窗口真实隐藏；恢复窗口先原子决定空闲槽位，满格时保持折叠并在主界面提示，避免任何重叠。#83 同步补正跨午夜聊天轮换与每周参数验证。`window-style-probe.ps1` 显示所有内部宿主无 caption/thick frame、未异常激活；淡蓝条需要用户视觉复验，不能写作已验收。详见最新 [窗口回归 Eval](./evals/2026-08-10-window-regression-checkpoint.md)。
+
+> 更新：2026-08-10（需求 #83，ADR-0026/0027）。Claude 现为按桌宠常驻的 stream-json Provider；重启后当天首轮 `--resume`，可见聊天消息按“桌宠 x Provider x 本地日期”回放。聊天去除生命周期噪音，Skill 只附加到下一条消息。工作流画布增加不持久化的触发节点，计划支持间隔、每日和每周。浮窗统一走无激活原生路径；淡蓝条事故仍为 `Fixed pending verification`，不宣称视觉修复已通过。
+>
+> 本轮自动证据：前端测试 41 passed、Rust 166 passed、event-schema 11 valid / 4 invalid、`npm run build` 与 `launch-focus.cmd rebuild` 通过。每周计划在重建 release 中实际触发一次并成功收束为单条运行记录；真实 Claude 当前未在 55 秒内返回终态，因此 Provider admission 与 Windows 视觉验收仍记录为 Pending，详见最新 [Eval 快照](./evals/2026-08-10-conversation-continuity-checkpoint.md)。
+
 > 更新：2026-08-10（Claude Code 作为第二个真实 Provider 已接入；需求 #79/#80，ADR-0025）。每个桌宠在设置页固定选择 Codex 或 Claude；Focus Demo Pet 的历史迁移使用 SQLite 原子标记，按“桌宠 x Provider”隔离当日 session。聊天窗口不提供 Provider 切换。
 >
 > 本轮修复：切换当前桌宠的 Provider 后立即清空 UI 会话，防止将 Codex thread 交给 Claude（或反向）恢复；`agent:status` 带 `characterId`，非当前桌宠的状态不会覆盖当前聊天；设置页失败切换会回读持久 Provider。
@@ -14,6 +20,7 @@
 本地专注桌面 + Agent 桌宠系统（Windows 优先，MIT）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
 
 ## 当前实现与待验收清单
+- v1.12.7（对话连续性、常驻 Provider 与计划触发器，已实现待验收，需求 #83）：Claude 在 Focus 生命周期内按桌宠常驻；同日可见聊天按桌宠 x Provider 隔离回放，应用重启后首轮恢复当天 session；聊天仅显示消息、短暂连接/生成状态和真实错误，Skill 仅作用下一条消息。工作流画布固定不可持久化的触发节点，定时支持间隔、每日和每周（周一 0 至周日 6 + 本地 `HH:MM`）；不增加执行图节点。调度在写入运行记录前原子领取工作流，避免 tick 重入遗留重复 `running` 记录。浮窗恢复、移动、缩放、置顶统一为无激活原生路径，扩展样式探针采集宿主/子窗口与前台状态。见 ADR-0026/0027 与最新 Eval。
 - Agent 对话与工作流闭合（已实现，需求 #76–#78，ADR-0024）：正式桌面路径只使用真实 Provider，Provider 不可用直接显示实际错误，Mock 仅供测试注入；聊天仅保留 Agent 选择、连接/生成状态、消息、停止与输入。工作流列表固定展示全部日程，新建日程不绑定 Agent；新 Agent 节点默认当前聊天 Agent、仍可改目标。工作流只在 `showResult` 时向目标 Agent 对话与宠物泡泡各回流一次带「日程 · 名称」来源的最终结果，过程事件不进入聊天；`workflow:changed` 立即刷新列表。真实 Claude 控制面闭环已通过；聊天窗口视觉回流仍待人工验收。
 - v1.12.4（桌面锁退出恢复，已实现待验收，需求 #73）：恢复 Shell_TrayWnd/Progman 的入口不再检查当前进程的 `LOCKED`；watchdog 在主进程被强制结束后调用该无状态入口；专注「跳过」和应用内退出先显式解锁。根因：watchdog 是独立进程，其 LOCKED 初值恒为 false，原先调用 unlock 会直接返回，导致桌面宿主持续隐藏。
 - v1.12.6（三档专注模式，已实现待验收，需求 #75）：轻度不锁定，标准只拦截 Win/Alt+Tab/Alt+F4/Ctrl+Esc，学霸模式额外隐藏 Shell；当前模式保存到设置，新用户默认标准。专注轮次快照模式；开始、暂停、恢复、跳过、自然结束及连续点击均通过串行转换，暂停/休息在可见状态变化前完成桌面恢复；既有 `focus-cli desktop lock/unlock/status` 仍是严格桌面锁语义。
@@ -88,7 +95,7 @@
 ## 质量检查点状态（2026-08-10）
 
 - #74 已实现待验收：桌面锁串行化、启动时无状态 Shell 恢复、浮窗无激活显示，以及 Agent 初始化竞态修复。
-- 原生浮窗验收可运行 `scripts/window-style-probe.ps1`；结果应无 caption/thick frame，且内部浮窗不应为前台窗口。
+- 原生浮窗验收可运行 `scripts/window-style-probe.ps1`；结果应无 caption/thick frame，且内部浮窗不应为前台窗口。#84 的原生/自动化检查已通过，淡蓝条视觉复验仍为 `Pending`；#85 的恢复重叠回归已在 release UI Automation 中通过。
 - 本轮自动化与真实 Claude 控制面证据已写入 [2026-08-10 快照](./evals/2026-08-10-claude-provider-checkpoint.md)；直接聊天、来源消息、宠物气泡、桌面锁手工回归保持 `Pending`，不得写成通过。
 
 ## Agent 对话与工作流验收状态（2026-08-10）

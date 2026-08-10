@@ -4,9 +4,9 @@
 
 ## 当前提示词
 
-我是 Focus Desktop 项目的维护者。请先阅读 `docs/STATUS.md`，再按需查阅 `docs/next-phase.md`、`docs/requirements-verbatim.md`（只追加，当前 #1–#82）、`docs/decisions/`（至 ADR-0025）、`docs/evals/README.md`、最新日期快照和 `docs/production-incidents.md`。每轮任务结束前必须更新受影响范围的 Eval；不得将 Mock 结果写成真实 Provider 验收。
+我是 Focus Desktop 项目的维护者。请先阅读 `docs/STATUS.md`，再按需查阅 `docs/next-phase.md`、`docs/requirements-verbatim.md`（只追加，当前 #1–#85）、`docs/decisions/`（至 ADR-0027）、`docs/evals/README.md`、最新日期快照和 `docs/production-incidents.md`。每轮任务结束前必须更新受影响范围的 Eval；不得将 Mock 结果写成真实 Provider 验收。
 
-当前真实状态：Claude Code 已作为第二个真实 Provider 接入，Focus Demo Pet 的真实 Claude 控制面工作流闭环已验证。聊天直接发送、来源消息、宠物气泡、桌面锁恢复与浮窗淡蓝标题条仍须按最新 Eval 快照逐项人工确认。不要修改权威设计稿 `local-focus-desktop-agent-design-v0.2.md`。
+当前真实状态：Claude Code 与 Codex 均按宠物常驻；聊天当天历史按宠物 x Provider 回放，Focus 重启后仅首轮恢复当天 session；Skill 只作用下一条消息。工作流的虚拟触发节点支持间隔、每日和每周计划而不进入执行图。Focus Demo Pet 的真实 Claude 控制面工作流闭环已验证；浮窗恢复在无空位时保持折叠而不重叠，折叠已在 release 中自动验证。三轮对话/重启恢复、Skill、每周触发、聊天视觉回流、桌面锁恢复与淡蓝标题条视觉仍须按最新 Eval 快照逐项人工确认。不要修改权威设计稿 `local-focus-desktop-agent-design-v0.2.md`。
 
 ## 2026-08-08 历史归档（不作为当前指令）
 

@@ -5,13 +5,13 @@ import { Background } from "@vue-flow/background";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
 import FlowNode from "./FlowNode.vue";
+import FlowTriggerNode from "./FlowTriggerNode.vue";
 import WindowHeader from "../../components/WindowHeader.vue";
 import { useWorkflowStore } from "../../stores/workflow";
 import {
   NODE_DESC,
   NODE_KINDS,
   NODE_LABELS,
-  TRIGGER_LABELS,
   defaultParams,
   emptyWorkflow,
   triggerBadge,
@@ -19,6 +19,7 @@ import {
 } from "../../lib/workflow";
 
 const store = useWorkflowStore();
+const TRIGGER_NODE_ID = "__trigger__";
 // any[] keeps Vue Flow's deep generics out of vue-tsc inference (TS2589)
 const nodes = ref<any[]>([]);
 const edges = ref<any[]>([]);
@@ -34,7 +35,7 @@ const editingId = ref<string | null>(null);
 // v1.10.5 (#59): self-originated auto-saves must never trigger a canvas reload.
 let selfSave = false;
 
-const nodeTypes = { workflow: FlowNode as any };
+const nodeTypes = { workflow: FlowNode as any, trigger: FlowTriggerNode as any };
 
 const selectedNode = computed(() =>
   (nodes.value.find((n) => n.id === selectedNodeId.value) as any) ?? null,
@@ -47,6 +48,8 @@ const meta = ref({
   scheduleType: null as string | null,
   intervalMinutes: null as number | null,
   dailyTime: null as string | null,
+  weeklyDay: null as number | null,
+  weeklyTime: null as string | null,
   guard: "none" as string,
 });
 
@@ -57,9 +60,28 @@ const currentName = computed(() =>
   currentWf.value ? currentWf.value.name : meta.value.name,
 );
 const currentBadge = computed(() => {
-  if (currentWf.value) return triggerBadge(currentWf.value);
-  return TRIGGER_LABELS[meta.value.trigger] ?? meta.value.trigger;
+  return triggerBadge({ ...emptyWorkflow(), ...meta.value });
 });
+
+const actionNodes = computed(() =>
+  nodes.value.filter((node) => node.id !== TRIGGER_NODE_ID),
+);
+
+function triggerNode() {
+  return {
+    id: TRIGGER_NODE_ID,
+    type: "trigger",
+    position: { x: -150, y: 96 },
+    data: { detail: currentBadge.value },
+    draggable: false,
+    connectable: false,
+  };
+}
+
+function refreshTriggerNode() {
+  const node = nodes.value.find((item) => item.id === TRIGGER_NODE_ID);
+  if (node) node.data.detail = currentBadge.value;
+}
 
 // ---- preset chips (v1.10.5 #60) ----
 const PRESETS: Record<string, { label: string; value: number }[]> = {
@@ -89,14 +111,16 @@ function loadDraft(wf: WorkflowDef | null) {
       scheduleType: wf.scheduleType ?? null,
       intervalMinutes: wf.intervalMinutes ?? null,
       dailyTime: wf.dailyTime ?? null,
+      weeklyDay: wf.weeklyDay ?? null,
+      weeklyTime: wf.weeklyTime ?? null,
       guard: wf.guard,
     };
-    nodes.value = wf.nodes.map((n) => ({
+    nodes.value = [triggerNode(), ...wf.nodes.map((n) => ({
       id: n.id,
       type: "workflow",
       position: { x: n.x, y: n.y },
       data: { kind: n.kind, params: { ...n.params }, status: "" },
-    }));
+    }))];
     edges.value = wf.edges.map((e) => ({
       id: e.id,
       source: e.source,
@@ -112,9 +136,11 @@ function loadDraft(wf: WorkflowDef | null) {
       scheduleType: null,
       intervalMinutes: null,
       dailyTime: null,
+      weeklyDay: null,
+      weeklyTime: null,
       guard: "none",
     };
-    nodes.value = [];
+    nodes.value = [triggerNode()];
     edges.value = [];
   }
   selectedNodeId.value = null;
@@ -136,20 +162,24 @@ function toDraft(): WorkflowDef {
   draft.scheduleType = meta.value.scheduleType;
   draft.intervalMinutes = meta.value.intervalMinutes;
   draft.dailyTime = meta.value.dailyTime;
+  draft.weeklyDay = meta.value.weeklyDay;
+  draft.weeklyTime = meta.value.weeklyTime;
   draft.guard = meta.value.guard;
-  draft.nodes = nodes.value.map((n) => ({
+  draft.nodes = actionNodes.value.map((n) => ({
     id: n.id,
     kind: String(n.data.kind),
     params: (n.data.params as Record<string, unknown>) ?? {},
     x: Math.round(n.position.x),
     y: Math.round(n.position.y),
   }));
-  draft.edges = edges.value.map((e) => ({
-    id: e.id,
-    source: e.source,
-    sourceHandle: e.sourceHandle ?? "out",
-    target: e.target,
-  }));
+  draft.edges = edges.value
+    .filter((e) => e.source !== TRIGGER_NODE_ID && e.target !== TRIGGER_NODE_ID)
+    .map((e) => ({
+      id: e.id,
+      source: e.source,
+      sourceHandle: e.sourceHandle ?? "out",
+      target: e.target,
+    }));
   return draft;
 }
 
@@ -161,7 +191,7 @@ function scheduleAutoSave() {
 }
 async function saveNow() {
   saveTimer = null;
-  if (nodes.value.length === 0) return; // empty canvas has nothing to persist
+  if (actionNodes.value.length === 0) return; // empty canvas has nothing to persist
   const draft = toDraft();
   selfSave = true;
   try {
@@ -220,7 +250,7 @@ onBeforeUnmount(() => {
 
 // Node/edge edits -> auto-save (v1.10.4 #51: no save button)
 watch(
-  () => [nodes.value.length, edges.value.length] as const,
+  () => [actionNodes.value.length, edges.value.length] as const,
   () => scheduleAutoSave(),
 );
 watch(
@@ -259,7 +289,7 @@ function syncNodeStatus() {
 }
 
 function onConnect(conn: Connection) {
-  if (!conn.source || !conn.target) return;
+  if (!conn.source || !conn.target || conn.source === TRIGGER_NODE_ID || conn.target === TRIGGER_NODE_ID) return;
   edges.value.push({
     id: "e-" + Date.now(),
     source: conn.source,
@@ -270,6 +300,11 @@ function onConnect(conn: Connection) {
 }
 
 function onNodeClick(ev: { node: Node }) {
+  if (ev.node.id === TRIGGER_NODE_ID) {
+    triggerEditor.value = true;
+    selectedNodeId.value = null;
+    return;
+  }
   selectedNodeId.value = ev.node.id;
 }
 
@@ -287,7 +322,7 @@ function onNodeDragStop() {
 }
 
 function addNode(kind: string) {
-  const len = nodes.value.length;
+  const len = actionNodes.value.length;
   const n: Node = {
     id: "n" + Date.now() + "-" + len,
     type: "workflow",
@@ -308,6 +343,7 @@ function addNode(kind: string) {
 function removeSelectedNode() {
   if (!selectedNode.value) return;
   const id = selectedNode.value.id;
+  if (id === TRIGGER_NODE_ID) return;
   nodes.value = nodes.value.filter((n) => n.id !== id);
   edges.value = edges.value.filter((e) => e.source !== id && e.target !== id);
   selectedNodeId.value = null;
@@ -323,12 +359,13 @@ function setParam(key: string, value: unknown) {
 
 function setMeta(key: string, value: unknown) {
   (meta.value as Record<string, unknown>)[key] = value;
+  refreshTriggerNode();
   scheduleAutoSave();
 }
 
 async function runCurrent() {
   if (!store.currentWorkflowId) return;
-  const bad = nodes.value.find(
+  const bad = actionNodes.value.find(
     (n) =>
       n.data.kind === "branch" &&
       n.data.params.condition !== "focus_state" &&
@@ -341,7 +378,7 @@ async function runCurrent() {
   try {
     running.value = true;
     nodeStatus.value = {};
-    for (const n of nodes.value) n.data.status = "running";
+    for (const n of actionNodes.value) n.data.status = "running";
     await store.run(store.currentWorkflowId);
   } catch (e) {
     errorMsg.value = String(e);
@@ -356,7 +393,7 @@ function stopCurrent() {
   if (!store.currentWorkflowId) return;
   void store.cancel(store.currentWorkflowId);
   running.value = false;
-  for (const n of nodes.value) n.data.status = "";
+  for (const n of actionNodes.value) n.data.status = "";
 }
 
 async function applyTrigger() {
@@ -460,6 +497,7 @@ function removeOpt(i: number) {
           <select class="sel" :value="meta.scheduleType ?? 'interval'" @change="setMeta('scheduleType', ($event.target as HTMLSelectElement).value)">
             <option value="interval">间隔</option>
             <option value="daily">每日</option>
+            <option value="weekly">每周</option>
           </select>
         </div>
         <div v-if="meta.scheduleType === 'interval'" class="tr-row">
@@ -477,7 +515,7 @@ function removeOpt(i: number) {
             @change="setMeta('intervalMinutes', Number(($event.target as HTMLInputElement).value) || 30)" />
           <span class="label">分钟</span>
         </div>
-        <div v-else class="tr-row">
+        <div v-else-if="meta.scheduleType === 'daily'" class="tr-row">
           <span class="label">时间</span>
           <div class="chips">
             <button
@@ -490,6 +528,20 @@ function removeOpt(i: number) {
           </div>
           <input class="ta" type="time" :value="meta.dailyTime ?? '09:00'"
             @change="setMeta('dailyTime', ($event.target as HTMLInputElement).value || '09:00')" />
+        </div>
+        <div v-else class="tr-row">
+          <span class="label">每周</span>
+          <select class="sel" :value="meta.weeklyDay ?? 0" @change="setMeta('weeklyDay', Number(($event.target as HTMLSelectElement).value))">
+            <option :value="0">周一</option>
+            <option :value="1">周二</option>
+            <option :value="2">周三</option>
+            <option :value="3">周四</option>
+            <option :value="4">周五</option>
+            <option :value="5">周六</option>
+            <option :value="6">周日</option>
+          </select>
+          <input class="ta" type="time" :value="meta.weeklyTime ?? '09:00'"
+            @change="setMeta('weeklyTime', ($event.target as HTMLInputElement).value || '09:00')" />
         </div>
       </template>
       <div class="tr-row">
@@ -535,7 +587,7 @@ function removeOpt(i: number) {
       </aside>
 
       <div class="wf-canvas">
-        <div v-if="!nodes.length" class="empty-guide">
+        <div v-if="!actionNodes.length" class="empty-guide">
           <div class="eg-title">空白画布</div>
           <div class="eg-step">1. 从右侧「动作库」点击添加节点</div>
           <div class="eg-step">2. 从节点右侧圆点拖出连线（分支可连多个出口）</div>

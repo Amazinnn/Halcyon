@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { defaultParams, emptyWorkflow, type WorkflowDef } from "./workflow";
+import {
+  defaultParams,
+  emptyWorkflow,
+  triggerBadge,
+  type WorkflowDef,
+} from "./workflow";
 
 type AgentDefaults = (
   kind: string,
@@ -36,5 +41,21 @@ describe("workflow draft defaults", () => {
     const draft = (emptyWorkflow as unknown as (name?: string) => WorkflowDef)();
 
     expect(draft.characterId).toBe("");
+  });
+
+  it("keeps weekly scheduling fields in a new workflow and labels one local weekday", () => {
+    const draft = emptyWorkflow();
+
+    expect(draft.weeklyDay).toBeNull();
+    expect(draft.weeklyTime).toBeNull();
+    expect(
+      triggerBadge({
+        ...draft,
+        trigger: "scheduled",
+        scheduleType: "weekly",
+        weeklyDay: 0,
+        weeklyTime: "09:00",
+      }),
+    ).toContain("每周一 09:00");
   });
 });

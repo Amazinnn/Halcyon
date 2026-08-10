@@ -10,7 +10,7 @@ const { emit, invoke, listen } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ emit, listen }));
 
-import { useAgentStore } from "./agent";
+import { chatHistoryKey, useAgentStore } from "./agent";
 
 const handlers = new Map<string, ((event: { payload: unknown }) => void)[]>();
 const storage = new Map<string, string>();
@@ -107,7 +107,7 @@ describe("workflow result messages", () => {
 
     await agent.selectCharacter("char-a");
     await agent.selectCharacter("char-b");
-    expect(agent.messages.filter((message) => message.source)).toEqual([]);
+    expect(agent.messages.filter((message) => message.source)).toHaveLength(1);
   });
 
   it("shows a pending target Agent result in the separate Pet store after Chat broadcasts selection", async () => {
@@ -139,8 +139,47 @@ describe("workflow result messages", () => {
   });
 });
 
+describe("dated visible history", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    installEventHarness();
+    storage.clear();
+  });
+
+  it("starts an empty visible history when a message is sent after midnight", () => {
+    vi.useFakeTimers();
+    try {
+      const yesterday = new Date(2026, 7, 10, 23, 59);
+      const today = new Date(2026, 7, 11, 0, 1);
+      vi.setSystemTime(yesterday);
+      storage.set(
+        chatHistoryKey("char-a", "codex"),
+        JSON.stringify([{ role: "agent", text: "yesterday", kind: "completed" }]),
+      );
+      const agent = useAgentStore();
+      agent.characterId = "char-a";
+      agent.provider = "codex";
+      agent.restoreVisibleHistory();
+
+      vi.setSystemTime(today);
+      agent.addUserMessage("today");
+
+      expect(agent.messages).toEqual([{ role: "user", text: "today", kind: "completed" }]);
+      expect(JSON.parse(storage.get(chatHistoryKey("char-a", "codex")) ?? "[]")).toEqual([
+        { role: "user", text: "today", kind: "completed" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("direct chat stream convergence", () => {
-  beforeEach(() => setActivePinia(createPinia()));
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    installEventHarness();
+    storage.clear();
+  });
 
   it("finalizes the active delta instead of appending a duplicate completed message", () => {
     const agent = useAgentStore();
@@ -155,6 +194,79 @@ describe("direct chat stream convergence", () => {
     });
 
     expect(agent.messages).toEqual([{ role: "agent", text: "正在回答", kind: "completed" }]);
+  });
+
+  it("keeps same-day visible history isolated by character and provider", async () => {
+    installEventHarness();
+    storage.clear();
+    invoke.mockReset();
+    invoke.mockImplementation(async (command: string, args?: { characterId?: string }) => {
+      if (command === "agent_status") {
+        return {
+          characterId: args?.characterId ?? "char-a",
+          provider: args?.characterId === "char-b" ? "claude" : "codex",
+          ready: true,
+          exePath: null,
+          workspaceDir: "D:\\Agent",
+        };
+      }
+      if (command === "agent_list_skills") return [];
+      return undefined;
+    });
+    const agent = useAgentStore();
+    agent.characters = [
+      { id: "char-a", name: "A", tool: "codex" },
+      { id: "char-b", name: "B", tool: "claude" },
+    ];
+
+    await agent.selectCharacter("char-a", false);
+    agent.addUserMessage("Codex history");
+    await agent.selectCharacter("char-b", false);
+    expect(agent.messages).toEqual([]);
+    agent.addUserMessage("Claude history");
+    await agent.selectCharacter("char-a", false);
+    expect(agent.messages).toEqual([{ role: "user", text: "Codex history", kind: "completed" }]);
+    await agent.selectCharacter("char-b", false);
+    expect(agent.messages).toEqual([{ role: "user", text: "Claude history", kind: "completed" }]);
+  });
+
+  it("does not add lifecycle rows and clears a selected Skill after one send", async () => {
+    const agent = useAgentStore();
+    agent.characterId = "char-a";
+    agent.currentThreadId = "thread-a";
+    agent.selectedSkill = "focus-cli";
+    invoke.mockReset();
+    invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "agent_send") {
+        expect(args).toEqual({
+          characterId: "char-a",
+          threadId: "thread-a",
+          text: "check status",
+          skillName: "focus-cli",
+        });
+      }
+      return undefined;
+    });
+
+    agent.handleEvent({
+      schemaVersion: 1,
+      agentId: "char-a",
+      sessionId: "thread-a",
+      timestamp: "2026-08-10T00:00:00.000Z",
+      event: { type: "session.started" },
+    });
+    agent.handleEvent({
+      schemaVersion: 1,
+      agentId: "char-a",
+      sessionId: "thread-a",
+      timestamp: "2026-08-10T00:00:00.000Z",
+      event: { type: "session.completed", outcome: "success" },
+    });
+    expect(agent.messages).toEqual([]);
+
+    await agent.send("check status");
+    expect(agent.selectedSkill).toBeNull();
+    expect(agent.messages).toEqual([{ role: "user", text: "check status", kind: "completed" }]);
   });
 });
 

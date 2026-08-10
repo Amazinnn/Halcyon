@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::model::{CharacterInfo, NodeDef, NodeLogEntry, RunStatus, WorkflowDef, validate_workflow};
+use super::model::{
+    validate_workflow, CharacterInfo, NodeDef, NodeLogEntry, RunStatus, WorkflowDef,
+};
 
 /// One-shot agent invocation. wait=true blocks until the agent turn finishes
 /// and returns (result_text, thread_id); wait=false returns None right
@@ -52,13 +54,7 @@ pub trait AgentCall: Send + Sync {
 
 pub trait EventSink: Send + Sync {
     fn bubble(&self, text: &str, priority: &str, agent_id: Option<&str>);
-    fn agent_result(
-        &self,
-        workflow_id: &str,
-        workflow_name: &str,
-        agent_id: &str,
-        text: &str,
-    );
+    fn agent_result(&self, workflow_id: &str, workflow_name: &str, agent_id: &str, text: &str);
 }
 
 pub trait WindowOps: Send + Sync {
@@ -146,7 +142,10 @@ pub fn execute_run(
         if !is_back {
             *indegree.get_mut(e.target.as_str()).unwrap() += 1;
         }
-        out_edges.entry(e.source.as_str()).or_default().push((e, is_back));
+        out_edges
+            .entry(e.source.as_str())
+            .or_default()
+            .push((e, is_back));
     }
 
     let mut remaining: HashMap<&str, usize> = indegree.clone();
@@ -162,7 +161,9 @@ pub fn execute_run(
     let mut incoming: HashMap<&str, &str> = HashMap::new();
     for (e, is_back) in out_edges.iter().flat_map(|(_, v)| v.iter()) {
         if !*is_back {
-            incoming.entry(e.target.as_str()).or_insert(e.source.as_str());
+            incoming
+                .entry(e.target.as_str())
+                .or_insert(e.source.as_str());
         }
     }
 
@@ -183,16 +184,7 @@ pub fn execute_run(
         }
         let node = nodes[id];
         match run_node(
-            node,
-            &data,
-            &incoming,
-            &wf.id,
-            &wf.name,
-            character,
-            agent,
-            events,
-            windows,
-            system,
+            node, &data, &incoming, &wf.id, &wf.name, character, agent, events, windows, system,
             cancel,
         ) {
             Ok((output, taken_handle)) => {
@@ -233,8 +225,16 @@ pub fn execute_run(
             }
             Err(err) => {
                 let cancelled = cancel.load(Ordering::Relaxed);
-                status = if cancelled { RunStatus::Cancelled } else { RunStatus::Failed };
-                error = Some(if cancelled { "已取消".into() } else { err.clone() });
+                status = if cancelled {
+                    RunStatus::Cancelled
+                } else {
+                    RunStatus::Failed
+                };
+                error = Some(if cancelled {
+                    "已取消".into()
+                } else {
+                    err.clone()
+                });
                 log.push(NodeLogEntry {
                     node_id: id.to_string(),
                     kind: node.kind.clone(),
@@ -261,7 +261,11 @@ pub fn execute_run(
         }
     }
 
-    RunOutcome { status, error, node_log: log }
+    RunOutcome {
+        status,
+        error,
+        node_log: log,
+    }
 }
 
 /// v2 loop support: un-done the target and every forward-descendant, reset
@@ -307,16 +311,19 @@ fn run_node(
     cancel: &AtomicBool,
 ) -> Result<(Value, String), String> {
     match node.kind.as_str() {
-
         "agent" => {
             let prompt = param_str(node, "prompt")?;
             let prompt = resolve_with_system(&prompt, data, system)?;
             let wait = param_bool(node, "wait").unwrap_or(true);
             // v1.11 (ADR-0020): per-node target character overrides the
             // workflow character; empty/unknown falls back to the workflow one.
-            let target = param_str(node, "characterId").ok().filter(|s| !s.is_empty());
+            let target = param_str(node, "characterId")
+                .ok()
+                .filter(|s| !s.is_empty());
             let caller = if let Some(id) = target {
-                agent.resolve_character(&id).unwrap_or_else(|| character.clone())
+                agent
+                    .resolve_character(&id)
+                    .unwrap_or_else(|| character.clone())
             } else {
                 character.clone()
             };
@@ -336,7 +343,8 @@ fn run_node(
                         events.agent_result(workflow_id, workflow_name, &caller.id, &result);
                         events.bubble(&result, "normal", Some(&caller.id));
                     }
-                    let mut out = json!({ "result": result, "threadId": thread_id, "status": "completed" });
+                    let mut out =
+                        json!({ "result": result, "threadId": thread_id, "status": "completed" });
                     // v2 fill-slot: the agent answers a single-choice question;
                     // the slot value is the option contained in the reply, or the
                     // raw reply when fillOptions is empty (free-form fill).
@@ -411,7 +419,10 @@ fn run_node(
                     }
                     None => {
                         // No matching option: the flow stops at this node.
-                        Ok((json!({ "matched": false, "value": resolved, "option": "" }), "none".into()))
+                        Ok((
+                            json!({ "matched": false, "value": resolved, "option": "" }),
+                            "none".into(),
+                        ))
                     }
                 }
             }
@@ -422,7 +433,10 @@ fn run_node(
             // v1.11.1: block until the countdown finishes (or cancel), so a
             // workflow loop matches real time instead of spinning.
             sleep_wait(secs, cancel)?;
-            Ok((json!({ "completed": true, "elapsedSec": secs }), "out".into()))
+            Ok((
+                json!({ "completed": true, "elapsedSec": secs }),
+                "out".into(),
+            ))
         }
         "idle" => {
             let secs = param_i64(node, "seconds").unwrap_or(1).clamp(1, 3600);
@@ -430,7 +444,10 @@ fn run_node(
             // v1.11.1: same blocking wait as focus (root cause of the endless
             // ring loop: idle returned instantly and the cycle spun).
             sleep_wait(secs, cancel)?;
-            Ok((json!({ "completed": true, "elapsedSec": secs }), "out".into()))
+            Ok((
+                json!({ "completed": true, "elapsedSec": secs }),
+                "out".into(),
+            ))
         }
         "ring" => {
             let secs = param_i64(node, "seconds").unwrap_or(1).clamp(1, 120);
@@ -594,22 +611,32 @@ mod tests {
     }
     impl SystemActions for MockSystem {
         fn focus(&self, seconds: i64) -> Result<(), String> {
-            if self.fail_actions { return Err("system boom".into()); }
+            if self.fail_actions {
+                return Err("system boom".into());
+            }
             self.focus_calls.lock().unwrap().push(seconds);
             Ok(())
         }
         fn idle(&self, seconds: i64) -> Result<(), String> {
-            if self.fail_actions { return Err("system boom".into()); }
+            if self.fail_actions {
+                return Err("system boom".into());
+            }
             self.idle_calls.lock().unwrap().push(seconds);
             Ok(())
         }
         fn ring(&self, seconds: i64) -> Result<(), String> {
-            if self.fail_actions { return Err("system boom".into()); }
+            if self.fail_actions {
+                return Err("system boom".into());
+            }
             self.ring_calls.lock().unwrap().push(seconds);
             Ok(())
         }
-        fn focus_state(&self) -> String { self.focus_state.clone() }
-        fn now_hhmm(&self) -> String { self.now_hhmm.clone() }
+        fn focus_state(&self) -> String {
+            self.focus_state.clone()
+        }
+        fn now_hhmm(&self) -> String {
+            self.now_hhmm.clone()
+        }
     }
 
     struct MockAgent {
@@ -635,7 +662,11 @@ mod tests {
             if id.is_empty() {
                 None
             } else {
-                Some(CharacterInfo { id: id.into(), name: id.into(), persona: "p".into() })
+                Some(CharacterInfo {
+                    id: id.into(),
+                    name: id.into(),
+                    persona: "p".into(),
+                })
             }
         }
 
@@ -654,7 +685,10 @@ mod tests {
                 return Err("agent boom".into());
             }
             if wait {
-                Ok(Some((format!("{} => {}", self.result, prompt), "th-1".into())))
+                Ok(Some((
+                    format!("{} => {}", self.result, prompt),
+                    "th-1".into(),
+                )))
             } else {
                 Ok(None)
             }
@@ -674,13 +708,7 @@ mod tests {
             ));
         }
 
-        fn agent_result(
-            &self,
-            workflow_id: &str,
-            workflow_name: &str,
-            agent_id: &str,
-            text: &str,
-        ) {
+        fn agent_result(&self, workflow_id: &str, workflow_name: &str, agent_id: &str, text: &str) {
             self.agent_results.lock().unwrap().push((
                 workflow_id.into(),
                 workflow_name.into(),
@@ -708,6 +736,8 @@ mod tests {
             schedule_type: None,
             interval_minutes: None,
             daily_time: None,
+            weekly_day: None,
+            weekly_time: None,
             guard: "none".into(),
             nodes,
             edges,
@@ -716,17 +746,34 @@ mod tests {
         }
     }
     fn node(id: &str, kind: &str, params: Value) -> NodeDef {
-        NodeDef { id: id.into(), kind: kind.into(), params, x: 0.0, y: 0.0 }
+        NodeDef {
+            id: id.into(),
+            kind: kind.into(),
+            params,
+            x: 0.0,
+            y: 0.0,
+        }
     }
     fn edge(source: &str, handle: &str, target: &str) -> EdgeDef {
-        EdgeDef { id: format!("{source}-{handle}-{target}"), source: source.into(), source_handle: handle.into(), target: target.into() }
+        EdgeDef {
+            id: format!("{source}-{handle}-{target}"),
+            source: source.into(),
+            source_handle: handle.into(),
+            target: target.into(),
+        }
     }
     fn char_info() -> CharacterInfo {
-        CharacterInfo { id: "c".into(), name: "c".into(), persona: "p".into() }
+        CharacterInfo {
+            id: "c".into(),
+            name: "c".into(),
+            persona: "p".into(),
+        }
     }
     fn run(w: &WorkflowDef, agent: &MockAgent, system: &MockSystem) -> RunOutcome {
         let sink = Sink::default();
-        let win = Win { opened: Mutex::new(vec![]) };
+        let win = Win {
+            opened: Mutex::new(vec![]),
+        };
         let cancel = AtomicBool::new(false);
         execute_run(w, &char_info(), agent, &sink, &win, system, &cancel)
     }
@@ -736,7 +783,9 @@ mod tests {
         system: &MockSystem,
         sink: &Sink,
     ) -> RunOutcome {
-        let win = Win { opened: Mutex::new(vec![]) };
+        let win = Win {
+            opened: Mutex::new(vec![]),
+        };
         let cancel = AtomicBool::new(false);
         execute_run(w, &char_info(), agent, sink, &win, system, &cancel)
     }
@@ -747,7 +796,11 @@ mod tests {
         let system = MockSystem::new("idle");
         // wf character_id is "c" (see wf()); the node targets "char-b".
         let w = wf(
-            vec![node("a", "agent", json!({ "prompt": "go", "wait": true, "characterId": "char-b" }))],
+            vec![node(
+                "a",
+                "agent",
+                json!({ "prompt": "go", "wait": true, "characterId": "char-b" }),
+            )],
             vec![],
         );
         let out = run(&w, &agent, &system);
@@ -761,7 +814,11 @@ mod tests {
         let agent = MockAgent::new("R");
         let system = MockSystem::new("idle");
         let w = wf(
-            vec![node("a", "agent", json!({ "prompt": "go", "wait": true, "characterId": "" }))],
+            vec![node(
+                "a",
+                "agent",
+                json!({ "prompt": "go", "wait": true, "characterId": "" }),
+            )],
             vec![],
         );
         let out = run(&w, &agent, &system);
@@ -776,19 +833,33 @@ mod tests {
         let agent = MockAgent::new("我比较专注吧");
         let system = MockSystem::new("idle");
         let w = wf(
-            vec![node("a", "agent", json!({ "prompt": "自检", "wait": true, "characterId": "char-b", "showInitial": true, "showThinking": true, "showResult": true }))],
+            vec![node(
+                "a",
+                "agent",
+                json!({ "prompt": "自检", "wait": true, "characterId": "char-b", "showInitial": true, "showThinking": true, "showResult": true }),
+            )],
             vec![],
         );
         let out = run_with_sink(&w, &agent, &system, &sink);
         assert_eq!(out.status, RunStatus::Success);
-        let bubbles: Vec<String> = sink.bubbles.lock().unwrap().iter().map(|(t, _p, _agent_id)| t.clone()).collect();
+        let bubbles: Vec<String> = sink
+            .bubbles
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _p, _agent_id)| t.clone())
+            .collect();
         assert_eq!(bubbles.len(), 1);
         assert!(bubbles[0].starts_with("我比较专注吧 => "));
         assert_eq!(sink.bubbles.lock().unwrap()[0].1, "normal");
         assert_eq!(sink.bubbles.lock().unwrap()[0].2.as_deref(), Some("char-b"));
         assert_eq!(
             *agent.displays.lock().unwrap(),
-            vec![AgentDisplay { show_initial: false, show_thinking: false, show_result: false }],
+            vec![AgentDisplay {
+                show_initial: false,
+                show_thinking: false,
+                show_result: false
+            }],
         );
         let results = sink.agent_results.lock().unwrap();
         assert_eq!(results.len(), 1);
@@ -813,7 +884,14 @@ mod tests {
         let out = run_with_sink(&w, &agent, &system, &sink);
         assert_eq!(out.status, RunStatus::Success);
         assert!(sink.bubbles.lock().unwrap().is_empty());
-        assert_eq!(out.node_log.iter().find(|l| l.node_id == "a").unwrap().output, Some(json!({ "status": "sent" })));
+        assert_eq!(
+            out.node_log
+                .iter()
+                .find(|l| l.node_id == "a")
+                .unwrap()
+                .output,
+            Some(json!({ "status": "sent" }))
+        );
     }
 
     #[test]
@@ -843,8 +921,16 @@ mod tests {
         let system = MockSystem::new("idle");
         let w = wf(
             vec![
-                node("a", "agent", json!({ "prompt": "自检", "wait": true, "fillOptions": ["专注", "分心"] })),
-                node("b", "branch", json!({ "condition": "slot", "options": ["专注", "分心"] })),
+                node(
+                    "a",
+                    "agent",
+                    json!({ "prompt": "自检", "wait": true, "fillOptions": ["专注", "分心"] }),
+                ),
+                node(
+                    "b",
+                    "branch",
+                    json!({ "condition": "slot", "options": ["专注", "分心"] }),
+                ),
                 node("w1", "wait", json!({ "seconds": 1 })),
                 node("w2", "wait", json!({ "seconds": 1 })),
             ],
@@ -856,9 +942,32 @@ mod tests {
         );
         let out = run(&w, &agent, &system);
         assert_eq!(out.status, RunStatus::Success);
-        assert_eq!(out.node_log.iter().find(|l| l.node_id == "w1").unwrap().status, "ok");
-        assert_eq!(out.node_log.iter().find(|l| l.node_id == "w2").unwrap().status, "skipped");
-        let slot = out.node_log.iter().find(|l| l.node_id == "a").unwrap().output.as_ref().unwrap().get("slot").unwrap();
+        assert_eq!(
+            out.node_log
+                .iter()
+                .find(|l| l.node_id == "w1")
+                .unwrap()
+                .status,
+            "ok"
+        );
+        assert_eq!(
+            out.node_log
+                .iter()
+                .find(|l| l.node_id == "w2")
+                .unwrap()
+                .status,
+            "skipped"
+        );
+        let slot = out
+            .node_log
+            .iter()
+            .find(|l| l.node_id == "a")
+            .unwrap()
+            .output
+            .as_ref()
+            .unwrap()
+            .get("slot")
+            .unwrap();
         assert_eq!(slot, "专注");
     }
 
@@ -868,7 +977,11 @@ mod tests {
         let system = MockSystem::new("focus");
         let w = wf(
             vec![
-                node("b", "branch", json!({ "condition": "focus_state", "focusState": "focus" })),
+                node(
+                    "b",
+                    "branch",
+                    json!({ "condition": "focus_state", "focusState": "focus" }),
+                ),
                 node("t", "wait", json!({ "seconds": 1 })),
                 node("f", "wait", json!({ "seconds": 1 })),
             ],
@@ -876,13 +989,41 @@ mod tests {
         );
         let out = run(&w, &agent, &system);
         assert_eq!(out.status, RunStatus::Success);
-        assert_eq!(out.node_log.iter().find(|l| l.node_id == "t").unwrap().status, "ok");
-        assert_eq!(out.node_log.iter().find(|l| l.node_id == "f").unwrap().status, "skipped");
+        assert_eq!(
+            out.node_log
+                .iter()
+                .find(|l| l.node_id == "t")
+                .unwrap()
+                .status,
+            "ok"
+        );
+        assert_eq!(
+            out.node_log
+                .iter()
+                .find(|l| l.node_id == "f")
+                .unwrap()
+                .status,
+            "skipped"
+        );
 
         let system2 = MockSystem::new("rest");
         let out2 = run(&w, &agent, &system2);
-        assert_eq!(out2.node_log.iter().find(|l| l.node_id == "t").unwrap().status, "skipped");
-        assert_eq!(out2.node_log.iter().find(|l| l.node_id == "f").unwrap().status, "ok");
+        assert_eq!(
+            out2.node_log
+                .iter()
+                .find(|l| l.node_id == "t")
+                .unwrap()
+                .status,
+            "skipped"
+        );
+        assert_eq!(
+            out2.node_log
+                .iter()
+                .find(|l| l.node_id == "f")
+                .unwrap()
+                .status,
+            "ok"
+        );
     }
 
     #[test]
@@ -890,7 +1031,11 @@ mod tests {
         let agent = MockAgent::new("x");
         let system = MockSystem::new("idle");
         let w = wf(
-            vec![node("b", "branch", json!({ "condition": "slot", "options": ["专注"] }))],
+            vec![node(
+                "b",
+                "branch",
+                json!({ "condition": "slot", "options": ["专注"] }),
+            )],
             vec![],
         );
         let out = run(&w, &agent, &system);
@@ -903,7 +1048,11 @@ mod tests {
         let agent = MockAgent::new("R");
         let system = MockSystem::new("focus");
         let w = wf(
-            vec![node("a", "agent", json!({ "prompt": "{{system.focus_state}} @ {{system.time}}", "wait": true }))],
+            vec![node(
+                "a",
+                "agent",
+                json!({ "prompt": "{{system.focus_state}} @ {{system.time}}", "wait": true }),
+            )],
             vec![],
         );
         let out = run(&w, &agent, &system);
@@ -916,24 +1065,59 @@ mod tests {
         let agent = MockAgent::new("我比较专注吧");
         let system = MockSystem::new("idle");
         let w = wf(
-            vec![node("a", "agent", json!({ "prompt": "自检", "wait": true, "fillOptions": ["专注", "分心"] }))],
+            vec![node(
+                "a",
+                "agent",
+                json!({ "prompt": "自检", "wait": true, "fillOptions": ["专注", "分心"] }),
+            )],
             vec![],
         );
         let out = run(&w, &agent, &system);
-        let slot = out.node_log.iter().find(|l| l.node_id == "a").unwrap().output.as_ref().unwrap().get("slot").unwrap();
+        let slot = out
+            .node_log
+            .iter()
+            .find(|l| l.node_id == "a")
+            .unwrap()
+            .output
+            .as_ref()
+            .unwrap()
+            .get("slot")
+            .unwrap();
         assert_eq!(slot, "专注");
 
         let w2 = wf(
-            vec![node("a", "agent", json!({ "prompt": "自由回答", "wait": true }))],
+            vec![node(
+                "a",
+                "agent",
+                json!({ "prompt": "自由回答", "wait": true }),
+            )],
             vec![],
         );
         let out2 = run(&w2, &agent, &system);
-        let slot2 = out2.node_log.iter().find(|l| l.node_id == "a").unwrap().output.as_ref().unwrap().get("slot").unwrap();
+        let slot2 = out2
+            .node_log
+            .iter()
+            .find(|l| l.node_id == "a")
+            .unwrap()
+            .output
+            .as_ref()
+            .unwrap()
+            .get("slot")
+            .unwrap();
         assert_eq!(slot2, "我比较专注吧 => 自由回答");
 
         let agent2 = MockAgent::new("随便说说");
         let out3 = run(&w, &agent2, &system);
-        let slot3 = out3.node_log.iter().find(|l| l.node_id == "a").unwrap().output.as_ref().unwrap().get("slot").unwrap();
+        let slot3 = out3
+            .node_log
+            .iter()
+            .find(|l| l.node_id == "a")
+            .unwrap()
+            .output
+            .as_ref()
+            .unwrap()
+            .get("slot")
+            .unwrap();
         assert_eq!(slot3, "随便说说 => 自检");
     }
 
@@ -955,7 +1139,9 @@ mod tests {
             cancel_ref.store(true, Ordering::Relaxed);
         });
         let sink = Sink::default();
-        let win = Win { opened: Mutex::new(vec![]) };
+        let win = Win {
+            opened: Mutex::new(vec![]),
+        };
         let out = execute_run(
             &w,
             &char_info(),
@@ -1001,7 +1187,14 @@ mod tests {
         let out = run(&w, &agent, &system);
         assert_eq!(out.status, RunStatus::Failed);
         assert!(out.error.as_deref().unwrap().contains("system boom"));
-        assert_eq!(out.node_log.iter().find(|l| l.node_id == "w").unwrap().status, "skipped");
+        assert_eq!(
+            out.node_log
+                .iter()
+                .find(|l| l.node_id == "w")
+                .unwrap()
+                .status,
+            "skipped"
+        );
     }
 
     #[test]
@@ -1029,7 +1222,9 @@ mod tests {
         let system = MockSystem::new("idle");
         let cancel = AtomicBool::new(true);
         let sink = Sink::default();
-        let win = Win { opened: Mutex::new(vec![]) };
+        let win = Win {
+            opened: Mutex::new(vec![]),
+        };
         let w = wf(vec![node("w", "wait", json!({ "seconds": 5 }))], vec![]);
         let out = execute_run(&w, &char_info(), &agent, &sink, &win, &system, &cancel);
         assert_eq!(out.status, RunStatus::Cancelled);
@@ -1043,7 +1238,9 @@ mod tests {
         let agent = MockAgent::new("x");
         let system = MockSystem::new("idle");
         let sink = Sink::default();
-        let win = Win { opened: Mutex::new(vec![]) };
+        let win = Win {
+            opened: Mutex::new(vec![]),
+        };
         for kind in ["focus", "idle", "ring"] {
             let w = wf(vec![node("f", kind, json!({ "seconds": 60 }))], vec![]);
             let out = execute_run(&w, &char_info(), &agent, &sink, &win, &system, &cancel);
@@ -1056,7 +1253,11 @@ mod tests {
         let agent = MockAgent::new("x");
         let system = MockSystem::new("idle");
         let w = wf(
-            vec![node("a", "agent", json!({ "prompt": "{{ghost.result}}", "wait": true }))],
+            vec![node(
+                "a",
+                "agent",
+                json!({ "prompt": "{{ghost.result}}", "wait": true }),
+            )],
             vec![],
         );
         let out = run(&w, &agent, &system);
@@ -1080,7 +1281,12 @@ mod tests {
         let mut data = HashMap::new();
         data.insert("a".into(), json!({ "slot": "专注" }));
         assert_eq!(
-            resolve_with_system("s={{system.focus_state}} t={{system.time}} slot={{a.slot}}", &data, &system).unwrap(),
+            resolve_with_system(
+                "s={{system.focus_state}} t={{system.time}} slot={{a.slot}}",
+                &data,
+                &system
+            )
+            .unwrap(),
             "s=rest t=12:00 slot=专注"
         );
     }

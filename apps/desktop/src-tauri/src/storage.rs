@@ -1,9 +1,9 @@
 //! Minimal SQLite spike storage: schema_migrations + spike_probes.
 //! Full product schema (design doc §15) is intentionally deferred.
 
-use rusqlite::{params, Connection};
-use rusqlite::OptionalExtension;
 use crate::workflow_engine::model::WorkflowDef;
+use rusqlite::OptionalExtension;
+use rusqlite::{params, Connection};
 use std::path::Path;
 
 pub struct Store {
@@ -298,6 +298,32 @@ impl Store {
                 [],
             )?;
         }
+
+        // 0010 (ADR-0027): scheduled workflows can run weekly at one local
+        // weekday/time. Existing workflows remain unchanged with NULL values.
+        let has0010: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = '0010_workflow_weekly_schedule')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has0010 {
+            let cols: Vec<String> = self
+                .conn
+                .prepare("PRAGMA table_info(workflows)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .collect::<Result<_, _>>()?;
+            if !cols.iter().any(|column| column == "weekly_day") {
+                self.conn.execute_batch(
+                    "ALTER TABLE workflows ADD COLUMN weekly_day INTEGER;
+                     ALTER TABLE workflows ADD COLUMN weekly_time TEXT;",
+                )?;
+            }
+            self.conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (name, applied_at)
+                 VALUES ('0010_workflow_weekly_schedule', datetime('now'))",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -318,7 +344,12 @@ impl Store {
     }
 
     /// Record one supervision reminder.
-    pub fn record_supervision_event(&self, rule: &str, app: Option<&str>, level: i64) -> rusqlite::Result<i64> {
+    pub fn record_supervision_event(
+        &self,
+        rule: &str,
+        app: Option<&str>,
+        level: i64,
+    ) -> rusqlite::Result<i64> {
         self.conn.execute(
             "INSERT INTO supervision_events (occurred_at, rule, app, level)
              VALUES (datetime('now','localtime'), ?1, ?2, ?3)",
@@ -404,8 +435,10 @@ impl Store {
     }
 
     pub fn delete_shortcut(&self, id: &str) -> rusqlite::Result<()> {
-        self.conn.execute("DELETE FROM app_shortcuts WHERE id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM ui_layouts WHERE shortcut_id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM app_shortcuts WHERE id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM ui_layouts WHERE shortcut_id = ?1", params![id])?;
         Ok(())
     }
 
@@ -440,14 +473,19 @@ impl Store {
 
     /// True when the shortcuts tables already hold rows (migration guard).
     pub fn has_shortcuts(&self) -> rusqlite::Result<bool> {
-        let n: i64 = self.conn.query_row("SELECT COUNT(*) FROM app_shortcuts", [], |r| r.get(0))?;
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM app_shortcuts", [], |r| r.get(0))?;
         Ok(n > 0)
     }
 
     /// One-time migration of the legacy `settings.json.shortcuts` list into the
     /// DB (free cells are assigned left-to-right, top-to-bottom skipping the
     /// reserved hero area). No-op once the DB has rows.
-    pub fn migrate_shortcuts_from_settings(&self, legacy: &[crate::settings::Shortcut]) -> rusqlite::Result<()> {
+    pub fn migrate_shortcuts_from_settings(
+        &self,
+        legacy: &[crate::settings::Shortcut],
+    ) -> rusqlite::Result<()> {
         if self.has_shortcuts()? || legacy.is_empty() {
             return Ok(());
         }
@@ -508,7 +546,6 @@ impl Store {
         rows.collect()
     }
 
-
     // ---- v1.8 stats dashboard (real data) ----
 
     /// Focus minutes per calendar day for the last `days` days (inclusive of
@@ -556,9 +593,7 @@ impl Store {
              GROUP BY strftime('%H', ended_at, 'localtime')",
         )?;
         let mut hours = vec![0i64; 24];
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-        })?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
         for row in rows {
             let (h, sec) = row?;
             if (0..24).contains(&h) {
@@ -723,7 +758,13 @@ impl Store {
 
     /// M5 (ADR-0022): persist the per-Agent session hash + date (daily
     /// rotation) and the workspace dir after lazy creation.
-    pub fn update_character_agent(&self, id: &str, workspace_dir: Option<&str>, session_hash: Option<&str>, session_date: Option<&str>) -> rusqlite::Result<()> {
+    pub fn update_character_agent(
+        &self,
+        id: &str,
+        workspace_dir: Option<&str>,
+        session_hash: Option<&str>,
+        session_date: Option<&str>,
+    ) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE characters SET workspace_dir = ?2, current_session_hash = ?3,
                     session_date = ?4
@@ -848,7 +889,7 @@ impl Store {
     pub fn list_workflows(&self) -> rusqlite::Result<Vec<WorkflowDef>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, character_id, name, trigger, schedule_type, interval_minutes,
-                    daily_time, guard, nodes_json, edges_json, enabled, next_run_at
+                    daily_time, weekly_day, weekly_time, guard, nodes_json, edges_json, enabled, next_run_at
              FROM workflows ORDER BY created_at, id",
         )?;
         let rows = stmt.query_map([], |r| row_to_workflow(r))?;
@@ -858,7 +899,7 @@ impl Store {
     pub fn get_workflow(&self, id: &str) -> rusqlite::Result<Option<WorkflowDef>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, character_id, name, trigger, schedule_type, interval_minutes,
-                    daily_time, guard, nodes_json, edges_json, enabled, next_run_at
+                    daily_time, weekly_day, weekly_time, guard, nodes_json, edges_json, enabled, next_run_at
              FROM workflows WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |r| row_to_workflow(r))?;
@@ -868,13 +909,14 @@ impl Store {
     pub fn save_workflow(&self, wf: &WorkflowDef) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT INTO workflows (id, character_id, name, trigger, schedule_type,
-                                    interval_minutes, daily_time, guard, nodes_json,
+                                    interval_minutes, daily_time, weekly_day, weekly_time, guard, nodes_json,
                                     edges_json, enabled, next_run_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now','localtime'), datetime('now','localtime'))
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now','localtime'), datetime('now','localtime'))
              ON CONFLICT(id) DO UPDATE SET
                character_id=excluded.character_id, name=excluded.name, trigger=excluded.trigger,
                schedule_type=excluded.schedule_type, interval_minutes=excluded.interval_minutes,
-               daily_time=excluded.daily_time, guard=excluded.guard, nodes_json=excluded.nodes_json,
+               daily_time=excluded.daily_time, weekly_day=excluded.weekly_day, weekly_time=excluded.weekly_time,
+               guard=excluded.guard, nodes_json=excluded.nodes_json,
                edges_json=excluded.edges_json, enabled=excluded.enabled, next_run_at=excluded.next_run_at,
                updated_at=datetime('now','localtime')",
             params![
@@ -885,6 +927,8 @@ impl Store {
                 wf.schedule_type,
                 wf.interval_minutes,
                 wf.daily_time,
+                wf.weekly_day,
+                wf.weekly_time,
                 wf.guard,
                 serde_json::to_string(&wf.nodes).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&wf.edges).unwrap_or_else(|_| "[]".into()),
@@ -896,7 +940,8 @@ impl Store {
     }
 
     pub fn delete_workflow(&self, id: &str) -> rusqlite::Result<()> {
-        self.conn.execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
         Ok(())
     }
     // ---- workflow runs ----
@@ -959,7 +1004,11 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_workflow_runs(&self, workflow_id: &str, limit: i64) -> rusqlite::Result<Vec<WorkflowRunRow>> {
+    pub fn list_workflow_runs(
+        &self,
+        workflow_id: &str,
+        limit: i64,
+    ) -> rusqlite::Result<Vec<WorkflowRunRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, workflow_id, triggered_by, started_at, finished_at, status, error, node_log
              FROM workflow_runs WHERE workflow_id = ?1 ORDER BY started_at DESC, rowid DESC LIMIT ?2",
@@ -998,29 +1047,40 @@ impl Store {
 
     /// Thread ids marked as automation and not hidden (used to annotate the
     /// chat thread list; hidden threads are filtered out).
-    pub fn visible_automation_thread_ids(&self) -> rusqlite::Result<std::collections::HashSet<String>> {
-        let mut stmt = self.conn.prepare("SELECT thread_id FROM automation_threads WHERE hidden = 0")?;
+    pub fn visible_automation_thread_ids(
+        &self,
+    ) -> rusqlite::Result<std::collections::HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT thread_id FROM automation_threads WHERE hidden = 0")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         rows.collect()
     }
 
     pub fn hide_automation_threads(&self) -> rusqlite::Result<()> {
-        self.conn.execute("UPDATE automation_threads SET hidden = 1 WHERE hidden = 0", [])?;
+        self.conn.execute(
+            "UPDATE automation_threads SET hidden = 1 WHERE hidden = 0",
+            [],
+        )?;
         Ok(())
     }
 
     /// Thread ids hidden by "cleanup" (kept for the chat list filter).
-    pub fn hidden_automation_thread_ids(&self) -> rusqlite::Result<std::collections::HashSet<String>> {
-        let mut stmt = self.conn.prepare("SELECT thread_id FROM automation_threads WHERE hidden = 1")?;
+    pub fn hidden_automation_thread_ids(
+        &self,
+    ) -> rusqlite::Result<std::collections::HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT thread_id FROM automation_threads WHERE hidden = 1")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         rows.collect()
     }
 }
 
 fn row_to_workflow(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowDef> {
-    let nodes_json: String = r.get(8)?;
-    let edges_json: String = r.get(9)?;
-    let enabled: i64 = r.get(10)?;
+    let nodes_json: String = r.get(10)?;
+    let edges_json: String = r.get(11)?;
+    let enabled: i64 = r.get(12)?;
     Ok(WorkflowDef {
         id: r.get(0)?,
         character_id: r.get(1)?,
@@ -1029,11 +1089,13 @@ fn row_to_workflow(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowDef> {
         schedule_type: r.get(4)?,
         interval_minutes: r.get(5)?,
         daily_time: r.get(6)?,
-        guard: r.get(7)?,
+        weekly_day: r.get(7)?,
+        weekly_time: r.get(8)?,
+        guard: r.get(9)?,
         nodes: serde_json::from_str(&nodes_json).unwrap_or_default(),
         edges: serde_json::from_str(&edges_json).unwrap_or_default(),
         enabled: enabled != 0,
-        next_run_at: r.get(11)?,
+        next_run_at: r.get(13)?,
     })
 }
 
@@ -1046,11 +1108,8 @@ mod tests {
 
     fn temp_store() -> Store {
         let seq = TEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "focus-store-test-{}-{}",
-            std::process::id(),
-            seq
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("focus-store-test-{}-{}", std::process::id(), seq));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.db");
         let _ = std::fs::remove_file(&path);
@@ -1091,10 +1150,19 @@ mod tests {
         assert_eq!((list[0].col, list[0].row), (2, 3));
         assert_eq!(list[0].kind, "file");
         s.move_shortcut("a", 5, 6).unwrap();
-        assert_eq!((s.list_shortcuts().unwrap()[0].col, s.list_shortcuts().unwrap()[0].row), (5, 6));
+        assert_eq!(
+            (
+                s.list_shortcuts().unwrap()[0].col,
+                s.list_shortcuts().unwrap()[0].row
+            ),
+            (5, 6)
+        );
         s.set_shortcut_fit("a", 1, 1, 4, 3).unwrap();
         let l = s.list_shortcuts().unwrap();
-        assert_eq!((l[0].fit_col, l[0].fit_row, l[0].fit_cols, l[0].fit_rows), (Some(1), Some(1), Some(4), Some(3)));
+        assert_eq!(
+            (l[0].fit_col, l[0].fit_row, l[0].fit_cols, l[0].fit_rows),
+            (Some(1), Some(1), Some(4), Some(3))
+        );
         s.delete_shortcut("a").unwrap();
         assert!(s.list_shortcuts().unwrap().is_empty());
     }
@@ -1135,7 +1203,10 @@ mod tests {
         // Simulate a pre-0006 database: temp_store already applied 0006 as a
         // no-op, so drop the marker to re-test the one-time cleanup itself.
         s.conn
-            .execute("DELETE FROM schema_migrations WHERE name = '0006_remove_internal_shortcuts'", [])
+            .execute(
+                "DELETE FROM schema_migrations WHERE name = '0006_remove_internal_shortcuts'",
+                [],
+            )
             .unwrap();
         s.insert_shortcut(&ShortcutRow {
             id: "a1".into(),
@@ -1200,14 +1271,25 @@ mod tests {
             character_id: cid.clone(),
             name: "测试".into(),
             trigger: "manual".into(),
-            schedule_type: None,
+            schedule_type: Some("weekly".into()),
             interval_minutes: None,
             daily_time: None,
+            weekly_day: Some(2),
+            weekly_time: Some("18:30".into()),
             guard: "none".into(),
-            nodes: vec![
-                NodeDef { id: "n1".into(), kind: "bubble".into(), params: serde_json::json!({"text":"hi"}), x: 0.0, y: 0.0 },
-            ],
-            edges: vec![EdgeDef { id: "e1".into(), source: "n1".into(), source_handle: "out".into(), target: "n1".into() }],
+            nodes: vec![NodeDef {
+                id: "n1".into(),
+                kind: "bubble".into(),
+                params: serde_json::json!({"text":"hi"}),
+                x: 0.0,
+                y: 0.0,
+            }],
+            edges: vec![EdgeDef {
+                id: "e1".into(),
+                source: "n1".into(),
+                source_handle: "out".into(),
+                target: "n1".into(),
+            }],
             enabled: true,
             next_run_at: None,
         };
@@ -1217,6 +1299,8 @@ mod tests {
         assert_eq!(list[0].nodes.len(), 1);
         let got = s.get_workflow("wf1").unwrap().unwrap();
         assert_eq!(got.name, "测试");
+        assert_eq!(got.weekly_day, Some(2));
+        assert_eq!(got.weekly_time.as_deref(), Some("18:30"));
 
         s.insert_workflow_run("r1", "wf1", "manual").unwrap();
         s.finish_workflow_run("r1", "success", None, "[]").unwrap();
@@ -1225,8 +1309,10 @@ mod tests {
         assert_eq!(runs[0].status, "success");
         assert!(runs[0].finished_at.is_some());
 
-        s.record_automation_thread("th-1", &cid, Some("wf1")).unwrap();
-        s.record_automation_thread("th-1", &cid, Some("wf1")).unwrap();
+        s.record_automation_thread("th-1", &cid, Some("wf1"))
+            .unwrap();
+        s.record_automation_thread("th-1", &cid, Some("wf1"))
+            .unwrap();
         assert!(s.visible_automation_thread_ids().unwrap().contains("th-1"));
         s.hide_automation_threads().unwrap();
         assert!(!s.visible_automation_thread_ids().unwrap().contains("th-1"));
@@ -1248,6 +1334,8 @@ mod tests {
             schedule_type: Some("interval".into()),
             interval_minutes: Some(30),
             daily_time: None,
+            weekly_day: None,
+            weekly_time: None,
             guard: "focusing".into(),
             nodes: vec![NodeDef {
                 id: "n1".into(),
@@ -1262,8 +1350,10 @@ mod tests {
         };
         s.save_workflow(&wf).unwrap();
         for i in 0..3 {
-            s.insert_workflow_run(&format!("r{i}"), "wf-r", "schedule").unwrap();
-            s.finish_workflow_run(&format!("r{i}"), "success", None, "[]").unwrap();
+            s.insert_workflow_run(&format!("r{i}"), "wf-r", "schedule")
+                .unwrap();
+            s.finish_workflow_run(&format!("r{i}"), "success", None, "[]")
+                .unwrap();
         }
         let recent = s.list_recent_workflow_runs(2).unwrap();
         assert_eq!(recent.len(), 2);
@@ -1310,6 +1400,8 @@ mod tests {
             schedule_type: None,
             interval_minutes: None,
             daily_time: None,
+            weekly_day: None,
+            weekly_time: None,
             guard: "none".into(),
             nodes: vec![NodeDef {
                 id: "n1".into(),
@@ -1326,7 +1418,8 @@ mod tests {
         let all = s.list_workflows().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].character_id, "");
-        assert_eq!(s.get_workflow("w-empty").unwrap().unwrap().character_id, "");
+        let roundtrip = s.get_workflow("w-empty").unwrap().unwrap();
+        assert_eq!(roundtrip.character_id, "");
     }
 
     #[test]
@@ -1415,7 +1508,10 @@ mod tests {
             (updated.name, updated.persona, updated.pet_pack_id),
             preserved
         );
-        assert_eq!(s.get_character("char-other").unwrap().unwrap().tool, "claude");
+        assert_eq!(
+            s.get_character("char-other").unwrap().unwrap().tool,
+            "claude"
+        );
     }
 
     #[test]
@@ -1430,19 +1526,28 @@ mod tests {
             workspace_dir: None,
             current_session_hash: None,
             session_date: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         assert!(s.upgrade_existing_demo_pet_to_claude_once().unwrap());
-        assert_eq!(s.get_character("focus-demo-pet").unwrap().unwrap().tool, "claude");
+        assert_eq!(
+            s.get_character("focus-demo-pet").unwrap().unwrap().tool,
+            "claude"
+        );
         s.update_character_tool("focus-demo-pet", "codex").unwrap();
         assert!(!s.upgrade_existing_demo_pet_to_claude_once().unwrap());
-        assert_eq!(s.get_character("focus-demo-pet").unwrap().unwrap().tool, "codex");
+        assert_eq!(
+            s.get_character("focus-demo-pet").unwrap().unwrap().tool,
+            "codex"
+        );
     }
 
     #[test]
     fn provider_session_migration_backfills_legacy_codex_session() {
         let s = temp_store();
-        let cid = s.ensure_character("pet-provider-migration", "test-pet").unwrap();
+        let cid = s
+            .ensure_character("pet-provider-migration", "test-pet")
+            .unwrap();
         s.update_character_agent(&cid, None, Some("legacy-codex-session"), Some("2026-08-10"))
             .unwrap();
 
@@ -1473,7 +1578,9 @@ mod tests {
     #[test]
     fn provider_session_migration_backfills_legacy_hash_without_date() {
         let s = temp_store();
-        let cid = s.ensure_character("pet-provider-null-date", "test-pet").unwrap();
+        let cid = s
+            .ensure_character("pet-provider-null-date", "test-pet")
+            .unwrap();
         s.update_character_agent(&cid, None, Some("legacy-codex-session"), None)
             .unwrap();
 
@@ -1502,7 +1609,9 @@ mod tests {
     #[test]
     fn provider_sessions_are_scoped_by_provider() {
         let s = temp_store();
-        let cid = s.ensure_character("pet-provider-scope", "test-pet").unwrap();
+        let cid = s
+            .ensure_character("pet-provider-scope", "test-pet")
+            .unwrap();
 
         s.upsert_provider_session(&cid, "codex", "codex-session", "2026-08-10")
             .unwrap();
@@ -1586,7 +1695,8 @@ mod tests {
         let today = chrono::Local::now().date_naive();
         let off = chrono::Local::now().format("%:z").to_string();
         let fmt = |d: chrono::NaiveDate| format!("{}T09:00:00{}", d.format("%Y-%m-%d"), off);
-        s.record_focus_session(&fmt(today), &fmt(today), 30, None).unwrap();
+        s.record_focus_session(&fmt(today), &fmt(today), 30, None)
+            .unwrap();
         assert_eq!(s.streak_days().unwrap(), 0);
     }
 }

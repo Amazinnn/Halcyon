@@ -27,7 +27,7 @@ mod workflow;
 mod workflow_engine;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 
@@ -65,6 +65,12 @@ pub struct AppState {
     pub _desktop_lock_guard: Mutex<Option<desktop_lock::DesktopLock>>,
 }
 
+const FLOAT_LABELS: [&str; 5] = ["chat", "stats", "music", "pet", "workflow"];
+
+fn is_float_label(label: &str) -> bool {
+    FLOAT_LABELS.contains(&label)
+}
+
 // ---------------------------------------------------------------------------
 // window helpers
 // ---------------------------------------------------------------------------
@@ -91,8 +97,43 @@ fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
     let _ = (w, enabled);
 }
 
+fn set_float_topmost_noactivate(w: &tauri::WebviewWindow, topmost: bool) {
+    strip_float_frame(w);
+    float_noactivate(w);
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = w.hwnd() {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
+        let insert_after = if topmost {
+            HWND_TOPMOST
+        } else {
+            HWND_NOTOPMOST
+        };
+        unsafe {
+            let _ = SetWindowPos(
+                HWND(hwnd.0 as *mut core::ffi::c_void),
+                Some(insert_after),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        return;
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = w.set_always_on_top(topmost);
+}
+
 fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &GridManager) {
     if let Some(w) = app.get_webview_window(label) {
+        if is_float_label(label) {
+            strip_float_frame(&w);
+            float_noactivate(&w);
+        }
         let (x, y, wpx, hpx) = gm.rect_to_logical(rect);
         // v1.10: skip when already at the target (avoid Win32 churn under
         // rapid restore/collapse, #31). Getters are main-thread-only; all
@@ -115,6 +156,7 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
             // — Tauri's set_size can activate the window and paint a caption
             // highlight (light-blue bar) while drag/resize preview is held.
             if !crate::drag::move_window_raw(&w, cx, cy) {
+                #[cfg(not(target_os = "windows"))]
                 let _ = w.set_position(LogicalPosition::new(
                     x - ox as f64 / scale,
                     y - oy as f64 / scale,
@@ -389,12 +431,8 @@ fn build_agent_runtime(
             let exe = agents::claude::find_claude_exe().ok_or_else(|| {
                 "未在 PATH 中找到 Claude CLI（claude.exe/claude.cmd）".to_string()
             })?;
-            let p = agents::claude::ClaudeProvider::new(
-                tx,
-                exe,
-                character_id.to_string(),
-                workspace,
-            );
+            let p =
+                agents::claude::ClaudeProvider::new(tx, exe, character_id.to_string(), workspace);
             Ok(agents::AgentRuntime::Claude(std::sync::Arc::new(
                 std::sync::Mutex::new(p),
             )))
@@ -408,10 +446,7 @@ fn build_agent_runtime(
 /// AGENTS.md is the single identity source (persona is retired).
 pub const AGENTS_MD_TEMPLATE: &str = "你是 Focus 桌宠 Agent「{name}」。请用简洁中文短句回答，句间用单个换行分隔；不要使用 Markdown、列表、代码块或长段落；总长度不超过约 200 字；只输出需要直接展示给用户看的内容。\n";
 
-fn ensure_agent_workspace(
-    state: &AppState,
-    row: &storage::CharacterRow,
-) -> Result<String, String> {
+fn ensure_agent_workspace(state: &AppState, row: &storage::CharacterRow) -> Result<String, String> {
     let home = user_home();
     let dir = PathBuf::from(&home).join("Focus-Agents").join(&row.id);
     if !dir.is_dir() {
@@ -440,10 +475,94 @@ fn saved_session_for_today(
     row: Option<storage::ProviderSessionRow>,
     today: &str,
 ) -> Option<String> {
-    row.filter(|session| {
-        session.session_date == today && !session.session_hash.trim().is_empty()
-    })
-    .map(|session| session.session_hash)
+    row.filter(|session| session.session_date == today && !session.session_hash.trim().is_empty())
+        .map(|session| session.session_hash)
+}
+
+fn provider_skills_dir(home: &Path, provider: agents::AgentProviderKind) -> PathBuf {
+    match provider {
+        agents::AgentProviderKind::Codex => home.join(".codex").join("skills"),
+        agents::AgentProviderKind::Claude => home.join(".claude").join("skills"),
+        #[cfg(test)]
+        agents::AgentProviderKind::Mock => home.join(".focus-test").join("skills"),
+    }
+}
+
+fn list_provider_skills(
+    home: &Path,
+    provider: agents::AgentProviderKind,
+) -> Result<Vec<String>, String> {
+    let dir = provider_skills_dir(home, provider);
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with('.') && entry.path().join("SKILL.md").is_file() {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+fn valid_skill_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn apply_selected_skill(
+    home: &Path,
+    provider: agents::AgentProviderKind,
+    skill_name: Option<&str>,
+    message: &str,
+) -> Result<String, String> {
+    let Some(skill_name) = skill_name.filter(|name| !name.trim().is_empty()) else {
+        return Ok(message.to_string());
+    };
+    if !valid_skill_name(skill_name) {
+        return Err("Invalid Skill selection".to_string());
+    }
+    let path = provider_skills_dir(home, provider)
+        .join(skill_name)
+        .join("SKILL.md");
+    let skill = std::fs::read_to_string(&path)
+        .map_err(|error| format!("Unable to read selected Skill: {error}"))?;
+    Ok(format!(
+        "The user selected the following Skill for this message only. Follow it where applicable.\n\n--- SKILL.md ({skill_name}) ---\n{skill}\n--- END SKILL.md ---\n\n{message}"
+    ))
+}
+
+fn selected_skill_prompt(
+    app: &tauri::AppHandle,
+    character_id: &str,
+    skill_name: Option<&str>,
+    message: &str,
+) -> Result<String, String> {
+    let tool = app
+        .state::<AppState>()
+        .store
+        .lock()
+        .unwrap()
+        .get_character(character_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Character {character_id} does not exist"))?
+        .tool;
+    let provider = agents::AgentProviderKind::parse(&tool)
+        .ok_or_else(|| format!("Unknown Agent provider: {tool}"))?;
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "USERPROFILE/HOME is not configured".to_string())?;
+    apply_selected_skill(Path::new(&home), provider, skill_name, message)
 }
 
 /// Runs a provider call for a specific character's Agent. M5 (ADR-0022):
@@ -487,10 +606,13 @@ fn agent_start_thread(
     app: tauri::AppHandle,
     character_id: String,
     initial_message: String,
+    skill_name: Option<String>,
 ) -> Result<agents::AgentThreadInfo, String> {
     // ADR-0025: daily sessions are scoped by both character and provider.
     let state = app.state::<AppState>();
     let today = today_local();
+    let prompt =
+        selected_skill_prompt(&app, &character_id, skill_name.as_deref(), &initial_message)?;
     // M5 (ADR-0022): conversation = full display (stream + result both shown).
     let display = agents::agent_display_full();
     let (info, persistence) = with_agent_for(&app, &character_id, |runtime| {
@@ -509,24 +631,14 @@ fn agent_start_thread(
             (saved_session_for_today(row, &today), ws)
         };
         if let Some(session_id) = saved_session {
-            let info = resume_with_initial_message(
-                runtime,
-                &session_id,
-                &initial_message,
-                display,
-            )?;
+            let info = resume_with_initial_message(runtime, &session_id, &prompt, display)?;
             Ok((info, Ok(())))
         } else {
-            let info = runtime.start_thread(&ws, &initial_message, display)?;
+            let info = runtime.start_thread(&ws, &prompt, display)?;
             let persistence = (|| -> Result<(), String> {
                 let store = state.store.lock().unwrap();
                 store
-                    .upsert_provider_session(
-                        &character_id,
-                        provider.as_str(),
-                        &info.id,
-                        &today,
-                    )
+                    .upsert_provider_session(&character_id, provider.as_str(), &info.id, &today)
                     .map_err(|error| error.to_string())?;
                 if provider == agents::AgentProviderKind::Codex {
                     store
@@ -556,7 +668,9 @@ fn resume_with_initial_message(
     if initial_message.trim().is_empty() {
         with_agent_rt(rt, |r| r.resume_thread(thread_id))
     } else {
-        with_agent_rt(rt, |r| r.resume_and_send(thread_id, initial_message, display))
+        with_agent_rt(rt, |r| {
+            r.resume_and_send(thread_id, initial_message, display)
+        })
     }
 }
 
@@ -625,11 +739,13 @@ fn agent_send(
     character_id: String,
     thread_id: String,
     text: String,
+    skill_name: Option<String>,
 ) -> Result<(), String> {
     // M5 (ADR-0022): conversation = full display.
     let display = agents::agent_display_full();
+    let prompt = selected_skill_prompt(&app, &character_id, skill_name.as_deref(), &text)?;
     with_agent_for(&app, &character_id, |rt| {
-        rt.send(&thread_id, &text, display)
+        rt.send(&thread_id, &prompt, display)
     })
 }
 
@@ -643,7 +759,25 @@ fn agent_interrupt(
 }
 
 #[tauri::command]
-fn agent_list_skills() -> Result<Vec<String>, String> {
+fn agent_list_skills(
+    app: tauri::AppHandle,
+    character_id: Option<String>,
+) -> Result<Vec<String>, String> {
+    let characters = app
+        .state::<AppState>()
+        .store
+        .lock()
+        .unwrap()
+        .list_characters()
+        .map_err(|error| error.to_string())?;
+    let character = select_status_character(&characters, character_id.as_deref())?;
+    let provider = agents::AgentProviderKind::parse(&character.tool)
+        .ok_or_else(|| format!("Unknown Agent provider: {}", character.tool))?;
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "USERPROFILE/HOME is not configured".to_string())?;
+    list_provider_skills(Path::new(&home), provider)
+    /*
     let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE 未设置".to_string())?;
     let dir = std::path::PathBuf::from(home).join(".codex").join("skills");
     let mut names = Vec::new();
@@ -662,6 +796,7 @@ fn agent_list_skills() -> Result<Vec<String>, String> {
     }
     names.sort();
     Ok(names)
+    */
 }
 
 /// M5 (ADR-0022): delete an Agent — remove its workspace dir (AGENTS.md +
@@ -777,10 +912,10 @@ fn set_agent_provider_serialized_with(
     let mut registry = registry.lock().unwrap();
     after_registry_lock();
     let store = store.lock().unwrap();
-    let characters = store
-        .list_characters()
-        .map_err(|error| error.to_string())?;
-    let selected_id = select_status_character(&characters, character_id)?.id.clone();
+    let characters = store.list_characters().map_err(|error| error.to_string())?;
+    let selected_id = select_status_character(&characters, character_id)?
+        .id
+        .clone();
     if registry
         .get(&selected_id)
         .is_some_and(agents::AgentRuntime::has_active_turn)
@@ -1036,7 +1171,11 @@ fn set_topmost(
         let _ = settings.save(&state.data_dir);
     }
     if let Some(w) = app.get_webview_window(&label) {
-        let _ = w.set_always_on_top(topmost);
+        if is_float_label(&label) {
+            set_float_topmost_noactivate(&w, topmost);
+        } else {
+            let _ = w.set_always_on_top(topmost);
+        }
     }
     Ok(())
 }
@@ -1056,7 +1195,7 @@ fn collapse(
         let _ = settings.save(&state.data_dir);
     }
     if let Some(w) = app.get_webview_window(&label) {
-        let _ = w.hide();
+        hide_float_noactivate(&w);
     }
     emit_visibility(&app, &label, false);
     Ok(())
@@ -1087,12 +1226,6 @@ pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), 
             }
         }
     }
-    {
-        let state = app.state::<AppState>();
-        let mut settings = state.settings.lock().unwrap();
-        settings.collapsed.retain(|c| c != label);
-        let _ = settings.save(&state.data_dir);
-    }
     let state = app.state::<AppState>();
     let (w, h) = *state.screen.lock().unwrap();
     let gm = GridManager {
@@ -1114,39 +1247,35 @@ pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), 
             rows: 2,
         }
     };
-    let mut rect = state
-        .settings
-        .lock()
-        .unwrap()
-        .grid
-        .get(label)
-        .copied()
-        .unwrap_or(default_rect);
-    // v1.10.3 (#45): never restore onto a visible window - pick the nearest
-    // free slot when the saved rect overlaps (ADR-0016).
-    {
-        let settings = state.settings.lock().unwrap();
+    // Resolve a free slot before changing persistent visibility.  A full grid
+    // keeps this window collapsed, so it can never be shown on top of another.
+    let (rect, topmost) = {
+        let mut settings = state.settings.lock().unwrap();
+        let desired = settings
+            .grid
+            .get(label)
+            .copied()
+            .unwrap_or(default_rect);
         let occupied = occupied_rects(&settings, Some(label));
-        if let Some(free) = gm.find_free_slot(label, &rect, &occupied) {
-            if free != rect {
-                drop(settings);
-                let mut s = state.settings.lock().unwrap();
-                s.grid.insert(label.to_string(), free);
-                let _ = s.save(&state.data_dir);
-                rect = free;
-            }
+        let rect = gm
+            .restore_slot(label, &desired, &occupied)
+            .map_err(|_| "No available grid position for this window".to_string())?;
+        let mut changed = false;
+        if rect != desired {
+            settings.grid.insert(label.to_string(), rect);
+            changed = true;
         }
-    }
+        if settings.collapsed.iter().any(|c| c == label) {
+            settings.collapsed.retain(|c| c != label);
+            changed = true;
+        }
+        if changed {
+            let _ = settings.save(&state.data_dir);
+        }
+        (rect, *settings.topmost.get(label).unwrap_or(&true))
+    };
     if let Some(win) = app.get_webview_window(label) {
-        let _ = win.set_always_on_top(
-            *state
-                .settings
-                .lock()
-                .unwrap()
-                .topmost
-                .get(label)
-                .unwrap_or(&true),
-        );
+        set_float_topmost_noactivate(&win, topmost);
         show_float_noactivate(&win);
     }
     position_window(app, label, &rect, &gm);
@@ -1625,20 +1754,49 @@ fn quit_app(app: tauri::AppHandle) {
 
 /// v1.10.3.1 (#46): physical initial rect for a float at its saved grid slot.
 
-/// v1.10.3.1 (#48): strip WS_BORDER|WS_DLGFRAME from float windows. tauri's
-/// decorations(false) still leaves caption-style bits on the host window, so
-/// the outer rect is ~15x9px larger than the client (grid) size and the
-/// content center drifts from the grid-cell center. Removing them makes
+const WM_NCCALCSIZE: u32 = 0x0083;
+const WM_ERASEBKGND: u32 = 0x0014;
+const FLOAT_SUBCLASS_ID: usize = 0x464F_4355;
+
+fn float_nonclient_message_result(message: u32) -> Option<isize> {
+    match message {
+        WM_NCCALCSIZE => Some(0),
+        WM_ERASEBKGND => Some(1),
+        _ => None,
+    }
+}
+
+/// Uses comctl32's managed subclass chain instead of replacing GWLP_WNDPROC.
+/// Windows otherwise retains an 15x8 non-client band after activation even
+/// when the caption style bits have already been cleared.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn float_nonclient_subclass(
+    hwnd: windows::Win32::Foundation::HWND,
+    message: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _subclass_id: usize,
+    _reference_data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    if let Some(result) = float_nonclient_message_result(message) {
+        return windows::Win32::Foundation::LRESULT(result);
+    }
+    unsafe {
+        windows::Win32::UI::Shell::DefSubclassProc(hwnd, message, wparam, lparam)
+    }
+}
+
 /// Strip the system frame from a float window so that outer == client and the
 /// window exactly matches its grid rect (no white edge, #49).
 fn strip_float_frame(w: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::SetWindowSubclass;
         use windows::Win32::UI::WindowsAndMessaging::{
             GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
-            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER, WS_DLGFRAME, WS_MAXIMIZEBOX,
-            WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER, WS_DLGFRAME,
+            WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
         };
         if let Ok(hwnd) = w.hwnd() {
             let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
@@ -1654,6 +1812,12 @@ fn strip_float_frame(w: &tauri::WebviewWindow) {
                 if new_style != style {
                     let _ = SetWindowLongPtrW(hwnd_win, GWL_STYLE, new_style);
                 }
+                let _ = SetWindowSubclass(
+                    hwnd_win,
+                    Some(float_nonclient_subclass),
+                    FLOAT_SUBCLASS_ID,
+                    0,
+                );
                 let _ = SetWindowPos(
                     hwnd_win,
                     None,
@@ -1661,7 +1825,7 @@ fn strip_float_frame(w: &tauri::WebviewWindow) {
                     0,
                     0,
                     0,
-                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
                 );
             }
         }
@@ -1742,6 +1906,7 @@ fn float_noactivate(w: &tauri::WebviewWindow) {
 }
 
 fn show_float_noactivate(w: &tauri::WebviewWindow) {
+    strip_float_frame(w);
     float_noactivate(w);
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = w.hwnd() {
@@ -1754,6 +1919,20 @@ fn show_float_noactivate(w: &tauri::WebviewWindow) {
     }
     #[cfg(not(target_os = "windows"))]
     let _ = w.show();
+}
+
+fn hide_float_noactivate(w: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = w.hwnd() {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindowAsync, SW_HIDE};
+        unsafe {
+            let _ = ShowWindowAsync(HWND(hwnd.0 as *mut core::ffi::c_void), SW_HIDE);
+        }
+        return;
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = w.hide();
 }
 
 fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
@@ -1808,7 +1987,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(chat_px, chat_py)
         .inner_size(chat_pw, chat_ph)
-        .visible(!chat_collapsed) // v1.10.3.1 (#46)
+        .visible(false)
         .build()?;
     strip_float_frame(&chat);
     float_noactivate(&chat);
@@ -1835,7 +2014,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(stats_px, stats_py)
         .inner_size(stats_pw, stats_ph)
-        .visible(!stats_collapsed) // v1.10.3.1 (#46)
+        .visible(false)
         .build()?;
     strip_float_frame(&stats);
     float_noactivate(&stats);
@@ -1862,7 +2041,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(music_px, music_py)
         .inner_size(music_pw, music_ph)
-        .visible(!music_collapsed) // v1.10.3.1 (#46)
+        .visible(false)
         .build()?;
     strip_float_frame(&music);
     float_noactivate(&music);
@@ -1889,7 +2068,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(pet_px, pet_py)
         .inner_size(pet_pw, pet_ph)
-        .visible(!pet_collapsed) // v1.10.3.1 (#46)
+        .visible(false)
         .build()?;
     strip_float_frame(&pet);
     float_noactivate(&pet);
@@ -1917,10 +2096,24 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
         .position(workflow_px, workflow_py)
         .inner_size(workflow_pw, workflow_ph)
-        .visible(!workflow_collapsed) // v1.10.3.1 (#46)
+        .visible(false)
         .build()?;
     strip_float_frame(&workflow);
     float_noactivate(&workflow);
+
+    for (label, collapsed) in [
+        ("chat", chat_collapsed),
+        ("stats", stats_collapsed),
+        ("music", music_collapsed),
+        ("pet", pet_collapsed),
+        ("workflow", workflow_collapsed),
+    ] {
+        if !collapsed {
+            if let Some(window) = app.get_webview_window(label) {
+                show_float_noactivate(&window);
+            }
+        }
+    }
 
     let overlay = tauri::WebviewWindowBuilder::new(app, "grid-overlay", url.clone())
         .title("Grid Overlay")
@@ -1966,7 +2159,7 @@ fn apply_topbar_visibility(app: &tauri::AppHandle) {
             show_float_noactivate(&w);
             raise_topbar(app);
         } else {
-            let _ = w.hide();
+            hide_float_noactivate(&w);
         }
     }
 }
@@ -2025,7 +2218,7 @@ fn sync_collapsed(app: &tauri::AppHandle, state: &AppState) {
     for label in ["chat", "stats", "music", "pet", "workflow"] {
         if collapsed.contains(&label.to_string()) {
             if let Some(w) = app.get_webview_window(label) {
-                let _ = w.hide();
+                hide_float_noactivate(&w);
             }
         }
     }
@@ -2037,37 +2230,70 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
         screen_w: w,
         screen_h: h,
     };
-    let settings = state.settings.lock().unwrap();
+    let (resolved, collapsed, topmost) = {
+        let mut settings = state.settings.lock().unwrap();
+        let saved = FLOAT_LABELS
+            .iter()
+            .map(|label| {
+                let default_rect = if *label == "workflow" {
+                    GridRect {
+                        col: 4,
+                        row: 2,
+                        cols: 4,
+                        rows: 4,
+                    }
+                } else {
+                    GridRect {
+                        col: 0,
+                        row: 0,
+                        cols: 2,
+                        rows: 2,
+                    }
+                };
+                (
+                    (*label).to_string(),
+                    settings.grid.get(*label).copied().unwrap_or(default_rect),
+                )
+            })
+            .collect::<Vec<_>>();
+        let (resolved, overflow) = gm.reconcile_visible_rects(&saved, &settings.collapsed);
+        let mut changed = false;
+        for (label, rect) in &resolved {
+            if settings.grid.get(label) != Some(rect) {
+                settings.grid.insert(label.clone(), *rect);
+                changed = true;
+            }
+        }
+        for label in overflow {
+            if !settings.collapsed.contains(&label) {
+                settings.collapsed.push(label);
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = settings.save(&state.data_dir);
+        }
+        (
+            resolved,
+            settings.collapsed.clone(),
+            settings.topmost.clone(),
+        )
+    };
 
-    for label in ["chat", "stats", "music", "pet", "workflow"] {
-        if let Some(rect) = settings.grid.get(label) {
+    for label in FLOAT_LABELS {
+        if let Some(rect) = resolved.get(label) {
             position_window(&app.handle(), label, rect, &gm);
-        } else if label == "workflow" {
-            // M4/ADR-0012: default 4x4 slot so the new window never opens at
-            // the raw 800x600 default size.
-            position_window(
-                &app.handle(),
-                label,
-                &GridRect {
-                    col: 4,
-                    row: 2,
-                    cols: 4,
-                    rows: 4,
-                },
-                &gm,
-            );
         }
         if let Some(win) = app.get_webview_window(label) {
-            let top = *settings.topmost.get(label).unwrap_or(&true);
-            let _ = win.set_always_on_top(top);
-            let collapsed = settings.collapsed.contains(&label.to_string());
-            if collapsed {
-                let _ = win.hide();
+            let top = *topmost.get(label).unwrap_or(&true);
+            set_float_topmost_noactivate(&win, top);
+            let visible = resolved.contains_key(label) && !collapsed.contains(&label.to_string());
+            if !visible {
+                hide_float_noactivate(&win);
             }
-            emit_visibility(&app.handle(), label, !collapsed);
+            emit_visibility(&app.handle(), label, visible);
         }
     }
-    drop(settings);
 }
 
 // ---------------------------------------------------------------------------
@@ -2234,7 +2460,9 @@ pub fn run() {
             ));
             wm.purge_incompatible();
             let _ = wm.ensure_characters();
-            if let Err(error) = bootstrap_existing_demo_pet_provider_durably(&app_handle.state::<AppState>()) {
+            if let Err(error) =
+                bootstrap_existing_demo_pet_provider_durably(&app_handle.state::<AppState>())
+            {
                 eprintln!("[agent] Demo Pet provider bootstrap failed: {error}");
             }
             *app_handle.state::<AppState>().workflow.lock().unwrap() = Some(wm.clone());
@@ -2330,7 +2558,7 @@ pub fn run() {
                 } else if let Some(w) = h5.get_webview_window("chat") {
                     let visible = w.is_visible().unwrap_or(true);
                     if visible {
-                        let _ = w.hide();
+                        hide_float_noactivate(&w);
                     } else {
                         show_float_noactivate(&w);
                     }
@@ -2548,12 +2776,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_status_for_character, agents, agents::AgentProviderKind,
+        agent_set_provider_serialized_with, agent_status_for_character, agents,
+        agents::AgentProviderKind, apply_selected_skill, bootstrap_existing_demo_pet_provider,
         discard_runtime_after_provider_error, elapsed_sec, ensure_runtime_serialized,
-        provider_ready, resume_with_initial_message, saved_session_for_today,
-        agent_set_provider_serialized_with, bootstrap_existing_demo_pet_provider,
-        select_status_character, set_agent_provider_serialized_with, topbar_visible,
-        with_agent_runtime_serialized,
+        float_nonclient_message_result, is_float_label, list_provider_skills, provider_ready, provider_skills_dir,
+        resume_with_initial_message, saved_session_for_today, select_status_character,
+        set_agent_provider_serialized_with, topbar_visible, with_agent_runtime_serialized,
     };
 
     fn status_character(id: &str, tool: &str) -> crate::storage::CharacterRow {
@@ -2569,10 +2797,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn selected_skill_is_provider_scoped_and_applies_to_one_prompt() {
+        let root = std::env::temp_dir().join(format!(
+            "focus-provider-skills-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let codex_skill = provider_skills_dir(&root, AgentProviderKind::Codex).join("focus-cli");
+        let claude_skill = provider_skills_dir(&root, AgentProviderKind::Claude).join("focus-cli");
+        std::fs::create_dir_all(&codex_skill).unwrap();
+        std::fs::create_dir_all(&claude_skill).unwrap();
+        std::fs::write(codex_skill.join("SKILL.md"), "CODEX SKILL").unwrap();
+        std::fs::write(claude_skill.join("SKILL.md"), "CLAUDE SKILL").unwrap();
+
+        assert_eq!(
+            list_provider_skills(&root, AgentProviderKind::Codex).unwrap(),
+            vec!["focus-cli"]
+        );
+        assert_eq!(
+            list_provider_skills(&root, AgentProviderKind::Claude).unwrap(),
+            vec!["focus-cli"]
+        );
+        let prompt = apply_selected_skill(
+            &root,
+            AgentProviderKind::Claude,
+            Some("focus-cli"),
+            "check status",
+        )
+        .unwrap();
+        assert!(prompt.contains("CLAUDE SKILL"));
+        assert!(prompt.ends_with("check status"));
+        assert!(
+            apply_selected_skill(&root, AgentProviderKind::Claude, Some("../escape"), "check")
+                .is_err()
+        );
+        assert_eq!(
+            apply_selected_skill(&root, AgentProviderKind::Claude, None, "plain").unwrap(),
+            "plain"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn provider_race_store(
         character_id: &str,
         tool: &str,
-    ) -> (std::path::PathBuf, std::sync::Arc<std::sync::Mutex<crate::storage::Store>>) {
+    ) -> (
+        std::path::PathBuf,
+        std::sync::Arc<std::sync::Mutex<crate::storage::Store>>,
+    ) {
         let path = std::env::temp_dir().join(format!(
             "focus-provider-race-{}-{}.db",
             std::process::id(),
@@ -2589,7 +2866,10 @@ mod tests {
         (path, std::sync::Arc::new(std::sync::Mutex::new(store)))
     }
 
-    fn existing_demo_pet_store() -> (std::path::PathBuf, std::sync::Arc<std::sync::Mutex<crate::storage::Store>>) {
+    fn existing_demo_pet_store() -> (
+        std::path::PathBuf,
+        std::sync::Arc<std::sync::Mutex<crate::storage::Store>>,
+    ) {
         let path = std::env::temp_dir().join(format!(
             "focus-demo-pet-bootstrap-{}-{}.db",
             std::process::id(),
@@ -2607,10 +2887,7 @@ mod tests {
         (path, std::sync::Arc::new(std::sync::Mutex::new(store)))
     }
 
-    fn inert_runtime(
-        kind: AgentProviderKind,
-        character_id: &str,
-    ) -> agents::AgentRuntime {
+    fn inert_runtime(kind: AgentProviderKind, character_id: &str) -> agents::AgentRuntime {
         let (tx, _) = tokio::sync::broadcast::channel(8);
         match kind {
             AgentProviderKind::Codex => agents::AgentRuntime::Codex(std::sync::Arc::new(
@@ -2651,21 +2928,20 @@ mod tests {
             &shim,
             concat!(
                 "@echo off\r\n",
-                "more > nul\r\n",
                 "echo {\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"guarded-session\"}\r\n",
                 "for /L %%i in (1,1,10000000) do @rem\r\n",
             ),
         )
         .unwrap();
         let (tx, _) = tokio::sync::broadcast::channel(8);
-        let runtime = agents::AgentRuntime::Claude(std::sync::Arc::new(
-            std::sync::Mutex::new(agents::claude::ClaudeProvider::new(
+        let runtime = agents::AgentRuntime::Claude(std::sync::Arc::new(std::sync::Mutex::new(
+            agents::claude::ClaudeProvider::new(
                 tx,
                 shim,
                 character_id.into(),
                 workspace.to_string_lossy().into_owned(),
-            )),
-        ));
+            ),
+        )));
         (workspace, runtime)
     }
 
@@ -2675,9 +2951,7 @@ mod tests {
         let character_id = "char-claim-switch";
         let (db_path, store) = provider_race_store(character_id, "claude");
         let (workspace, runtime) = long_running_claude_runtime(character_id, "claim-switch");
-        let registry = std::sync::Arc::new(std::sync::Mutex::new(
-            agents::AgentRegistry::new(),
-        ));
+        let registry = std::sync::Arc::new(std::sync::Mutex::new(agents::AgentRegistry::new()));
         registry
             .lock()
             .unwrap()
@@ -2803,8 +3077,7 @@ mod tests {
             || {},
         )
         .unwrap();
-        let (workspace, replacement) =
-            long_running_claude_runtime(character_id, "workflow-switch");
+        let (workspace, replacement) = long_running_claude_runtime(character_id, "workflow-switch");
         let replacement_for_build = replacement.shared_clone();
         let (actual_provider, info) = with_agent_runtime_serialized(
             &registry,
@@ -2830,12 +3103,7 @@ mod tests {
         assert_eq!(actual_provider, AgentProviderKind::Claude);
         assert!(replacement.has_active_turn());
         assert_eq!(
-            registry
-                .lock()
-                .unwrap()
-                .get(character_id)
-                .unwrap()
-                .kind(),
+            registry.lock().unwrap().get(character_id).unwrap().kind(),
             AgentProviderKind::Claude
         );
 
@@ -2857,9 +3125,7 @@ mod tests {
     fn provider_switch_serializes_against_ensure_that_observed_old_tool() {
         let character_id = "char-provider-race";
         let (db_path, store) = provider_race_store(character_id, "codex");
-        let registry = std::sync::Arc::new(std::sync::Mutex::new(
-            agents::AgentRegistry::new(),
-        ));
+        let registry = std::sync::Arc::new(std::sync::Mutex::new(agents::AgentRegistry::new()));
         let (observed_tx, observed_rx) = std::sync::mpsc::channel();
         let (continue_tx, continue_rx) = std::sync::mpsc::channel();
 
@@ -2909,7 +3175,9 @@ mod tests {
         continue_tx.send(()).unwrap();
         assert_eq!(ensure.join().unwrap().kind(), AgentProviderKind::Codex);
         switch.join().unwrap().unwrap();
-        locked_rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        locked_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
 
         let final_runtime = ensure_runtime_serialized(&registry, character_id, || {
             let row = store
@@ -2936,12 +3204,7 @@ mod tests {
         );
         assert_eq!(final_runtime.kind(), AgentProviderKind::Claude);
         assert_eq!(
-            registry
-                .lock()
-                .unwrap()
-                .get(character_id)
-                .unwrap()
-                .kind(),
+            registry.lock().unwrap().get(character_id).unwrap().kind(),
             AgentProviderKind::Claude
         );
 
@@ -2970,21 +3233,20 @@ mod tests {
             &shim,
             concat!(
                 "@echo off\r\n",
-                "more > nul\r\n",
                 "echo {\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"active-switch-session\"}\r\n",
                 "for /L %%i in (1,1,10000000) do @rem\r\n",
             ),
         )
         .unwrap();
         let (tx, _) = tokio::sync::broadcast::channel(8);
-        let runtime = agents::AgentRuntime::Claude(std::sync::Arc::new(
-            std::sync::Mutex::new(agents::claude::ClaudeProvider::new(
+        let runtime = agents::AgentRuntime::Claude(std::sync::Arc::new(std::sync::Mutex::new(
+            agents::claude::ClaudeProvider::new(
                 tx,
                 shim,
                 character_id.into(),
                 workspace.to_string_lossy().into_owned(),
-            )),
-        ));
+            ),
+        )));
         let registry = std::sync::Mutex::new(agents::AgentRegistry::new());
         registry
             .lock()
@@ -3019,12 +3281,7 @@ mod tests {
             "claude"
         );
         assert_eq!(
-            registry
-                .lock()
-                .unwrap()
-                .get(character_id)
-                .unwrap()
-                .kind(),
+            registry.lock().unwrap().get(character_id).unwrap().kind(),
             AgentProviderKind::Claude
         );
         assert!(runtime.has_active_turn());
@@ -3047,17 +3304,21 @@ mod tests {
         let (db_path, store) = provider_race_store("char-a", "codex");
         let registry = std::sync::Mutex::new(agents::AgentRegistry::new());
 
-        let error = agent_set_provider_serialized_with(
-            &registry,
-            &store,
-            "char-a",
-            "unknown",
-            || {},
-        )
-        .unwrap_err();
+        let error =
+            agent_set_provider_serialized_with(&registry, &store, "char-a", "unknown", || {})
+                .unwrap_err();
 
         assert_eq!(error, "provider must be codex or claude");
-        assert_eq!(store.lock().unwrap().get_character("char-a").unwrap().unwrap().tool, "codex");
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .get_character("char-a")
+                .unwrap()
+                .unwrap()
+                .tool,
+            "codex"
+        );
         drop(registry);
         drop(store);
         std::fs::remove_file(db_path).unwrap();
@@ -3076,8 +3337,14 @@ mod tests {
         agent_set_provider_serialized_with(&registry, &store, "char-b", "claude", || {}).unwrap();
 
         let store_guard = store.lock().unwrap();
-        assert_eq!(store_guard.get_character("char-a").unwrap().unwrap().tool, "codex");
-        assert_eq!(store_guard.get_character("char-b").unwrap().unwrap().tool, "claude");
+        assert_eq!(
+            store_guard.get_character("char-a").unwrap().unwrap().tool,
+            "codex"
+        );
+        assert_eq!(
+            store_guard.get_character("char-b").unwrap().unwrap().tool,
+            "claude"
+        );
         drop(store_guard);
         drop(registry);
         drop(store);
@@ -3089,11 +3356,33 @@ mod tests {
         let (db_path, store) = existing_demo_pet_store();
 
         assert!(bootstrap_existing_demo_pet_provider(&mut store.lock().unwrap()).unwrap());
-        assert_eq!(store.lock().unwrap().get_character("focus-demo-pet").unwrap().unwrap().tool, "claude");
-        store.lock().unwrap().update_character_tool("focus-demo-pet", "codex").unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .get_character("focus-demo-pet")
+                .unwrap()
+                .unwrap()
+                .tool,
+            "claude"
+        );
+        store
+            .lock()
+            .unwrap()
+            .update_character_tool("focus-demo-pet", "codex")
+            .unwrap();
 
         assert!(!bootstrap_existing_demo_pet_provider(&mut store.lock().unwrap()).unwrap());
-        assert_eq!(store.lock().unwrap().get_character("focus-demo-pet").unwrap().unwrap().tool, "codex");
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .get_character("focus-demo-pet")
+                .unwrap()
+                .unwrap()
+                .tool,
+            "codex"
+        );
         drop(store);
         std::fs::remove_file(db_path).unwrap();
     }
@@ -3110,14 +3399,20 @@ mod tests {
         let selected = select_status_character(&characters, Some("char-claude")).unwrap();
         let claude = agent_status_for_character(selected, &codex_path, &claude_path).unwrap();
         assert_eq!(claude.provider, "claude");
-        assert!(!claude.ready, "Codex availability must not make Claude ready");
+        assert!(
+            !claude.ready,
+            "Codex availability must not make Claude ready"
+        );
         assert_eq!(claude.workspace_dir, r"C:\Focus-Agents\char-claude");
 
         let default = select_status_character(&characters, None).unwrap();
         let codex = agent_status_for_character(default, &codex_path, &claude_path).unwrap();
         assert_eq!(codex.provider, "codex");
         assert!(codex.ready);
-        assert_eq!(default.id, "char-codex", "no-target status is deterministic");
+        assert_eq!(
+            default.id, "char-codex",
+            "no-target status is deterministic"
+        );
     }
 
     #[test]
@@ -3140,14 +3435,21 @@ mod tests {
         use std::path::PathBuf;
         use std::sync::{Arc, Mutex};
 
-        assert_eq!(AgentProviderKind::parse("claude"), Some(AgentProviderKind::Claude));
+        assert_eq!(
+            AgentProviderKind::parse("claude"),
+            Some(AgentProviderKind::Claude)
+        );
         assert_eq!(AgentProviderKind::Claude.as_str(), "claude");
         assert!(provider_ready(
             AgentProviderKind::Claude,
             &None,
             &Some(r"C:\Tools\claude.exe".into()),
         ));
-        assert!(!provider_ready(AgentProviderKind::Claude, &Some("codex.exe".into()), &None));
+        assert!(!provider_ready(
+            AgentProviderKind::Claude,
+            &Some("codex.exe".into()),
+            &None
+        ));
 
         let (tx, _) = tokio::sync::broadcast::channel(8);
         let runtime = agents::AgentRuntime::Claude(Arc::new(Mutex::new(
@@ -3184,7 +3486,11 @@ mod tests {
             &Some(r"C:\\Codex\\codex.exe".into()),
             &None,
         ));
-        assert!(!provider_ready(AgentProviderKind::Codex, &None, &Some("claude.exe".into())));
+        assert!(!provider_ready(
+            AgentProviderKind::Codex,
+            &None,
+            &Some("claude.exe".into())
+        ));
     }
 
     #[test]
@@ -3198,11 +3504,7 @@ mod tests {
             ))),
         );
 
-        discard_runtime_after_provider_error(
-            &mut registry,
-            "char-test",
-            agents::ACTIVE_TURN_ERROR,
-        );
+        discard_runtime_after_provider_error(&mut registry, "char-test", agents::ACTIVE_TURN_ERROR);
         assert!(registry.get("char-test").is_some());
 
         discard_runtime_after_provider_error(&mut registry, "char-test", "codex app-server exited");
@@ -3278,6 +3580,25 @@ mod tests {
         assert!(!topbar_visible("off", "focus"));
         assert!(!topbar_visible("off", "rest"));
         assert!(!topbar_visible("off", "idle"));
+    }
+
+    #[test]
+    fn float_labels_cover_every_internal_page() {
+        for label in ["chat", "stats", "music", "pet", "workflow"] {
+            assert!(
+                is_float_label(label),
+                "missing float lifecycle coverage for {label}"
+            );
+        }
+        assert!(!is_float_label("desktop"));
+        assert!(!is_float_label("topbar"));
+    }
+
+    #[test]
+    fn float_nonclient_handler_makes_the_outer_rect_client_only() {
+        assert_eq!(float_nonclient_message_result(0x0083), Some(0));
+        assert_eq!(float_nonclient_message_result(0x0014), Some(1));
+        assert_eq!(float_nonclient_message_result(0x000F), None);
     }
 
     #[test]

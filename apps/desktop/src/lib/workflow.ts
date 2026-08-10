@@ -26,6 +26,8 @@ export interface WorkflowDef {
   scheduleType?: string | null;
   intervalMinutes?: number | null;
   dailyTime?: string | null;
+  weeklyDay?: number | null;
+  weeklyTime?: string | null;
   guard: string;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
@@ -146,6 +148,8 @@ export function emptyWorkflow(name = "新工作流"): WorkflowDef {
     scheduleType: null,
     intervalMinutes: null,
     dailyTime: null,
+    weeklyDay: null,
+    weeklyTime: null,
     guard: "none",
     nodes: [],
     edges: [],
@@ -165,7 +169,10 @@ export const TRIGGER_LABELS: Record<string, string> = {
 export const SCHEDULE_LABELS: Record<string, string> = {
   interval: "间隔",
   daily: "每日",
+  weekly: "每周",
 };
+
+export const WEEKDAY_LABELS = ["每周一", "每周二", "每周三", "每周四", "每周五", "每周六", "每周日"];
 
 export const GUARD_LABELS: Record<string, string> = {
   none: "无",
@@ -181,7 +188,9 @@ export function triggerBadge(wf: WorkflowDef): string {
   if (wf.trigger === "scheduled") {
     if (wf.scheduleType === "interval") detail = `每${wf.intervalMinutes ?? 30}分`;
     else if (wf.scheduleType === "daily") detail = `每日 ${wf.dailyTime ?? "09:00"}`;
-    else detail = "定时";
+    else if (wf.scheduleType === "weekly") {
+      detail = `${WEEKDAY_LABELS[wf.weeklyDay ?? 0] ?? WEEKDAY_LABELS[0]} ${wf.weeklyTime ?? "09:00"}`;
+    } else detail = "定时";
   }
   const g = GUARD_LABELS[wf.guard] ?? wf.guard;
   const parts = [t];

@@ -1,8 +1,8 @@
 //! Pure data model for workflows (M4, ADR-0012). Serde shapes are the wire
 //! format between the Vue Flow editor and the Rust engine.
 
+use chrono::{Datelike, TimeZone};
 use serde::{Deserialize, Serialize};
-use chrono::TimeZone;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -19,6 +19,10 @@ pub struct WorkflowDef {
     pub interval_minutes: Option<i64>,
     #[serde(default)]
     pub daily_time: Option<String>, // "HH:MM"
+    #[serde(default)]
+    pub weekly_day: Option<u8>, // Monday=0 .. Sunday=6
+    #[serde(default)]
+    pub weekly_time: Option<String>, // "HH:MM"
     #[serde(default)]
     pub guard: String, // none | focusing | resting | idle
     #[serde(default)]
@@ -63,6 +67,20 @@ pub struct EdgeDef {
 
 fn default_out() -> String {
     "out".into()
+}
+
+fn valid_hhmm(value: &str) -> bool {
+    let mut parts = value.trim().split(':');
+    let (Some(hour), Some(minute)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+    let (Ok(hour), Ok(minute)) = (hour.parse::<u32>(), minute.parse::<u32>()) else {
+        return false;
+    };
+    hour <= 23 && minute <= 59
 }
 
 /// A character = desktop pet + agents.md persona (ADR-0012). The engine only
@@ -174,6 +192,14 @@ pub fn validate_workflow(wf: &WorkflowDef) -> Result<(), String> {
     if wf.nodes.is_empty() {
         return Err("工作流至少需要一个节点".into());
     }
+    if wf.schedule_type.as_deref() == Some("weekly") {
+        if wf.weekly_day.map(|day| day <= 6) != Some(true) {
+            return Err("每周日期必须为 0 至 6".into());
+        }
+        if !wf.weekly_time.as_deref().is_some_and(valid_hhmm) {
+            return Err("每周时间格式应为 HH:MM".into());
+        }
+    }
     let mut ids: HashSet<&str> = HashSet::new();
     for n in &wf.nodes {
         if !matches!(
@@ -215,12 +241,31 @@ mod tests {
             schedule_type: None,
             interval_minutes: None,
             daily_time: None,
+            weekly_day: None,
+            weekly_time: None,
             guard: "none".into(),
             nodes: vec![
-                NodeDef { id: "n1".into(), kind: "wait".into(), params: serde_json::json!({"seconds":1}), x: 0.0, y: 0.0 },
-                NodeDef { id: "n2".into(), kind: "wait".into(), params: serde_json::json!({"seconds":1}), x: 0.0, y: 0.0 },
+                NodeDef {
+                    id: "n1".into(),
+                    kind: "wait".into(),
+                    params: serde_json::json!({"seconds":1}),
+                    x: 0.0,
+                    y: 0.0,
+                },
+                NodeDef {
+                    id: "n2".into(),
+                    kind: "wait".into(),
+                    params: serde_json::json!({"seconds":1}),
+                    x: 0.0,
+                    y: 0.0,
+                },
             ],
-            edges: vec![EdgeDef { id: "e1".into(), source: "n1".into(), source_handle: "out".into(), target: "n2".into() }],
+            edges: vec![EdgeDef {
+                id: "e1".into(),
+                source: "n1".into(),
+                source_handle: "out".into(),
+                target: "n2".into(),
+            }],
             enabled: true,
             next_run_at: None,
         }
@@ -232,12 +277,33 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_invalid_weekly_schedule() {
+        let mut wf = sample();
+        wf.trigger = "scheduled".into();
+        wf.schedule_type = Some("weekly".into());
+        wf.weekly_day = Some(7);
+        wf.weekly_time = Some("99:00".into());
+
+        assert!(validate_workflow(&wf).is_err());
+    }
+
+    #[test]
     fn validate_allows_cycle_and_self_loop() {
         let mut wf = sample();
-        wf.edges.push(EdgeDef { id: "e2".into(), source: "n2".into(), source_handle: "out".into(), target: "n1".into() });
+        wf.edges.push(EdgeDef {
+            id: "e2".into(),
+            source: "n2".into(),
+            source_handle: "out".into(),
+            target: "n1".into(),
+        });
         assert!(validate_workflow(&wf).is_ok());
         let mut wf2 = sample();
-        wf2.edges.push(EdgeDef { id: "e3".into(), source: "n1".into(), source_handle: "out".into(), target: "n1".into() });
+        wf2.edges.push(EdgeDef {
+            id: "e3".into(),
+            source: "n1".into(),
+            source_handle: "out".into(),
+            target: "n1".into(),
+        });
         assert!(validate_workflow(&wf2).is_ok());
     }
 
@@ -292,4 +358,71 @@ mod tests {
         assert!(next_daily_run(now_ts(), "25:99").is_err());
         assert!(next_daily_run(now_ts(), "abc").is_err());
     }
+
+    #[test]
+    fn weekly_next_run_uses_a_single_local_weekday_and_time() {
+        let now = now_ts();
+        let tomorrow = (chrono::Local::now().weekday().num_days_from_monday() + 1) % 7;
+        let next = next_weekly_run(now, tomorrow, "00:00").unwrap();
+        assert!(next > now);
+        assert!(next - now <= 86_400 + 60);
+        assert!(next_weekly_run(now, 7, "09:00").is_err());
+        assert!(next_weekly_run(now, 1, "99:00").is_err());
+    }
+}
+
+/// Weekly schedule: next local occurrence of Monday=0 through Sunday=6 at HH:MM.
+pub fn next_weekly_run(now: i64, weekday: u32, hhmm: &str) -> Result<i64, String> {
+    if weekday > 6 {
+        return Err(format!("weekly weekday must be 0 through 6: {weekday}"));
+    }
+    let parts: Vec<&str> = hhmm.trim().split(':').collect();
+    if parts.len() != 2 {
+        return Err(format!("weekly time must use HH:MM: {hhmm}"));
+    }
+    let hour: u32 = parts[0]
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid hour: {}", parts[0]))?;
+    let minute: u32 = parts[1]
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid minute: {}", parts[1]))?;
+    if hour > 23 || minute > 59 {
+        return Err(format!("time out of range: {hhmm}"));
+    }
+    let current = chrono::Local
+        .timestamp_opt(now, 0)
+        .single()
+        .ok_or_else(|| "invalid local timestamp".to_string())?;
+    let current_day = current.weekday().num_days_from_monday();
+    let days = (weekday + 7 - current_day) % 7;
+    let mut scheduled_date = current
+        .date_naive()
+        .checked_add_signed(chrono::Duration::days(days.into()))
+        .ok_or_else(|| "weekly date out of range".to_string())?;
+    let mut candidate = chrono::Local
+        .from_local_datetime(
+            &scheduled_date
+                .and_hms_opt(hour, minute, 0)
+                .ok_or_else(|| format!("invalid time: {hhmm}"))?,
+        )
+        .single()
+        .ok_or_else(|| format!("ambiguous local time: {hhmm}"))?
+        .timestamp();
+    if candidate <= now {
+        scheduled_date = scheduled_date
+            .checked_add_signed(chrono::Duration::days(7))
+            .ok_or_else(|| "weekly date out of range".to_string())?;
+        candidate = chrono::Local
+            .from_local_datetime(
+                &scheduled_date
+                    .and_hms_opt(hour, minute, 0)
+                    .ok_or_else(|| format!("invalid time: {hhmm}"))?,
+            )
+            .single()
+            .ok_or_else(|| format!("ambiguous local time: {hhmm}"))?
+            .timestamp();
+    }
+    Ok(candidate)
 }

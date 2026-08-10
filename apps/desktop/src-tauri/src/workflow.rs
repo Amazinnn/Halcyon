@@ -13,10 +13,12 @@ use tauri::{AppHandle, Manager};
 
 use crate::event_bus::CoreEvent;
 use crate::storage::{CharacterRow, Store, WorkflowRunRow};
-use crate::workflow_engine::engine::{execute_run, AgentCall, EventSink, RunOutcome, SystemActions, WindowOps};
+use crate::workflow_engine::engine::{
+    execute_run, AgentCall, EventSink, RunOutcome, SystemActions, WindowOps,
+};
 use crate::workflow_engine::model::{
-    CharacterInfo, RunStatus, WorkflowDef, guard_matches, next_daily_run, next_interval_run,
-    now_ts, validate_workflow,
+    guard_matches, next_daily_run, next_interval_run, next_weekly_run, now_ts, validate_workflow,
+    CharacterInfo, RunStatus, WorkflowDef,
 };
 use crate::AppState;
 
@@ -27,6 +29,10 @@ pub const AGENT_TIMEOUT_SEC: u64 = 600;
 pub const SCHEDULER_TICK_SEC: u64 = 15;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn claim_workflow_run(running: &Mutex<HashSet<String>>, workflow_id: &str) -> bool {
+    running.lock().unwrap().insert(workflow_id.to_string())
+}
 
 fn initial_provider_for_pet(pet_pack_id: &str, display_name: &str) -> &'static str {
     if pet_pack_id == "focus-demo-pet" && display_name == "Focus Demo Pet" {
@@ -58,6 +64,10 @@ pub fn compute_next_run(wf: &WorkflowDef) -> Option<i64> {
             .daily_time
             .as_deref()
             .and_then(|t| next_daily_run(now, t).ok()),
+        Some("weekly") => wf
+            .weekly_day
+            .zip(wf.weekly_time.as_deref())
+            .and_then(|(day, time)| next_weekly_run(now, day.into(), time).ok()),
         _ => None,
     }
 }
@@ -143,7 +153,9 @@ impl WorkflowManager {
     /// compatibility — no placeholders, no migration.
     pub fn purge_incompatible(&self) {
         let Ok(store) = self.store.lock() else { return };
-        let Ok(all) = store.list_workflows() else { return };
+        let Ok(all) = store.list_workflows() else {
+            return;
+        };
         for w in all {
             if let Err(e) = validate_workflow(&w) {
                 eprintln!("[workflow] purge incompatible {} ({}): {e}", w.id, w.name);
@@ -156,7 +168,9 @@ impl WorkflowManager {
     /// unbound ones); otherwise filter by character as before.
     pub fn list_workflows(&self, character_id: &str) -> Vec<WorkflowDef> {
         self.purge_incompatible();
-        let Ok(store) = self.store.lock() else { return vec![] };
+        let Ok(store) = self.store.lock() else {
+            return vec![];
+        };
         store
             .list_workflows()
             .unwrap_or_default()
@@ -195,8 +209,12 @@ impl WorkflowManager {
     }
 
     pub fn list_runs(&self, workflow_id: &str) -> Vec<WorkflowRunRow> {
-        let Ok(store) = self.store.lock() else { return vec![] };
-        store.list_workflow_runs(workflow_id, 20).unwrap_or_default()
+        let Ok(store) = self.store.lock() else {
+            return vec![];
+        };
+        store
+            .list_workflow_runs(workflow_id, 20)
+            .unwrap_or_default()
     }
 
     /// Copy a workflow to another character (auto-rebind = new character_id)
@@ -240,11 +258,17 @@ impl WorkflowManager {
         if !wf.enabled && triggered_by != "manual" {
             return Err("工作流已停用".into());
         }
-        let run_id = new_id();
-        let store = self.store.lock().map_err(|_| "store 锁异常".to_string())?;
         if apply_guard {
-            let state = self.app.state::<AppState>().focus_state.lock().unwrap().clone();
+            let state = self
+                .app
+                .state::<AppState>()
+                .focus_state
+                .lock()
+                .unwrap()
+                .clone();
             if !guard_matches(&wf.guard, &state) {
+                let run_id = new_id();
+                let store = self.store.lock().map_err(|_| "store 锁异常".to_string())?;
                 store
                     .insert_workflow_run(&run_id, &wf.id, triggered_by)
                     .map_err(|e| e.to_string())?;
@@ -257,11 +281,19 @@ impl WorkflowManager {
                 return Ok(run_id);
             }
         }
+        if !claim_workflow_run(&self.running, &wf.id) {
+            return Err("工作流正在运行".into());
+        }
+        let run_id = new_id();
+        let store = self.store.lock().map_err(|_| "store 锁异常".to_string())?;
         store
             .insert_workflow_run(&run_id, &wf.id, triggered_by)
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| {
+                self.running.lock().unwrap().remove(&wf.id);
+                error.to_string()
+            })?;
         drop(store);
-        self.start_run(wf, triggered_by, run_id.clone())?;
+        self.start_claimed_run(wf, triggered_by, run_id.clone())?;
         Ok(run_id)
     }
 
@@ -279,13 +311,17 @@ impl WorkflowManager {
 
     /// Automation thread ids still visible (chat window badge/cleanup).
     pub fn visible_automation_thread_ids(&self) -> HashSet<String> {
-        let Ok(store) = self.store.lock() else { return HashSet::new() };
+        let Ok(store) = self.store.lock() else {
+            return HashSet::new();
+        };
         store.visible_automation_thread_ids().unwrap_or_default()
     }
 
     /// Automation thread ids hidden by cleanup (chat list filters them out).
     pub fn hidden_automation_thread_ids(&self) -> HashSet<String> {
-        let Ok(store) = self.store.lock() else { return HashSet::new() };
+        let Ok(store) = self.store.lock() else {
+            return HashSet::new();
+        };
         store.hidden_automation_thread_ids().unwrap_or_default()
     }
 
@@ -337,22 +373,36 @@ impl WorkflowManager {
         }
     }
 
-    fn emit_run_changed(&self, workflow_id: &str, run_id: &str, status: &str, error: Option<String>) {
-        let _ = self.app.state::<AppState>().events_tx.send(CoreEvent::WorkflowRunChanged {
-            workflow_id: workflow_id.to_string(),
-            run_id: run_id.to_string(),
-            status: status.to_string(),
-            error,
-        });
+    fn emit_run_changed(
+        &self,
+        workflow_id: &str,
+        run_id: &str,
+        status: &str,
+        error: Option<String>,
+    ) {
+        let _ = self
+            .app
+            .state::<AppState>()
+            .events_tx
+            .send(CoreEvent::WorkflowRunChanged {
+                workflow_id: workflow_id.to_string(),
+                run_id: run_id.to_string(),
+                status: status.to_string(),
+                error,
+            });
     }
 
     /// v1.11 (ADR-0020): broadcast workflow create/update/delete so frontends
     /// (and later the M5 Agent dashboard) can reload.
     fn emit_changed(&self, action: &str, workflow_id: &str) {
-        let _ = self.app.state::<AppState>().events_tx.send(CoreEvent::WorkflowChanged {
-            action: action.to_string(),
-            workflow_id: workflow_id.to_string(),
-        });
+        let _ = self
+            .app
+            .state::<AppState>()
+            .events_tx
+            .send(CoreEvent::WorkflowChanged {
+                action: action.to_string(),
+                workflow_id: workflow_id.to_string(),
+            });
     }
 
     /// Recompute + persist next_run_at (used after a guard skip or run).
@@ -364,26 +414,22 @@ impl WorkflowManager {
         }
     }
 
-    fn start_run(&self, wf: WorkflowDef, triggered_by: &str, run_id: String) -> Result<(), String> {
-        {
-            let mut running = self.running.lock().unwrap();
-            if running.contains(&wf.id) {
-                return Ok(()); // anti-reentry
-            }
-            running.insert(wf.id.clone());
-        }
+    fn start_claimed_run(
+        &self,
+        wf: WorkflowDef,
+        triggered_by: &str,
+        run_id: String,
+    ) -> Result<(), String> {
         let cancel = Arc::new(AtomicBool::new(false));
-        self.cancels.lock().unwrap().insert(wf.id.clone(), cancel.clone());
+        self.cancels
+            .lock()
+            .unwrap()
+            .insert(wf.id.clone(), cancel.clone());
         let store = self.store.clone();
         let app = self.app.clone();
         let trigger = triggered_by.to_string();
         std::thread::spawn(move || {
-            let manager = app
-                .state::<AppState>()
-                .workflow
-                .lock()
-                .unwrap()
-                .clone();
+            let manager = app.state::<AppState>().workflow.lock().unwrap().clone();
             let character = store
                 .lock()
                 .ok()
@@ -425,7 +471,12 @@ impl WorkflowManager {
                 );
             }
             if let Some(m) = &manager {
-                m.emit_run_changed(&wf.id, &run_id, outcome.status.as_str(), outcome.error.clone());
+                m.emit_run_changed(
+                    &wf.id,
+                    &run_id,
+                    outcome.status.as_str(),
+                    outcome.error.clone(),
+                );
                 if wf.trigger == "scheduled" {
                     m.reschedule(&wf);
                 }
@@ -561,13 +612,7 @@ impl EventSink for WorkflowManager {
             });
     }
 
-    fn agent_result(
-        &self,
-        workflow_id: &str,
-        workflow_name: &str,
-        agent_id: &str,
-        text: &str,
-    ) {
+    fn agent_result(&self, workflow_id: &str, workflow_name: &str, agent_id: &str, text: &str) {
         let _ = self
             .app
             .state::<AppState>()
@@ -589,28 +634,45 @@ impl WindowOps for WorkflowManager {
 
 impl SystemActions for WorkflowManager {
     fn focus(&self, seconds: i64) -> Result<(), String> {
-        let _ = self.app.state::<AppState>().events_tx.send(CoreEvent::WorkflowSystemAction {
-            action: "focus".into(),
-            seconds,
-        });
+        let _ = self
+            .app
+            .state::<AppState>()
+            .events_tx
+            .send(CoreEvent::WorkflowSystemAction {
+                action: "focus".into(),
+                seconds,
+            });
         Ok(())
     }
     fn idle(&self, seconds: i64) -> Result<(), String> {
-        let _ = self.app.state::<AppState>().events_tx.send(CoreEvent::WorkflowSystemAction {
-            action: "idle".into(),
-            seconds,
-        });
+        let _ = self
+            .app
+            .state::<AppState>()
+            .events_tx
+            .send(CoreEvent::WorkflowSystemAction {
+                action: "idle".into(),
+                seconds,
+            });
         Ok(())
     }
     fn ring(&self, seconds: i64) -> Result<(), String> {
-        let _ = self.app.state::<AppState>().events_tx.send(CoreEvent::WorkflowSystemAction {
-            action: "ring".into(),
-            seconds,
-        });
+        let _ = self
+            .app
+            .state::<AppState>()
+            .events_tx
+            .send(CoreEvent::WorkflowSystemAction {
+                action: "ring".into(),
+                seconds,
+            });
         Ok(())
     }
     fn focus_state(&self) -> String {
-        self.app.state::<AppState>().focus_state.lock().unwrap().clone()
+        self.app
+            .state::<AppState>()
+            .focus_state
+            .lock()
+            .unwrap()
+            .clone()
     }
     fn now_hhmm(&self) -> String {
         chrono::Local::now().format("%H:%M").to_string()
@@ -623,7 +685,9 @@ impl SystemActions for WorkflowManager {
 
 #[tauri::command]
 pub fn characters_list(app: tauri::AppHandle) -> Vec<CharacterRow> {
-    manager(&app).map(|m| m.list_characters()).unwrap_or_default()
+    manager(&app)
+        .map(|m| m.list_characters())
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -634,10 +698,7 @@ pub fn workflow_list(app: tauri::AppHandle, character_id: String) -> Vec<Workflo
 }
 
 #[tauri::command]
-pub fn workflow_save(
-    app: tauri::AppHandle,
-    workflow: WorkflowDef,
-) -> Result<WorkflowDef, String> {
+pub fn workflow_save(app: tauri::AppHandle, workflow: WorkflowDef) -> Result<WorkflowDef, String> {
     manager(&app)?.save_workflow(workflow)
 }
 
@@ -701,8 +762,12 @@ pub struct RecentRunRow {
 #[tauri::command]
 pub fn workflow_runs_recent(app: tauri::AppHandle, limit: i64) -> Vec<RecentRunRow> {
     let Ok(m) = manager(&app) else { return vec![] };
-    let Ok(store) = m.store.lock() else { return vec![] };
-    let Ok(runs) = store.list_recent_workflow_runs(limit) else { return vec![] };
+    let Ok(store) = m.store.lock() else {
+        return vec![];
+    };
+    let Ok(runs) = store.list_recent_workflow_runs(limit) else {
+        return vec![];
+    };
     let mut names: HashMap<String, String> = HashMap::new();
     if let Ok(all) = store.list_workflows() {
         for w in all {
@@ -730,10 +795,7 @@ pub fn workflow_runs_recent(app: tauri::AppHandle, limit: i64) -> Vec<RecentRunR
 #[tauri::command]
 pub fn workflow_runs_clear(app: tauri::AppHandle) -> Result<(), String> {
     let m = manager(&app)?;
-    let store = m
-        .store
-        .lock()
-        .map_err(|_| "store 锁异常".to_string())?;
+    let store = m.store.lock().map_err(|_| "store 锁异常".to_string())?;
     store.clear_workflow_runs().map_err(|e| e.to_string())
 }
 
@@ -855,6 +917,8 @@ mod tests {
             schedule_type: None,
             interval_minutes: None,
             daily_time: None,
+            weekly_day: None,
+            weekly_time: None,
             guard: "none".into(),
             nodes: vec![NodeDef {
                 id: "n1".into(),
@@ -907,9 +971,15 @@ mod tests {
 
     #[test]
     fn focus_demo_pet_alone_gets_claude_as_its_initial_provider() {
-        assert_eq!(initial_provider_for_pet("focus-demo-pet", "Focus Demo Pet"), "claude");
+        assert_eq!(
+            initial_provider_for_pet("focus-demo-pet", "Focus Demo Pet"),
+            "claude"
+        );
         assert_eq!(initial_provider_for_pet("other-pet", "Other Pet"), "codex");
-        assert_eq!(initial_provider_for_pet("focus-demo-pet", "Renamed Pet"), "codex");
+        assert_eq!(
+            initial_provider_for_pet("focus-demo-pet", "Renamed Pet"),
+            "codex"
+        );
         assert_eq!(initial_provider_for_pet("", "Focus 助手"), "codex");
     }
 
@@ -945,9 +1015,20 @@ mod tests {
     }
 
     #[test]
-    fn compute_next_run_unknown_schedule_is_none() {
+    fn compute_next_run_weekly_is_in_future() {
         let mut w = wf("scheduled");
         w.schedule_type = Some("weekly".into());
-        assert_eq!(compute_next_run(&w), None);
+        w.weekly_day = Some(0);
+        w.weekly_time = Some("00:00".into());
+        assert!(compute_next_run(&w).is_some());
+    }
+
+    #[test]
+    fn workflow_run_claim_prevents_scheduler_reentry_until_released() {
+        let running = Mutex::new(HashSet::new());
+        assert!(claim_workflow_run(&running, "weekly"));
+        assert!(!claim_workflow_run(&running, "weekly"));
+        running.lock().unwrap().remove("weekly");
+        assert!(claim_workflow_run(&running, "weekly"));
     }
 }

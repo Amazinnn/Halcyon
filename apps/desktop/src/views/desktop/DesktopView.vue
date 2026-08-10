@@ -9,6 +9,7 @@ import { useShortcutStore } from "../../stores/shortcuts";
 import type { ShortcutType } from "../../lib/shortcuts";
 import AppIcon from "../../components/AppIcon.vue";
 import SettingsPopover from "../../components/SettingsPopover.vue";
+import { restoreWindowError } from "../../lib/window-restore";
 
 const ui = useUiStore();
 const settings = useSettingsStore();
@@ -68,6 +69,7 @@ function glyphFor(type: ShortcutType): string {
 
 // ---- views tray: temporary panel for the three float views ----
 const viewsTrayOpen = ref(false);
+const viewError = ref("");
 const MAX_SHORTCUTS = 9;
 const canAdd = computed(() => shortcuts.items.length < MAX_SHORTCUTS);
 
@@ -76,6 +78,7 @@ const canAdd = computed(() => shortcuts.items.length < MAX_SHORTCUTS);
 const viewLock = new Map<string, number>();
 async function openView(label: string) {
   viewsTrayOpen.value = false;
+  viewError.value = "";
   const now = Date.now();
   if ((viewLock.get(label) ?? 0) > now - 150) return;
   viewLock.set(label, now);
@@ -83,6 +86,8 @@ async function openView(label: string) {
     await invoke("restore", { label });
   } catch (e) {
     console.error("open view failed", label, e);
+    viewError.value = restoreWindowError(e);
+    viewsTrayOpen.value = true;
   }
 }
 
@@ -236,6 +241,7 @@ onBeforeUnmount(() => {
           <button class="view-item" @click="openView('workflow')">
             <AppIcon name="panel" /><span>工作流</span>
           </button>
+          <p v-if="viewError" class="view-error" role="status">{{ viewError }}</p>
         </div>
       </div>
 
@@ -527,6 +533,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .view-item:hover { background: var(--accent-wash); color: var(--accent-bright); }
+.view-error { margin: 4px 8px 6px; color: var(--warn); font-size: 12px; white-space: nowrap; }
 /* dock */
 .dock {
   position: relative; z-index: 5;

@@ -9,6 +9,8 @@ describe("simplified chat surface", () => {
     expect(source).toContain("agent.messages");
     expect(source).toContain("agent.interrupt()");
     expect(source).toContain('class="composer"');
+    expect(source).toContain("agent.selectedSkill");
+    expect(source).toContain("agent.skills");
     expect(source).toContain("m.source");
 
     for (const removed of [
@@ -18,7 +20,6 @@ describe("simplified chat surface", () => {
       "QUICK",
       "focus-cli",
       "workspaceInput",
-      "useSkill",
       "tool-strip",
       "Mock",
       "agent_set_provider",
@@ -35,5 +36,11 @@ describe("simplified chat surface", () => {
     expect(source).toContain(':disabled="isBusy || !agent.characterId"');
     expect(source).toContain("agent.phase === 'streaming'");
     expect(source).not.toContain("agent.phase === 'streaming' || agent.phase === 'connecting'");
+  });
+
+  it("uses transient busy text and a compact one-shot Skills selector", () => {
+    expect(source).toContain('agent.phase === "connecting" || agent.phase === "streaming"');
+    expect(source).toContain('aria-label="Skills"');
+    expect(source).not.toContain('case "completed"');
   });
 });

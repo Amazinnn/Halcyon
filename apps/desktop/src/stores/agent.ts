@@ -10,6 +10,35 @@ export interface ChatMessage {
   source?: string;
 }
 
+const CHAT_HISTORY_PREFIX = "focus.chat.history.v1";
+
+export function chatHistoryKey(characterId: string, provider: "codex" | "claude", date = new Date()): string {
+  const localDate = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
+  return `${CHAT_HISTORY_PREFIX}:${characterId}:${provider}:${localDate}`;
+}
+
+function visibleMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.filter((message) => message.kind === "completed" && (message.role === "user" || message.role === "agent"));
+}
+
+function readVisibleHistory(key: string): ChatMessage[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as unknown;
+    if (!Array.isArray(saved)) return [];
+    return saved.filter(
+      (message): message is ChatMessage =>
+        typeof message === "object" &&
+        message !== null &&
+        ((message as ChatMessage).role === "user" || (message as ChatMessage).role === "agent") &&
+        (message as ChatMessage).kind === "completed" &&
+        typeof (message as ChatMessage).text === "string" &&
+        ((message as ChatMessage).source === undefined || typeof (message as ChatMessage).source === "string"),
+    );
+  } catch {
+    return [];
+  }
+}
+
 export interface WorkflowAgentResult {
   workflowId: string;
   workflowName: string;
@@ -85,13 +114,44 @@ export const useAgentStore = defineStore("agent", {
     threads: [] as AgentThread[],
     currentThreadId: null as string | null,
     phase: "idle" as AgentPhase,
+    historyKey: "",
     skills: [] as string[],
+    selectedSkill: null as string | null,
+    errorMessage: "",
     characterName: "对话",
     initialized: false,
   }),
   actions: {
     showBubble(text: string, priority = "high") {
       this.bubble = { text, priority, expiresAt: Date.now() + 5000 };
+    },
+    persistVisibleHistory() {
+      if (!this.characterId) return;
+      const key = chatHistoryKey(this.characterId, this.provider);
+      if (!this.historyKey) this.historyKey = key;
+      // Callers synchronize before appending. Never copy an in-memory
+      // yesterday into a newly generated date key as a fallback.
+      if (this.historyKey !== key) return;
+      localStorage.setItem(
+        key,
+        JSON.stringify(visibleMessages(this.messages)),
+      );
+    },
+    syncVisibleHistoryDay() {
+      if (!this.characterId) return;
+      const key = chatHistoryKey(this.characterId, this.provider);
+      if (this.historyKey === key) return;
+      this.messages = readVisibleHistory(key);
+      this.historyKey = key;
+    },
+    restoreVisibleHistory() {
+      if (!this.characterId) {
+        this.messages = [];
+        this.historyKey = "";
+        return;
+      }
+      this.historyKey = chatHistoryKey(this.characterId, this.provider);
+      this.messages = readVisibleHistory(this.historyKey);
     },
     async refreshCharacters() {
       // v1.12.2: retry a transient empty list (startup race — workflow's
@@ -109,6 +169,8 @@ export const useAgentStore = defineStore("agent", {
               await this.selectCharacter(target, false);
             } else {
               await this.refreshStatus(target);
+              await this.refreshSkills(target);
+              this.restoreVisibleHistory();
             }
             return;
           }
@@ -129,14 +191,22 @@ export const useAgentStore = defineStore("agent", {
       this.messages = [];
       this.tools = [];
       this.phase = "idle";
+      this.errorMessage = "";
+      this.selectedSkill = null;
+      const pendingForSelection = this.pendingWorkflowResults[id] ?? [];
+      const pendingLatest = pendingForSelection[pendingForSelection.length - 1];
+      if (pendingLatest) this.showBubble(pendingLatest.text, "normal");
       const c = this.characters.find((x) => x.id === id);
       this.characterName = c?.name ?? "对话";
       await this.refreshStatus(id);
+      await this.refreshSkills(id);
+      this.restoreVisibleHistory();
       // Today's session hash is resumed server-side (lazy runtime build).
       this.pushSystem(`已切换到 ${this.characterName}`);
-      const pending = this.pendingWorkflowResults[id] ?? [];
+      const pending = pendingForSelection;
       delete this.pendingWorkflowResults[id];
       for (const result of pending) this.appendWorkflowResult(result);
+      if (pending.length) this.persistVisibleHistory();
       const latest = pending[pending.length - 1];
       if (latest) this.showBubble(latest.text, "normal");
       if (broadcast) await emit("agent:selected", { characterId: id });
@@ -172,6 +242,7 @@ export const useAgentStore = defineStore("agent", {
       await listen<WorkflowAgentResult>("workflow:agent_result", (e) => {
         if (e.payload.agentId === this.characterId) {
           this.appendWorkflowResult(e.payload);
+          this.persistVisibleHistory();
           return;
         }
         (this.pendingWorkflowResults[e.payload.agentId] ??= []).push(e.payload);
@@ -179,9 +250,8 @@ export const useAgentStore = defineStore("agent", {
       await listen<{ characterId: string }>("agent:selected", (e) => {
         void this.selectCharacter(e.payload.characterId, false);
       });
-      await this.refreshStatus();
-      await this.refreshSkills();
       await this.refreshCharacters();
+      if (!this.characterId) await this.refreshStatus();
     },
     async refreshStatus(characterId?: string) {
       try {
@@ -195,9 +265,11 @@ export const useAgentStore = defineStore("agent", {
         console.error("[agent] agent_status failed", e);
       }
     },
-    async refreshSkills() {
+    async refreshSkills(characterId?: string) {
       try {
-        this.skills = await invoke<string[]>("agent_list_skills");
+        const targetCharacterId = characterId ?? this.characterId;
+        const skills = await invoke<string[]>("agent_list_skills", targetCharacterId ? { characterId: targetCharacterId } : undefined);
+        if (targetCharacterId === this.characterId) this.skills = skills;
       } catch (e) {
         console.error("[agent] agent_list_skills failed", e);
       }
@@ -213,12 +285,14 @@ export const useAgentStore = defineStore("agent", {
         console.error("[agent] agent_list_threads failed", e);
       }
     },
-    async startThread(initialMessage: string) {
+    async startThread(initialMessage: string, skillName?: string) {
       this.phase = "connecting";
+      this.errorMessage = "";
       try {
         const info = await invoke<AgentThread>("agent_start_thread", {
           characterId: this.characterId,
           initialMessage,
+          skillName,
         });
         this.currentThreadId = info.id;
         this.sessionId = info.id;
@@ -226,6 +300,7 @@ export const useAgentStore = defineStore("agent", {
         await this.refreshStatus();
       } catch (e) {
         this.phase = "error";
+        this.errorMessage = `启动失败：${e}`;
         this.pushSystem(`启动失败：${e}`);
         await this.refreshStatus();
       }
@@ -242,27 +317,33 @@ export const useAgentStore = defineStore("agent", {
         this.phase = "completed";
       } catch (e) {
         this.phase = "error";
+        this.errorMessage = `恢复会话失败：${e}`;
         this.pushSystem(`恢复会话失败：${e}`);
       }
     },
     async send(text: string) {
       const trimmed = text.trim();
       if (!trimmed) return;
-      this.messages.push({ role: "user", text: trimmed, kind: "completed" });
+      const skillName = this.selectedSkill ?? undefined;
+      this.selectedSkill = null;
+      this.addUserMessage(trimmed);
       if (!this.currentThreadId) {
-        await this.startThread(trimmed);
+        await this.startThread(trimmed, skillName);
         return;
       }
       this.phase = "connecting";
+      this.errorMessage = "";
       try {
         await invoke("agent_send", {
           characterId: this.characterId,
           threadId: this.currentThreadId,
           text: trimmed,
+          skillName,
         });
         this.phase = "streaming";
       } catch (e) {
         this.phase = "error";
+        this.errorMessage = `发送失败：${e}`;
         this.pushSystem(`发送失败：${e}`);
       }
     },
@@ -294,6 +375,10 @@ export const useAgentStore = defineStore("agent", {
       if (characterId === this.characterId && previousProvider !== status.provider) this.newThread();
       await this.refreshCharacters();
       await this.refreshStatus(characterId);
+      if (characterId === this.characterId) {
+        await this.refreshSkills(characterId);
+        this.restoreVisibleHistory();
+      }
     },
     newThread() {
       this.currentThreadId = null;
@@ -301,11 +386,13 @@ export const useAgentStore = defineStore("agent", {
       this.phase = "idle";
       this.messages = [];
       this.tools = [];
+      this.selectedSkill = null;
+      this.errorMessage = "";
     },
-    pushSystem(text: string) {
-      this.messages.push({ role: "agent", text, kind: "system" });
+    pushSystem(_text: string) {
     },
     appendWorkflowResult(result: WorkflowAgentResult) {
+      this.syncVisibleHistoryDay();
       this.messages.push({
         role: "agent",
         text: result.text,
@@ -347,6 +434,8 @@ export const useAgentStore = defineStore("agent", {
           }
           break;
         case "permission.requested":
+          this.phase = "error";
+          this.errorMessage = "Agent 正在等待其本地权限确认。";
           this.pushSystem(`请求权限：${ev.requestId}（风险 ${ev.risk}）`);
           break;
         case "session.completed":
@@ -363,11 +452,13 @@ export const useAgentStore = defineStore("agent", {
           break;
         case "session.error":
           this.phase = "error";
+          this.errorMessage = `Agent 错误：${ev.message}`;
           this.pushSystem(`错误：${ev.message}`);
           break;
       }
     },
     appendDelta(text: string) {
+      this.syncVisibleHistoryDay();
       const last = this.messages[this.messages.length - 1];
       if (last && last.role === "agent" && last.kind === "delta") {
         last.text += text;
@@ -376,6 +467,7 @@ export const useAgentStore = defineStore("agent", {
       }
     },
     finalizeDelta(text: string) {
+      this.syncVisibleHistoryDay();
       const last = this.messages[this.messages.length - 1];
       if (last && last.role === "agent" && last.kind === "delta") {
         last.text = text;
@@ -383,9 +475,12 @@ export const useAgentStore = defineStore("agent", {
       } else {
         this.messages.push({ role: "agent", text, kind: "completed" });
       }
+      this.persistVisibleHistory();
     },
     addUserMessage(text: string) {
+      this.syncVisibleHistoryDay();
       this.messages.push({ role: "user", text, kind: "completed" });
+      this.persistVisibleHistory();
     },
     clearBubble() {
       this.bubble = null;

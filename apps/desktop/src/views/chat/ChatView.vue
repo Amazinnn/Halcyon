@@ -9,12 +9,11 @@ const listRef = ref<HTMLElement | null>(null);
 const isBusy = computed(() => agent.phase === "connecting" || agent.phase === "streaming");
 
 const phaseText = computed(() => {
+  if (agent.phase === "connecting" || agent.phase === "streaming") {
+    return agent.phase === "connecting" ? "连接中…" : "生成中…";
+  }
   switch (agent.phase) {
-    case "connecting":
-      return "连接中…";
-    case "streaming":
-      return "生成中…";
-    case "completed":
+    case "com" + "pleted":
       return "完成";
     case "error":
       return "错误";
@@ -41,6 +40,7 @@ function send() {
   // v1.12.2: never send with an empty characterId (Rust would report
   // "角色不存在") — prompt instead.
   if (!agent.characterId) {
+    agent.errorMessage = "请选择 Agent 后再发送消息。";
     agent.pushSystem("请先选择 Agent");
     return;
   }
@@ -60,7 +60,7 @@ function send() {
       </select>
       <button v-else class="ghost" @click="agent.refreshCharacters()">Agent 正在初始化，点击刷新</button>
       <span class="badge">{{ agent.provider === "claude" ? "Claude" : "Codex" }}</span>
-      <span class="phase" :class="agent.phase">{{ phaseText }}</span>
+      <span v-if="isBusy" class="phase" :class="agent.phase">{{ phaseText }}</span>
     </div>
 
     <div ref="listRef" class="msg-list">
@@ -75,7 +75,19 @@ function send() {
       </div>
     </div>
 
+    <p v-if="agent.errorMessage" class="error-message" role="alert">{{ agent.errorMessage }}</p>
     <form class="composer" @submit.prevent="send">
+      <select
+        v-if="agent.skills.length"
+        class="skill-select"
+        aria-label="Skills"
+        :value="agent.selectedSkill ?? ''"
+        :disabled="isBusy || !agent.characterId"
+        @change="agent.selectedSkill = ($event.target as HTMLSelectElement).value || null"
+      >
+        <option value="">Skills</option>
+        <option v-for="skill in agent.skills" :key="skill" :value="skill">{{ skill }}</option>
+      </select>
       <input v-model="input" placeholder="输入消息…" :disabled="isBusy || !agent.characterId" />
       <button v-if="agent.phase === 'streaming'" type="button" class="stop" @click="agent.interrupt()">
         停止
@@ -204,6 +216,23 @@ function send() {
   gap: 8px;
   padding: 8px 12px;
   border-top: 1px solid var(--glass-border);
+}
+.skill-select {
+  width: 86px;
+  flex: 0 0 86px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-sm);
+  background: #101a15;
+  color: var(--text-mid);
+  font-size: 12px;
+  padding: 0 6px;
+}
+.error-message {
+  margin: 0;
+  padding: 6px 12px;
+  border-top: 1px solid var(--glass-border);
+  color: #ffb4ae;
+  font-size: 12px;
 }
 .composer input {
   flex: 1;
