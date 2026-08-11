@@ -14,14 +14,14 @@
 
 状态只能为 `Open`、`Fixed pending verification`、`Verified` 或 `Accepted limitation`。`Fixed pending verification` 不等于用户验收通过。
 
-## 统计（2026-08-10 当前）
+## 统计（2026-08-11 当前）
 
 | 维度 | 统计 |
 | --- | --- |
-| 总事故数 | 15 |
-| 状态 | Open 0；Fixed pending verification 12；Verified 2；Accepted limitation 1 |
-| 严重性 | S1 2；S2 11；S3 2 |
-| 类别 | Window 5；Automation 2；Data 1；Launch 1；Pet 1；Desktop lock 2；Agent/workflow 3 |
+| 总事故数 | 16 |
+| 状态 | Open 0；Fixed pending verification 13；Verified 2；Accepted limitation 1 |
+| 严重性 | S1 2；S2 11；S3 3 |
+| 类别 | Window 5；Automation 2；Data 1；Launch 1；Pet 1；Desktop lock 2；Agent/workflow 4 |
 | 缺少自动回归覆盖 | 3（INC-001、INC-002、INC-005）；其余为自动或部分自动覆盖，仍可能要求 Windows 手工验收。 |
 
 ## 记录
@@ -31,11 +31,11 @@
 | 字段 | 内容 |
 | --- | --- |
 | 类别 / 严重性 / 状态 | Window / S3 / Fixed pending verification |
-| 首次报告 | 2026-08-06，需求 #5；后续 #49、#71、#74、#83、#84 复发。 |
-| 影响与复现 | 内部浮窗重新出现普通窗口标题区、白边或激活时的淡蓝条；移动、隐藏时曾伴随异常。 |
+| 首次报告 | 2026-08-06，需求 #5；后续 #49、#71、#74、#83、#84、#86 复发。 |
+| 影响与复现 | 内部浮窗重新出现普通窗口标题区、白边或激活时的淡蓝条；本轮确认窗口初次打开正常，但开始移动后出现蓝白条边框。 |
 | 根因证据 | 非客户区样式、Tauri 尺寸路径和窗口激活路径曾分别遗留边框或 caption 高亮；见 ADR-0015、`157d173`、`7e97c1c`、`aef2512`。 |
 | 修复 | 清除完整边框样式、以 `WS_POPUP` 显示；隐藏创建后先配置非客户区和无激活样式，恢复、移动、缩放、置顶统一使用 `SetWindowPos(...SWP_NOACTIVATE)`。 |
-| 验证与回归 | `scripts/window-style-probe.ps1` 采集宿主/子窗口 style、exstyle、client/outer rect 与前台状态。2026-08-10 release 中所有浮窗宿主为 `WS_POPUP`、无 caption/thick frame 且未进入前台；淡蓝条仍待用户视觉复现闭环，关联 Eval：`evals/2026-08-10-window-regression-checkpoint.md`。 |
+| 验证与回归 | `scripts/window-style-probe.ps1 -AsJson` 采集宿主/子窗口 style、exstyle、client/outer rect 与前台状态；本轮 `WM_ERASEBKGND` 委托 Windows，并在拖拽开始/结束重申无边框/无激活约束（提交 `288f23c`）。自动探针不能证明移动后的视觉结果，淡蓝条仍待人工确认，关联 Eval：`evals/2026-08-11-float-drag-and-skill-checkpoint.md`。 |
 
 ### INC-002 频繁打开或点击内部窗口导致 Focus 卡死
 
@@ -190,3 +190,14 @@
 | 根因证据 | `restore_window()` 调用 `find_free_slot()` 后只处理 `Some`，`None` 仍先移除 `collapsed` 并显示窗口。release 探针曾记录 workflow `155,105 933x527` 与 stats `311,211 778x421` 重叠。 |
 | 修复 | `GridManager::restore_slot()` 把无空位表示为明确失败；恢复在状态持久化前完成槽位决策。无空位时维持折叠，前端显示“没有可用位置，请先折叠一个窗口”。 |
 | 验证与回归 | Rust 覆盖满格拒绝；release UI Automation 验证打开 music 时提示可见、music 保持折叠；折叠 chat 后打开 music，三个可见浮窗的矩形两两不重叠。关联需求 #85 与 `evals/2026-08-10-window-regression-checkpoint.md`。 |
+
+### INC-016 Claude CLI 子进程弹出黑色终端
+
+| 字段 | 内容 |
+| --- | --- |
+| 类别 / 严重性 / 状态 | Agent/workflow / S3 / Fixed pending verification |
+| 首次报告 | 2026-08-11，需求 #87。 |
+| 影响与复现 | 每次 Focus 调用 Claude Code 时出现独立的纯黑色控制台窗口，打断聊天并暴露实现细节。 |
+| 根因证据 | Windows 子进程通过 `cmd.exe`/`claude.cmd` 启动时未设置 `CREATE_NO_WINDOW`；现有 stdin/stdout/stderr 管道本身不要求可见控制台。 |
+| 修复 | `ClaudeProvider` 在所有 Claude 子进程创建路径设置 `CREATE_NO_WINDOW`，保留现有流式管道、session resume 与取消语义。 |
+| 验证与回归 | Rust `claude_child_uses_no_console_creation_flag`、stream-json 参数和 stdin 传输测试通过；真实 release 聊天启动是否完全不显示控制台仍待 Windows 人工确认，关联 Eval：`evals/2026-08-11-float-drag-and-skill-checkpoint.md`。 |

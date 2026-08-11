@@ -1,12 +1,12 @@
 # 下一阶段拆分建议（M0 收尾 → M1）
 
-## 2026-08-10 当前验收门槛
+## 2026-08-11 当前验收门槛
 
-- 需求 #84/#85 已修复：浮窗折叠走异步原生隐藏；恢复在改变可见状态前寻找空槽，无槽即保持折叠并提示。release UI Automation 已验证折叠和零重叠；淡蓝条视觉仍待用户按 [最新 Eval](./evals/2026-08-10-window-regression-checkpoint.md) 复验。
+- 需求 #84/#85 已修复：浮窗折叠走异步原生隐藏；恢复在改变可见状态前寻找空槽，无槽即保持折叠并提示。release UI Automation 已验证折叠和零重叠；移动后的淡蓝条视觉仍待用户按 [最新 Eval](./evals/2026-08-11-float-drag-and-skill-checkpoint.md) 复验。
 
-- 需求 #83 已实现：Claude 在 Focus 生命周期内常驻，重启后的当天首轮恢复 session；可见聊天按桌宠 x Provider x 本地日期回放，Skill 仅作用下一条消息。细节见 ADR-0026。
+- 需求 #83、#86、#87 已实现待验收：Claude 在 Focus 生命周期内常驻，重启后的当天首轮恢复 session；可见聊天按桌宠 x Provider x 本地日期回放；Skill 以可见 `$skill-name  text` 作为用户输入直通 Provider，Focus 不读取 `SKILL.md`；Claude 子进程 Windows 启动不创建控制台。细节见 ADR-0026、ADR-0028。
 - 工作流仍是精简日程工具；其可见虚拟触发节点只编辑手动、间隔、每日、每周元数据，不进入持久化图或引擎执行图。每周采用周一 `0` 至周日 `6` 加本地 `HH:MM`，见 ADR-0027。
-- 当前自动验证为前端测试 43 passed、Rust 170 passed、event-schema 11 valid / 4 invalid、生产构建和 release 重建通过；每周计划已在 release 中实际触发一次并仅产生一条成功运行记录。跨午夜可见历史轮换与非法每周参数已补正。真实 Provider 连续性与 Windows 手测状态只以 [最新 Eval](./evals/2026-08-10-window-regression-checkpoint.md) 为准。
+- 当前自动验证以 [2026-08-11 Eval](./evals/2026-08-11-float-drag-and-skill-checkpoint.md) 为准；新增 Skill 组装、宠物名显示、Rust 直通和 Claude `CREATE_NO_WINDOW` 测试均通过。真实 Provider 连续性、移动浮窗视觉、Skill 原子删除、Claude 无控制台和 Windows 手测状态仍只以 Eval 的 `Pending` 项为准。
 - Claude Code 已作为第二个真实 Provider 接入 M5，取代本文件旧的“Claude Code 冻结”表述，具体语义见 ADR-0025。
 - 每个桌宠固定选用 `codex` 或 `claude`，设置页是唯一 Provider 调整入口；同一桌宠切换 Provider 后，当前聊天 UI 必须新建会话，两个 Provider 的当天 session 分别保留。
 - 控制面真实 Claude 验收已通过：Focus Demo Pet 返回真实结果，临时工作流已完成创建、读取、更新、运行、删除，运行记录为 success，删除后列表为空。剩余门槛是人工打开聊天窗口验证直接发送、恰好一条「日程 · 名称」来源消息、一次宠物气泡与列表刷新。
