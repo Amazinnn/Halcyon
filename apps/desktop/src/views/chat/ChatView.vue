@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useAgentStore } from "../../stores/agent";
+import { shouldRemoveSelectedSkill } from "../../lib/chat-composer";
 import WindowHeader from "../../components/WindowHeader.vue";
 
 const agent = useAgentStore();
@@ -48,6 +49,22 @@ function send() {
   void agent.send(text);
 }
 
+function handleComposerKeydown(event: KeyboardEvent) {
+  if (!agent.selectedSkill) return;
+  const target = event.currentTarget as HTMLInputElement;
+  if (
+    shouldRemoveSelectedSkill(
+      event.key,
+      target.value,
+      target.selectionStart ?? 0,
+      target.selectionEnd ?? 0,
+    )
+  ) {
+    event.preventDefault();
+    agent.selectedSkill = null;
+  }
+}
+
 </script>
 
 <template>
@@ -67,7 +84,7 @@ function send() {
       <div v-if="agent.messages.length === 0" class="empty">输入消息开始与 Agent 对话…</div>
       <div v-for="(m, i) in agent.messages" :key="i" class="msg glass" :class="[m.role, m.kind]">
         <span class="who">
-          {{ m.role === "agent" ? (m.kind === "system" ? "系统" : "Agent") : "我" }}
+          {{ m.role === "agent" ? (m.kind === "system" ? "系统" : agent.characterName) : "我" }}
           <span v-if="m.source" class="source">{{ m.source }}</span>
         </span>
         <span class="text">{{ m.text }}</span>
@@ -88,7 +105,17 @@ function send() {
         <option value="">Skills</option>
         <option v-for="skill in agent.skills" :key="skill" :value="skill">{{ skill }}</option>
       </select>
-      <input v-model="input" placeholder="输入消息…" :disabled="isBusy || !agent.characterId" />
+      <div class="composer-input">
+        <span v-if="agent.selectedSkill" class="skill-chip" aria-label="Selected Skill">
+          ${{ agent.selectedSkill }}
+        </span>
+        <input
+          v-model="input"
+          placeholder="输入消息…"
+          :disabled="isBusy || !agent.characterId"
+          @keydown="handleComposerKeydown"
+        />
+      </div>
       <button v-if="agent.phase === 'streaming'" type="button" class="stop" @click="agent.interrupt()">
         停止
       </button>
@@ -234,17 +261,38 @@ function send() {
   color: #ffb4ae;
   font-size: 12px;
 }
-.composer input {
+.composer-input {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   border: 1px solid var(--glass-border);
   border-radius: var(--r-sm);
-  padding: 6px 10px;
-  font-size: 13px;
+  padding: 0 8px;
   background: #101a15;
+}
+.skill-chip {
+  flex: 0 0 auto;
+  padding: 0 8px;
+  color: var(--text-hi);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 28px;
+  white-space: nowrap;
+  user-select: none;
+}
+.composer-input input {
+  min-width: 0;
+  flex: 1;
+  border: none;
+  outline: none;
+  padding: 6px 2px;
+  font-size: 13px;
+  background: transparent;
   color: var(--text-hi);
 }
-.composer input:focus {
-  outline: none;
+.composer-input:focus-within {
   border-color: var(--accent);
 }
 .composer button {

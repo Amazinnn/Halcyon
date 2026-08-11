@@ -11,6 +11,9 @@ describe("simplified chat surface", () => {
     expect(source).toContain('class="composer"');
     expect(source).toContain("agent.selectedSkill");
     expect(source).toContain("agent.skills");
+    expect(source).toContain("class=\"skill-chip\"");
+    expect(source).toContain("shouldRemoveSelectedSkill");
+    expect(source).toContain("agent.characterName");
     expect(source).toContain("m.source");
 
     for (const removed of [

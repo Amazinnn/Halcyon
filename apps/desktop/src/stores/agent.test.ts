@@ -241,8 +241,7 @@ describe("direct chat stream convergence", () => {
         expect(args).toEqual({
           characterId: "char-a",
           threadId: "thread-a",
-          text: "check status",
-          skillName: "focus-cli",
+          text: "$focus-cli  check status",
         });
       }
       return undefined;
@@ -266,7 +265,7 @@ describe("direct chat stream convergence", () => {
 
     await agent.send("check status");
     expect(agent.selectedSkill).toBeNull();
-    expect(agent.messages).toEqual([{ role: "user", text: "check status", kind: "completed" }]);
+    expect(agent.messages).toEqual([{ role: "user", text: "$focus-cli  check status", kind: "completed" }]);
   });
 });
 

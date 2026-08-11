@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import type { AgentEventEnvelope, AgentState, PetReaction } from "@focus/event-schema";
+import { composeSkillMessage } from "../lib/chat-composer";
 
 export interface ChatMessage {
   role: "agent" | "user";
@@ -285,14 +286,13 @@ export const useAgentStore = defineStore("agent", {
         console.error("[agent] agent_list_threads failed", e);
       }
     },
-    async startThread(initialMessage: string, skillName?: string) {
+    async startThread(initialMessage: string) {
       this.phase = "connecting";
       this.errorMessage = "";
       try {
         const info = await invoke<AgentThread>("agent_start_thread", {
           characterId: this.characterId,
           initialMessage,
-          skillName,
         });
         this.currentThreadId = info.id;
         this.sessionId = info.id;
@@ -324,11 +324,11 @@ export const useAgentStore = defineStore("agent", {
     async send(text: string) {
       const trimmed = text.trim();
       if (!trimmed) return;
-      const skillName = this.selectedSkill ?? undefined;
+      const message = composeSkillMessage(this.selectedSkill, trimmed);
       this.selectedSkill = null;
-      this.addUserMessage(trimmed);
+      this.addUserMessage(message);
       if (!this.currentThreadId) {
-        await this.startThread(trimmed, skillName);
+        await this.startThread(message);
         return;
       }
       this.phase = "connecting";
@@ -337,8 +337,7 @@ export const useAgentStore = defineStore("agent", {
         await invoke("agent_send", {
           characterId: this.characterId,
           threadId: this.currentThreadId,
-          text: trimmed,
-          skillName,
+          text: message,
         });
         this.phase = "streaming";
       } catch (e) {

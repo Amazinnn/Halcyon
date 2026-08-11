@@ -511,56 +511,8 @@ fn list_provider_skills(
     Ok(names)
 }
 
-fn valid_skill_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-}
-
-fn apply_selected_skill(
-    home: &Path,
-    provider: agents::AgentProviderKind,
-    skill_name: Option<&str>,
-    message: &str,
-) -> Result<String, String> {
-    let Some(skill_name) = skill_name.filter(|name| !name.trim().is_empty()) else {
-        return Ok(message.to_string());
-    };
-    if !valid_skill_name(skill_name) {
-        return Err("Invalid Skill selection".to_string());
-    }
-    let path = provider_skills_dir(home, provider)
-        .join(skill_name)
-        .join("SKILL.md");
-    let skill = std::fs::read_to_string(&path)
-        .map_err(|error| format!("Unable to read selected Skill: {error}"))?;
-    Ok(format!(
-        "The user selected the following Skill for this message only. Follow it where applicable.\n\n--- SKILL.md ({skill_name}) ---\n{skill}\n--- END SKILL.md ---\n\n{message}"
-    ))
-}
-
-fn selected_skill_prompt(
-    app: &tauri::AppHandle,
-    character_id: &str,
-    skill_name: Option<&str>,
-    message: &str,
-) -> Result<String, String> {
-    let tool = app
-        .state::<AppState>()
-        .store
-        .lock()
-        .unwrap()
-        .get_character(character_id)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("Character {character_id} does not exist"))?
-        .tool;
-    let provider = agents::AgentProviderKind::parse(&tool)
-        .ok_or_else(|| format!("Unknown Agent provider: {tool}"))?;
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "USERPROFILE/HOME is not configured".to_string())?;
-    apply_selected_skill(Path::new(&home), provider, skill_name, message)
+fn direct_user_message(message: &str) -> &str {
+    message
 }
 
 /// Runs a provider call for a specific character's Agent. M5 (ADR-0022):
@@ -604,13 +556,11 @@ fn agent_start_thread(
     app: tauri::AppHandle,
     character_id: String,
     initial_message: String,
-    skill_name: Option<String>,
 ) -> Result<agents::AgentThreadInfo, String> {
     // ADR-0025: daily sessions are scoped by both character and provider.
     let state = app.state::<AppState>();
     let today = today_local();
-    let prompt =
-        selected_skill_prompt(&app, &character_id, skill_name.as_deref(), &initial_message)?;
+    let prompt = direct_user_message(&initial_message);
     // M5 (ADR-0022): conversation = full display (stream + result both shown).
     let display = agents::agent_display_full();
     let (info, persistence) = with_agent_for(&app, &character_id, |runtime| {
@@ -737,11 +687,10 @@ fn agent_send(
     character_id: String,
     thread_id: String,
     text: String,
-    skill_name: Option<String>,
 ) -> Result<(), String> {
     // M5 (ADR-0022): conversation = full display.
     let display = agents::agent_display_full();
-    let prompt = selected_skill_prompt(&app, &character_id, skill_name.as_deref(), &text)?;
+    let prompt = direct_user_message(&text);
     with_agent_for(&app, &character_id, |rt| {
         rt.send(&thread_id, &prompt, display)
     })
@@ -2777,7 +2726,7 @@ pub fn run() {
 mod tests {
     use super::{
         agent_set_provider_serialized_with, agent_status_for_character, agents,
-        agents::AgentProviderKind, apply_selected_skill, bootstrap_existing_demo_pet_provider,
+        agents::AgentProviderKind, bootstrap_existing_demo_pet_provider, direct_user_message,
         discard_runtime_after_provider_error, elapsed_sec, ensure_runtime_serialized,
         float_nonclient_message_result, is_float_label, list_provider_skills, provider_ready, provider_skills_dir,
         resume_with_initial_message, saved_session_for_today, select_status_character,
@@ -2798,7 +2747,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_skill_is_provider_scoped_and_applies_to_one_prompt() {
+    fn direct_user_message_does_not_read_or_inject_selected_skill_content() {
         let root = std::env::temp_dir().join(format!(
             "focus-provider-skills-{}-{}",
             std::process::id(),
@@ -2822,22 +2771,9 @@ mod tests {
             list_provider_skills(&root, AgentProviderKind::Claude).unwrap(),
             vec!["focus-cli"]
         );
-        let prompt = apply_selected_skill(
-            &root,
-            AgentProviderKind::Claude,
-            Some("focus-cli"),
-            "check status",
-        )
-        .unwrap();
-        assert!(prompt.contains("CLAUDE SKILL"));
-        assert!(prompt.ends_with("check status"));
-        assert!(
-            apply_selected_skill(&root, AgentProviderKind::Claude, Some("../escape"), "check")
-                .is_err()
-        );
         assert_eq!(
-            apply_selected_skill(&root, AgentProviderKind::Claude, None, "plain").unwrap(),
-            "plain"
+            direct_user_message("$focus-cli  check status"),
+            "$focus-cli  check status"
         );
 
         std::fs::remove_dir_all(root).unwrap();
