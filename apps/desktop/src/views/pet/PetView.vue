@@ -399,6 +399,7 @@ onBeforeUnmount(() => {
   justify-content: center;
   box-sizing: border-box;
   cursor: grab;
+  border-radius: var(--window-host-radius);
   overflow: hidden;
 }
 .pet-stage {

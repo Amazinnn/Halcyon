@@ -243,7 +243,7 @@ onUnmounted(() => {
   flex-direction: column;
   background: transparent;
   border: 1px solid var(--glass-border);
-  border-radius: var(--r-lg);
+  border-radius: var(--window-host-radius);
   overflow: hidden;
   box-sizing: border-box;
   font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;

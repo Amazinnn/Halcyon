@@ -9,10 +9,10 @@ describe("simplified chat surface", () => {
     expect(source).toContain("agent.messages");
     expect(source).toContain("agent.interrupt()");
     expect(source).toContain('class="composer"');
-    expect(source).toContain("agent.selectedSkill");
     expect(source).toContain("agent.skills");
-    expect(source).toContain("class=\"skill-chip\"");
-    expect(source).toContain("shouldRemoveSelectedSkill");
+    expect(source).toContain('token.className = "skill-chip"');
+    expect(source).toContain('contenteditable');
+    expect(source).toContain("serializeInlineComposer");
     expect(source).toContain("agent.characterName");
     expect(source).toContain("m.source");
 
@@ -45,5 +45,14 @@ describe("simplified chat surface", () => {
     expect(source).toContain('agent.phase === "connecting" || agent.phase === "streaming"');
     expect(source).toContain('aria-label="Skills"');
     expect(source).not.toContain('case "completed"');
+  });
+
+  it("uses a real editable line with atomic inline Skill tokens", () => {
+    expect(source).toContain('font-family: "Cascadia Mono", Consolas');
+    expect(source).toContain("font-size: 14px");
+    expect(source).toContain("font-weight: 700");
+    expect(source).toContain("gap: 8px");
+    expect(source).toContain('token.contentEditable = "false"');
+    expect(source).toContain('token.dataset.skill');
   });
 });

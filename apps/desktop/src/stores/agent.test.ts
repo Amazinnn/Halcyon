@@ -230,18 +230,17 @@ describe("direct chat stream convergence", () => {
     expect(agent.messages).toEqual([{ role: "user", text: "Claude history", kind: "completed" }]);
   });
 
-  it("does not add lifecycle rows and clears a selected Skill after one send", async () => {
+  it("does not add lifecycle rows and sends the composer's visible text unchanged", async () => {
     const agent = useAgentStore();
     agent.characterId = "char-a";
     agent.currentThreadId = "thread-a";
-    agent.selectedSkill = "focus-cli";
     invoke.mockReset();
     invoke.mockImplementation(async (command: string, args?: unknown) => {
       if (command === "agent_send") {
         expect(args).toEqual({
           characterId: "char-a",
           threadId: "thread-a",
-          text: "$focus-cli  check status",
+          text: "$focus-cli  $readme  check status",
         });
       }
       return undefined;
@@ -263,9 +262,12 @@ describe("direct chat stream convergence", () => {
     });
     expect(agent.messages).toEqual([]);
 
-    await agent.send("check status");
-    expect(agent.selectedSkill).toBeNull();
-    expect(agent.messages).toEqual([{ role: "user", text: "$focus-cli  check status", kind: "completed" }]);
+    await agent.send("$focus-cli  $readme  check status");
+    expect(agent.messages).toEqual([{
+      role: "user",
+      text: "$focus-cli  $readme  check status",
+      kind: "completed",
+    }]);
   });
 });
 

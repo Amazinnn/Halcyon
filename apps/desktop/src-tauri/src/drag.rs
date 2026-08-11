@@ -212,7 +212,6 @@ pub fn finalize(app: &AppHandle, label: &str) {
 
     let state = app.state::<AppState>();
     let Some(w) = app.get_webview_window(label) else { return };
-    crate::enforce_float_invariants(&w);
     let pos = w.outer_position().unwrap_or_default();
     let scale = w.scale_factor().unwrap_or(1.0);
     // v1.10.4 (#50): snap from the client origin so the content lands on the
@@ -333,7 +332,6 @@ pub fn drag_start(
     if !w.is_visible().unwrap_or(true) {
         return Ok(());
     }
-    crate::enforce_float_invariants(&w);
     // getters on the main thread only
     let pos = w.outer_position().map_err(|e| format!("outer_position: {e}"))?;
     let scale = w.scale_factor().unwrap_or(1.0);

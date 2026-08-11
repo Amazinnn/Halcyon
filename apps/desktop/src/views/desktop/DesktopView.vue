@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -10,6 +10,7 @@ import type { ShortcutType } from "../../lib/shortcuts";
 import AppIcon from "../../components/AppIcon.vue";
 import SettingsPopover from "../../components/SettingsPopover.vue";
 import { restoreWindowError } from "../../lib/window-restore";
+import { ViewTrayActions } from "../../lib/view-tray-actions";
 
 const ui = useUiStore();
 const settings = useSettingsStore();
@@ -68,26 +69,19 @@ function glyphFor(type: ShortcutType): string {
 }
 
 // ---- views tray: temporary panel for the three float views ----
-const viewsTrayOpen = ref(false);
 const viewError = ref("");
+const viewTray = reactive(new ViewTrayActions((label) => invoke("restore", { label })));
 const MAX_SHORTCUTS = 9;
 const canAdd = computed(() => shortcuts.items.length < MAX_SHORTCUTS);
 
-// v1.10 (#31): 150ms lockout so rapid double/triple clicks don't flood the
-// window manager with redundant restore calls (freeze root cause).
-const viewLock = new Map<string, number>();
 async function openView(label: string) {
-  viewsTrayOpen.value = false;
   viewError.value = "";
-  const now = Date.now();
-  if ((viewLock.get(label) ?? 0) > now - 150) return;
-  viewLock.set(label, now);
   try {
-    await invoke("restore", { label });
+    await viewTray.restore(label);
   } catch (e) {
     console.error("open view failed", label, e);
     viewError.value = restoreWindowError(e);
-    viewsTrayOpen.value = true;
+    viewTray.open = true;
   }
 }
 
@@ -95,8 +89,8 @@ async function openView(label: string) {
 // item hid the menu. It is now click-toggled and closes only on outside
 // clicks or after picking a view.
 function onDocClick(e: MouseEvent) {
-  if (!viewsTrayOpen.value) return;
-  if (!(e.target as HTMLElement).closest(".views-wrap")) viewsTrayOpen.value = false;
+  if (!viewTray.open) return;
+  if (!(e.target as HTMLElement).closest(".views-wrap")) viewTray.close();
 }
 // ---- add menu ----
 async function loadWallpaper() {
@@ -225,20 +219,20 @@ onBeforeUnmount(() => {
     <!-- centered shortcut grid (2 rows x 5 cols) + views tray -->
     <section class="icon-area">
       <div class="views-wrap">
-        <button class="views-btn glass" title="视图" @click="viewsTrayOpen = !viewsTrayOpen">
+        <button class="views-btn glass" title="视图" :aria-expanded="viewTray.open" :disabled="viewTray.busy" @click="viewTray.toggle()">
           <AppIcon name="panel" />
         </button>
-        <div v-if="viewsTrayOpen" class="views-tray glass">
-          <button class="view-item" @click="openView('chat')">
+        <div v-if="viewTray.open" class="views-tray glass">
+          <button class="view-item" :disabled="viewTray.busy" @click="openView('chat')">
             <AppIcon name="chat" /><span>对话</span>
           </button>
-          <button class="view-item" @click="openView('stats')">
+          <button class="view-item" :disabled="viewTray.busy" @click="openView('stats')">
             <AppIcon name="stats" /><span>统计</span>
           </button>
-          <button class="view-item" @click="openView('music')">
+          <button class="view-item" :disabled="viewTray.busy" @click="openView('music')">
             <AppIcon name="music" /><span>音乐</span>
           </button>
-          <button class="view-item" @click="openView('workflow')">
+          <button class="view-item" :disabled="viewTray.busy" @click="openView('workflow')">
             <AppIcon name="panel" /><span>工作流</span>
           </button>
           <p v-if="viewError" class="view-error" role="status">{{ viewError }}</p>

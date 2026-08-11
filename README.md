@@ -1,10 +1,10 @@
 # Focus Desktop
-> 当前 Agent/工作流语义以 [ADR-0024](./docs/decisions/ADR-0024-agent-workflow-closure.md) 至 [ADR-0028](./docs/decisions/ADR-0028-visible-skill-invocation.md) 为准：每个桌宠在设置页固定选择真实 Codex 或 Claude；聊天保持极简并回放当天可见消息；Skill 以可见 `$skill-name  text` 用户输入直通 Provider；工作流 Agent 只在允许显示结果时向目标 Agent 投递一条带来源的最终消息。
+> 当前 Agent/工作流语义以 [ADR-0024](./docs/decisions/ADR-0024-agent-workflow-closure.md) 至 [ADR-0029](./docs/decisions/ADR-0029-float-host-native-ownership.md) 为准：每个桌宠在设置页固定选择真实 Codex 或 Claude；聊天保持极简并回放当天可见消息；Skill 以可见 `$skill-name  text` 用户输入直通 Provider；工作流 Agent 只在允许显示结果时向目标 Agent 投递一条带来源的最终消息。
 > GitHub：https://github.com/Amazinnn/Halcyon.git（private）
 
 本地专注桌面与 Agent 桌宠系统（Windows 优先，MIT License）。
 
-**当前检查点（2026-08-11）**：Claude Code 与 Codex 都按桌宠常驻；当天可见聊天按“桌宠 × Provider”隔离回放，Focus 重启后的首轮恢复当天 session。聊天移除生命周期噪音，Skill 以可见 `$skill-name  text` 作为下一条真实用户输入；Focus 不读取或注入 `SKILL.md`，Agent 作者显示宠物名。工作流有不可持久化的触发节点，并支持间隔、每日和每周计划。浮窗无空位时保持折叠并给出简短提示，release 自动化确认不会重叠；移动后的蓝白条、Skill 交互、Claude 无控制台和桌面锁仍待人工确认。自动化、重建与真实 Claude/Windows 验收状态见 [最新 Eval](./docs/evals/2026-08-11-float-drag-and-skill-checkpoint.md)；需求 #79–#87，ADR-0025–0028。
+**当前正式版本 v1.12.8（2026-08-11）**：视图托盘圆按钮和四个内部浮窗入口以未完成动作状态串行控制；原生恢复尚未返回时禁用后续托盘动作，后端同步拒绝重入，以免高频混合点击堆积。聊天输入为单行内嵌编辑器：Skill Token 就在文字中、可叠加，光标相邻的 Backspace/Delete 会整块删除，并按可见顺序把 `$skill-name  text` 原样发送给真实 Provider；Focus 不读取或注入 `SKILL.md`。完整自动化、release 重建及发布验收记录见 [v1.12.8 Eval](./docs/evals/2026-08-11-v1.12.8-release.md)；需求 #99，ADR-0028/0029。
 
 **v1.12.6**：三档专注锁机（轻度 / 标准 / 学霸）与串行状态转换；暂停完整解锁、恢复按本轮模式重新锁定。v1.12.4：桌面锁恢复不依赖跨进程 `LOCKED`，强杀后 watchdog 无状态恢复 Shell。v1.12.3：浮窗统一无激活显示，避免淡蓝标题条复发。
 
@@ -94,3 +94,13 @@ src-tauri\target\debug\focus-cli.exe timer status   # 本地控制面（需应�
 ## 诊断
 
 应用运行时可查看浮窗/顶条实时状态：`focus-cli debug windows`（输出各浮窗 visible/collapsed、顶条可见性、grid 布局、active_drag）。
+## Latest Quality Checkpoint (2026-08-11)
+
+The transparent float fix now handles the default erase message in the
+one-time host subclass; the release passed 46 frontend tests, 173 Rust tests,
+event-schema validation, and `launch-focus.cmd rebuild`. A Focus-only capture
+after a DPI-aware native move shows no white strip. Real user drag/resize
+acceptance remains pending; see [the current Eval](./docs/evals/2026-08-11-float-host-ownership-and-stacked-skills.md).
+
+The chat composer supports stacked visible Skill tokens and removes only the
+adjacent token with Backspace/Delete at the input boundary.

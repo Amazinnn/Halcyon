@@ -28,7 +28,7 @@ mod workflow_engine;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -46,6 +46,9 @@ pub struct AppState {
     pub active_drag: Mutex<Option<drag::ActiveDrag>>,
     /// Single-flight guard for shortcut launches (async, non-blocking).
     pub launch_lock: tokio::sync::Mutex<()>,
+    /// A float visibility transition includes native show/hide/position/topmost
+    /// work. It must never overlap another such transition.
+    float_visibility_gate: FloatVisibilityGate,
     pub focus_track: Mutex<supervision::FocusTrack>,
     pub focus_state: Mutex<String>,
     pub cli_pending: Mutex<HashMap<u64, std::sync::mpsc::Sender<serde_json::Value>>>,
@@ -63,6 +66,30 @@ pub struct AppState {
     /// v1.12.3: desktop-lock Drop guard kept alive for the process lifetime
     /// (a local in setup() would drop when setup returns, never restoring).
     pub _desktop_lock_guard: Mutex<Option<desktop_lock::DesktopLock>>,
+}
+
+#[derive(Default)]
+struct FloatVisibilityGate {
+    active: AtomicBool,
+}
+
+struct FloatVisibilityOperation<'a> {
+    gate: &'a FloatVisibilityGate,
+}
+
+impl FloatVisibilityGate {
+    fn try_enter(&self) -> Result<FloatVisibilityOperation<'_>, String> {
+        self.active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .map_err(|_| "窗口操作正在进行，请稍候".to_string())?;
+        Ok(FloatVisibilityOperation { gate: self })
+    }
+}
+
+impl Drop for FloatVisibilityOperation<'_> {
+    fn drop(&mut self) {
+        self.gate.active.store(false, Ordering::Release);
+    }
 }
 
 const FLOAT_LABELS: [&str; 5] = ["chat", "stats", "music", "pet", "workflow"];
@@ -98,7 +125,6 @@ fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
 }
 
 fn set_float_topmost_noactivate(w: &tauri::WebviewWindow, topmost: bool) {
-    enforce_float_invariants(w);
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = w.hwnd() {
         use windows::Win32::Foundation::HWND;
@@ -129,9 +155,6 @@ fn set_float_topmost_noactivate(w: &tauri::WebviewWindow, topmost: bool) {
 
 fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &GridManager) {
     if let Some(w) = app.get_webview_window(label) {
-        if is_float_label(label) {
-            enforce_float_invariants(&w);
-        }
         let (x, y, wpx, hpx) = gm.rect_to_logical(rect);
         // v1.10: skip when already at the target (avoid Win32 churn under
         // rapid restore/collapse, #31). Getters are main-thread-only; all
@@ -139,13 +162,12 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
         let scale = w.scale_factor().unwrap_or(1.0);
         let (px, py) = ((x * scale).round() as i32, (y * scale).round() as i32);
         let (pwp, php) = ((wpx * scale).round() as u32, (hpx * scale).round() as u32);
-        // v1.10.3.1 (#48): position the *client* origin at the grid-cell
-        // origin so the visible content is centered on the cell even when
-        // the host window keeps a non-client frame (ncdelta ~15x9).
-        let (ox, oy) = client_origin_offset(&w);
-        let (cx, cy) = (px - ox, py - oy);
-        let same = w.outer_position().map(|p| (p.x, p.y)).ok() == Some((cx, cy))
-            && w.outer_size().map(|s| (s.width, s.height)).ok() == Some((pwp, php));
+        // Grid coordinates are client-area coordinates. Query the live frame
+        // instead of assuming that a platform host has no non-client extent.
+        let (outer_x, outer_y, outer_w, outer_h) =
+            outer_rect_for_client(px, py, pwp, php, client_frame(&w));
+        let same = w.outer_position().map(|p| (p.x, p.y)).ok() == Some((outer_x, outer_y))
+            && w.outer_size().map(|s| (s.width, s.height)).ok() == Some((outer_w, outer_h));
         if !same {
             // v1.10.2 (#35, ADR-0014): position changes move the native HWND
             // (no WebView2 SetBounds RPC per call); size changes still go
@@ -153,14 +175,14 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
             // v1.12.2: size path is ALSO native (SetWindowPos + SWP_NOACTIVATE)
             // — Tauri's set_size can activate the window and paint a caption
             // highlight (light-blue bar) while drag/resize preview is held.
-            if !crate::drag::move_window_raw(&w, cx, cy) {
+            if !crate::drag::move_window_raw(&w, outer_x, outer_y) {
                 #[cfg(not(target_os = "windows"))]
                 let _ = w.set_position(LogicalPosition::new(
-                    x - ox as f64 / scale,
-                    y - oy as f64 / scale,
+                    outer_x as f64 / scale,
+                    outer_y as f64 / scale,
                 ));
             }
-            crate::drag::resize_window_raw(&w, pwp, php);
+            crate::drag::resize_window_raw(&w, outer_w, outer_h);
         }
     }
 }
@@ -1133,6 +1155,7 @@ fn collapse(
     state: tauri::State<'_, AppState>,
     label: String,
 ) -> Result<(), String> {
+    let _operation = state.float_visibility_gate.try_enter()?;
     {
         let mut settings = state.settings.lock().unwrap();
         if settings.collapsed.contains(&label) {
@@ -1142,7 +1165,7 @@ fn collapse(
         let _ = settings.save(&state.data_dir);
     }
     if let Some(w) = app.get_webview_window(&label) {
-        hide_float_noactivate(&w);
+        hide_window_noactivate(&w);
     }
     emit_visibility(&app, &label, false);
     Ok(())
@@ -1160,10 +1183,11 @@ fn restore(
 /// Show + position a float window back on its grid slot (shared by the
 /// restore command and the M4 `show_window` node).
 pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _operation = state.float_visibility_gate.try_enter()?;
     // v1.10: dedupe — restoring an already-visible window must not churn
     // show/position/topmost/raise (root cause of the freeze, #31).
     {
-        let state = app.state::<AppState>();
         let settings = state.settings.lock().unwrap();
         if !settings.collapsed.iter().any(|c| c == label) {
             if let Some(win) = app.get_webview_window(label) {
@@ -1173,7 +1197,6 @@ pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), 
             }
         }
     }
-    let state = app.state::<AppState>();
     let (w, h) = *state.screen.lock().unwrap();
     let gm = GridManager {
         screen_w: w,
@@ -1223,7 +1246,7 @@ pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), 
     };
     if let Some(win) = app.get_webview_window(label) {
         set_float_topmost_noactivate(&win, topmost);
-        show_float_noactivate(&win);
+        show_window_noactivate(&win);
     }
     position_window(app, label, &rect, &gm);
     emit_visibility(app, label, true);
@@ -1701,111 +1724,245 @@ fn quit_app(app: tauri::AppHandle) {
 
 /// v1.10.3.1 (#46): physical initial rect for a float at its saved grid slot.
 
+const FLOAT_NONCLIENT_STYLE_BITS: isize = 0x00cf_0000u32 as isize;
+const WS_POPUP_STYLE: isize = 0x8000_0000u32 as isize;
 const WM_NCCALCSIZE: u32 = 0x0083;
-const FLOAT_SUBCLASS_ID: usize = 0x464F_4355;
+const WM_NCACTIVATE: u32 = 0x0086;
+const WM_ERASEBKGND: u32 = 0x0014;
 
-fn float_nonclient_message_result(message: u32) -> Option<isize> {
+pub(crate) const fn float_corner_preference_attribute() -> u32 {
+    33 // DWMWA_WINDOW_CORNER_PREFERENCE
+}
+
+pub(crate) const fn float_corner_preference_value() -> i32 {
+    2 // DWMWCP_ROUND
+}
+
+static FLOAT_HOST_ORIGINAL_WNDPROCS:
+    std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<isize, isize>>> =
+    std::sync::OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ClientFrame {
+    pub origin_x: i32,
+    pub origin_y: i32,
+    pub extra_width: u32,
+    pub extra_height: u32,
+}
+
+pub(crate) fn float_host_style(style: isize) -> isize {
+    (style & !FLOAT_NONCLIENT_STYLE_BITS) | WS_POPUP_STYLE
+}
+
+pub(crate) fn frame_change_required(previous: isize, configured: isize) -> bool {
+    previous != configured
+}
+
+pub(crate) fn float_nonclient_message_result(message: u32) -> Option<isize> {
     match message {
         WM_NCCALCSIZE => Some(0),
+        // Do not delegate activation to the default non-client renderer:
+        // during a native drag it repaints the host title/caption even though
+        // this popup's complete visible surface is client content.
+        WM_NCACTIVATE => Some(1),
+        WM_ERASEBKGND => Some(1),
         _ => None,
     }
 }
 
-/// Uses comctl32's managed subclass chain instead of replacing GWLP_WNDPROC.
-/// Windows otherwise retains an 15x8 non-client band after activation even
-/// when the caption style bits have already been cleared.
 #[cfg(target_os = "windows")]
-unsafe extern "system" fn float_nonclient_subclass(
+unsafe extern "system" fn float_host_wnd_proc(
     hwnd: windows::Win32::Foundation::HWND,
     message: u32,
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
-    _subclass_id: usize,
-    _reference_data: usize,
 ) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::UI::WindowsAndMessaging::{CallWindowProcW, DefWindowProcW, WNDPROC};
+
     if let Some(result) = float_nonclient_message_result(message) {
-        return windows::Win32::Foundation::LRESULT(result);
+        return LRESULT(result);
     }
-    unsafe {
-        windows::Win32::UI::Shell::DefSubclassProc(hwnd, message, wparam, lparam)
+
+    let original: WNDPROC = FLOAT_HOST_ORIGINAL_WNDPROCS
+        .get()
+        .and_then(|procs| procs.lock().ok())
+        .and_then(|procs| procs.get(&(hwnd.0 as isize)).copied())
+        .map(|proc| unsafe { std::mem::transmute::<isize, WNDPROC>(proc) })
+        .unwrap_or(None);
+    if let Some(proc) = original {
+        unsafe { CallWindowProcW(Some(proc), hwnd, message, wparam, lparam) }
+    } else {
+        unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
     }
 }
 
-/// Strip the system frame from a float window so that outer == client and the
-/// window exactly matches its grid rect (no white edge, #49).
-fn strip_float_frame(w: &tauri::WebviewWindow) {
+pub(crate) fn outer_rect_for_client(
+    client_x: i32,
+    client_y: i32,
+    client_width: u32,
+    client_height: u32,
+    frame: ClientFrame,
+) -> (i32, i32, u32, u32) {
+    (
+        client_x - frame.origin_x,
+        client_y - frame.origin_y,
+        client_width.saturating_add(frame.extra_width),
+        client_height.saturating_add(frame.extra_height),
+    )
+}
+
+fn client_frame(w: &tauri::WebviewWindow) -> ClientFrame {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::Shell::SetWindowSubclass;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER, WS_DLGFRAME,
-            WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
-        };
+        use windows::Win32::Foundation::{HWND, POINT, RECT};
+        use windows::Win32::Graphics::Gdi::ClientToScreen;
+        use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
+
         if let Ok(hwnd) = w.hwnd() {
             let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
             unsafe {
-                let style = GetWindowLongPtrW(hwnd_win, GWL_STYLE);
-                let mask = !((WS_BORDER.0 as isize)
-                    | (WS_DLGFRAME.0 as isize)
-                    | (WS_SYSMENU.0 as isize)
-                    | (WS_MINIMIZEBOX.0 as isize)
-                    | (WS_MAXIMIZEBOX.0 as isize)
-                    | (WS_THICKFRAME.0 as isize));
-                let new_style = (style & mask) | (WS_POPUP.0 as isize);
-                if new_style != style {
-                    let _ = SetWindowLongPtrW(hwnd_win, GWL_STYLE, new_style);
+                let mut outer = RECT::default();
+                let mut client = RECT::default();
+                if GetWindowRect(hwnd_win, &mut outer).is_ok()
+                    && GetClientRect(hwnd_win, &mut client).is_ok()
+                {
+                    let mut client_origin = POINT {
+                        x: client.left,
+                        y: client.top,
+                    };
+                    if ClientToScreen(hwnd_win, &mut client_origin).as_bool() {
+                        return ClientFrame {
+                            origin_x: client_origin.x - outer.left,
+                            origin_y: client_origin.y - outer.top,
+                            extra_width: ((outer.right - outer.left)
+                                - (client.right - client.left))
+                                .max(0) as u32,
+                            extra_height: ((outer.bottom - outer.top)
+                                - (client.bottom - client.top))
+                                .max(0) as u32,
+                        };
+                    }
                 }
-                let _ = SetWindowSubclass(
-                    hwnd_win,
-                    Some(float_nonclient_subclass),
-                    FLOAT_SUBCLASS_ID,
-                    0,
-                );
-                let _ = SetWindowPos(
-                    hwnd_win,
-                    None,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                );
             }
         }
     }
+    ClientFrame::default()
+}
+
+/// Configure each float host exactly once, while it is still hidden. No later
+/// lifecycle path may change the host style or send `SWP_FRAMECHANGED`.
+fn configure_float_host(w: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::{HWND, POINT, RECT};
+        use windows::Win32::Graphics::Gdi::ClientToScreen;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetClientRect, GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, SetWindowPos,
+            GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SWP_NOZORDER, WS_EX_NOACTIVATE,
+        };
+
+        if let Ok(hwnd) = w.hwnd() {
+            let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
+            unsafe {
+                let mut outer = RECT::default();
+                let mut client = RECT::default();
+                let has_geometry = GetWindowRect(hwnd_win, &mut outer).is_ok()
+                    && GetClientRect(hwnd_win, &mut client).is_ok();
+                let style = GetWindowLongPtrW(hwnd_win, GWL_STYLE);
+                let configured_style = float_host_style(style);
+                let ex_style = GetWindowLongPtrW(hwnd_win, GWL_EXSTYLE);
+                let configured_ex_style = ex_style | WS_EX_NOACTIVATE.0 as isize;
+
+                if frame_change_required(style, configured_style) {
+                    let _ = SetWindowLongPtrW(hwnd_win, GWL_STYLE, configured_style);
+                }
+                if configured_ex_style != ex_style {
+                    let _ = SetWindowLongPtrW(hwnd_win, GWL_EXSTYLE, configured_ex_style);
+                }
+
+                // Native acrylic belongs to the HWND, not the WebView. Ask
+                // DWM to clip that composition to system-rounded corners once
+                // while this hidden host is configured.
+                let corner_preference = float_corner_preference_value();
+                let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                    hwnd_win,
+                    windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(
+                        float_corner_preference_attribute() as i32,
+                    ),
+                    &corner_preference as *const i32 as *const core::ffi::c_void,
+                    std::mem::size_of_val(&corner_preference) as u32,
+                );
+
+                let proc_ptr: unsafe extern "system" fn(
+                    windows::Win32::Foundation::HWND,
+                    u32,
+                    windows::Win32::Foundation::WPARAM,
+                    windows::Win32::Foundation::LPARAM,
+                ) -> windows::Win32::Foundation::LRESULT = float_host_wnd_proc;
+                let current_proc = GetWindowLongPtrW(hwnd_win, GWLP_WNDPROC);
+                if current_proc != proc_ptr as isize {
+                    let original = SetWindowLongPtrW(hwnd_win, GWLP_WNDPROC, proc_ptr as isize);
+                    if original != 0 {
+                        FLOAT_HOST_ORIGINAL_WNDPROCS
+                            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+                            .lock()
+                            .unwrap()
+                            .insert(hwnd_win.0 as isize, original);
+                    }
+                }
+
+                // This is the sole frame recalculation for this HWND, applying
+                // the one-time WS_POPUP/WS_EX_NOACTIVATE configuration and the
+                // full-client window procedure.
+                if has_geometry {
+                    let mut client_origin = POINT {
+                        x: client.left,
+                        y: client.top,
+                    };
+                    let (x, y) = if ClientToScreen(hwnd_win, &mut client_origin).as_bool() {
+                        (client_origin.x, client_origin.y)
+                    } else {
+                        (outer.left, outer.top)
+                    };
+                    let _ = SetWindowPos(
+                        hwnd_win,
+                        None,
+                        x,
+                        y,
+                        (client.right - client.left).max(0),
+                        (client.bottom - client.top).max(0),
+                        SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                } else {
+                    let _ = SetWindowPos(
+                        hwnd_win,
+                        None,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_FRAMECHANGED
+                            | SWP_NOMOVE
+                            | SWP_NOSIZE
+                            | SWP_NOZORDER
+                            | SWP_NOACTIVATE,
+                    );
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = w;
 }
 
 /// v1.10.3.1 (#48): physical offset of the client-area origin from the window
 /// origin (non-client border). Used to position the *content* exactly at the
 /// grid-cell origin even if the host window keeps a non-client frame.
 pub(crate) fn client_origin_offset(w: &tauri::WebviewWindow) -> (i32, i32) {
-    #[cfg(target_os = "windows")]
-    {
-        use windows::Win32::Foundation::{HWND, POINT, RECT};
-        use windows::Win32::Graphics::Gdi::ClientToScreen;
-        use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
-        if let Ok(hwnd) = w.hwnd() {
-            let hwnd_win = HWND(hwnd.0 as *mut core::ffi::c_void);
-            unsafe {
-                let mut wr = RECT::default();
-                let mut cr = RECT::default();
-                if GetWindowRect(hwnd_win, &mut wr).is_ok()
-                    && GetClientRect(hwnd_win, &mut cr).is_ok()
-                {
-                    let mut pt = POINT {
-                        x: cr.left,
-                        y: cr.top,
-                    };
-                    if ClientToScreen(hwnd_win, &mut pt).as_bool() {
-                        return (pt.x - wr.left, pt.y - wr.top);
-                    }
-                }
-            }
-        }
-    }
-    (0, 0)
+    let frame = client_frame(w);
+    (frame.origin_x, frame.origin_y)
 }
 
 /// v1.10.4 (#50): client-area geometry (origin offset + size, physical px) for
@@ -1844,24 +2001,7 @@ fn initial_float_rect(
 /// v1.12.3: floats must never become the active window — activation paints
 /// the system caption highlight (the light-blue bar). Same treatment as the
 /// grid-overlay (v1.7.2).
-fn float_noactivate(w: &tauri::WebviewWindow) {
-    if let Ok(hwnd) = w.hwnd() {
-        acrylic::noactivate(hwnd.0);
-    }
-}
-
-/// Re-assert the native invariants required by every floating window.
-///
-/// This is intentionally called only from main-thread lifecycle paths. The
-/// drag poller must stay limited to asynchronous native movement so it never
-/// dispatches synchronous window operations while the renderer is busy.
-pub(crate) fn enforce_float_invariants(w: &tauri::WebviewWindow) {
-    strip_float_frame(w);
-    float_noactivate(w);
-}
-
-fn show_float_noactivate(w: &tauri::WebviewWindow) {
-    enforce_float_invariants(w);
+fn show_window_noactivate(w: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = w.hwnd() {
         use windows::Win32::Foundation::HWND;
@@ -1875,7 +2015,7 @@ fn show_float_noactivate(w: &tauri::WebviewWindow) {
     let _ = w.show();
 }
 
-fn hide_float_noactivate(w: &tauri::WebviewWindow) {
+fn hide_window_noactivate(w: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = w.hwnd() {
         use windows::Win32::Foundation::HWND;
@@ -1943,7 +2083,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(chat_pw, chat_ph)
         .visible(false)
         .build()?;
-    enforce_float_invariants(&chat);
+    configure_float_host(&chat);
 
     let (stats_px, stats_py, stats_pw, stats_ph, stats_collapsed) = initial_float_rect(
         &grid,
@@ -1969,7 +2109,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(stats_pw, stats_ph)
         .visible(false)
         .build()?;
-    enforce_float_invariants(&stats);
+    configure_float_host(&stats);
 
     let (music_px, music_py, music_pw, music_ph, music_collapsed) = initial_float_rect(
         &grid,
@@ -1995,7 +2135,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(music_pw, music_ph)
         .visible(false)
         .build()?;
-    enforce_float_invariants(&music);
+    configure_float_host(&music);
 
     let (pet_px, pet_py, pet_pw, pet_ph, pet_collapsed) = initial_float_rect(
         &grid,
@@ -2021,7 +2161,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(pet_pw, pet_ph)
         .visible(false)
         .build()?;
-    enforce_float_invariants(&pet);
+    configure_float_host(&pet);
 
     let (workflow_px, workflow_py, workflow_pw, workflow_ph, workflow_collapsed) =
         initial_float_rect(
@@ -2048,7 +2188,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(workflow_pw, workflow_ph)
         .visible(false)
         .build()?;
-    enforce_float_invariants(&workflow);
+    configure_float_host(&workflow);
 
     for (label, collapsed) in [
         ("chat", chat_collapsed),
@@ -2059,7 +2199,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
     ] {
         if !collapsed {
             if let Some(window) = app.get_webview_window(label) {
-                show_float_noactivate(&window);
+                show_window_noactivate(&window);
             }
         }
     }
@@ -2089,6 +2229,9 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .build()?;
     // informational only: never intercept mouse clicks on apps underneath
     topbar.set_ignore_cursor_events(true)?;
+    if let Ok(hwnd) = topbar.hwnd() {
+        acrylic::noactivate(hwnd.0);
+    }
 
     Ok(())
 }
@@ -2105,10 +2248,10 @@ fn apply_topbar_visibility(app: &tauri::AppHandle) {
     let visible = topbar_visible(&mode, &state);
     if let Some(w) = app.get_webview_window("topbar") {
         if visible {
-            show_float_noactivate(&w);
+            show_window_noactivate(&w);
             raise_topbar(app);
         } else {
-            hide_float_noactivate(&w);
+            hide_window_noactivate(&w);
         }
     }
 }
@@ -2167,7 +2310,7 @@ fn sync_collapsed(app: &tauri::AppHandle, state: &AppState) {
     for label in ["chat", "stats", "music", "pet", "workflow"] {
         if collapsed.contains(&label.to_string()) {
             if let Some(w) = app.get_webview_window(label) {
-                hide_float_noactivate(&w);
+                hide_window_noactivate(&w);
             }
         }
     }
@@ -2238,7 +2381,7 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
             set_float_topmost_noactivate(&win, top);
             let visible = resolved.contains_key(label) && !collapsed.contains(&label.to_string());
             if !visible {
-                hide_float_noactivate(&win);
+                hide_window_noactivate(&win);
             }
             emit_visibility(&app.handle(), label, visible);
         }
@@ -2371,6 +2514,7 @@ pub fn run() {
                 screen: Mutex::new((sw, sh)),
                 active_drag: Mutex::new(None),
                 launch_lock: tokio::sync::Mutex::new(()),
+                float_visibility_gate: FloatVisibilityGate::default(),
                 focus_track: Mutex::new(supervision::FocusTrack::default()),
                 focus_state: Mutex::new("idle".to_string()),
                 cli_pending: Mutex::new(HashMap::new()),
@@ -2505,11 +2649,14 @@ pub fn run() {
                 if collapsed {
                     let _ = restore(h5.clone(), state.clone(), "chat".to_string());
                 } else if let Some(w) = h5.get_webview_window("chat") {
+                    let Ok(_operation) = state.float_visibility_gate.try_enter() else {
+                        return;
+                    };
                     let visible = w.is_visible().unwrap_or(true);
                     if visible {
-                        hide_float_noactivate(&w);
+                        hide_window_noactivate(&w);
                     } else {
-                        show_float_noactivate(&w);
+                        show_window_noactivate(&w);
                     }
                     emit_visibility(&h5, "chat", !visible);
                     raise_topbar(&h5);
@@ -2728,7 +2875,9 @@ mod tests {
         agent_set_provider_serialized_with, agent_status_for_character, agents,
         agents::AgentProviderKind, bootstrap_existing_demo_pet_provider, direct_user_message,
         discard_runtime_after_provider_error, elapsed_sec, ensure_runtime_serialized,
-        float_nonclient_message_result, is_float_label, list_provider_skills, provider_ready, provider_skills_dir,
+        float_corner_preference_attribute, float_corner_preference_value, float_host_style,
+        float_nonclient_message_result, frame_change_required, is_float_label, list_provider_skills,
+        outer_rect_for_client, provider_ready, provider_skills_dir, ClientFrame, FloatVisibilityGate,
         resume_with_initial_message, saved_session_for_today, select_status_character,
         set_agent_provider_serialized_with, topbar_visible, with_agent_runtime_serialized,
     };
@@ -3531,10 +3680,53 @@ mod tests {
     }
 
     #[test]
-    fn float_nonclient_handler_preserves_client_area_without_suppressing_erase() {
+    fn float_visibility_gate_rejects_an_overlapping_operation_then_reopens() {
+        let gate = FloatVisibilityGate::default();
+        let first = gate.try_enter().expect("first operation enters");
+        assert!(gate.try_enter().is_err());
+        drop(first);
+        assert!(gate.try_enter().is_ok());
+    }
+
+    #[test]
+    fn float_host_style_is_popup_without_nonclient_frame() {
+        let decorated = 0x10cf_0000u32 as isize;
+        let configured = float_host_style(decorated);
+        let nonclient = 0x00cf_0000u32 as isize;
+
+        assert_eq!(configured & nonclient, 0);
+        assert_ne!(configured & 0x8000_0000u32 as isize, 0);
+        assert!(frame_change_required(decorated, configured));
+        assert!(!frame_change_required(configured, configured));
+    }
+
+    #[test]
+    fn float_host_keeps_a_full_client_rect_without_default_background_erase() {
         assert_eq!(float_nonclient_message_result(0x0083), Some(0));
-        assert_eq!(float_nonclient_message_result(0x0014), None);
-        assert_eq!(float_nonclient_message_result(0x000F), None);
+        assert_eq!(float_nonclient_message_result(0x0014), Some(1));
+        assert_eq!(float_nonclient_message_result(0x0086), Some(1));
+        assert_eq!(float_nonclient_message_result(0x000f), None);
+    }
+
+    #[test]
+    fn float_hosts_prefer_dwm_rounded_corners_for_native_acrylic() {
+        assert_eq!(float_corner_preference_attribute(), 33);
+        assert_eq!(float_corner_preference_value(), 2);
+    }
+
+    #[test]
+    fn client_grid_rect_converts_to_outer_rect_from_live_frame_geometry() {
+        let frame = ClientFrame {
+            origin_x: 13,
+            origin_y: 8,
+            extra_width: 26,
+            extra_height: 16,
+        };
+
+        assert_eq!(
+            outer_rect_for_client(320, 180, 1024, 768, frame),
+            (307, 172, 1050, 784)
+        );
     }
 
     #[test]

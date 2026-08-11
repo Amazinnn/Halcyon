@@ -1,12 +1,21 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAgentStore } from "../../stores/agent";
-import { shouldRemoveSelectedSkill } from "../../lib/chat-composer";
+import {
+  hasInlineComposerBody,
+  insertSkillToken,
+  serializeInlineComposer,
+  type InlineComposerPart,
+} from "../../lib/inline-composer";
 import WindowHeader from "../../components/WindowHeader.vue";
 
 const agent = useAgentStore();
-const input = ref("");
+const skillPicker = ref("");
 const listRef = ref<HTMLElement | null>(null);
+const editorRef = ref<HTMLElement | null>(null);
+const composerText = ref("");
+const hasComposerBody = ref(false);
+let savedComposerRange: Range | null = null;
 const isBusy = computed(() => agent.phase === "connecting" || agent.phase === "streaming");
 
 const phaseText = computed(() => {
@@ -32,12 +41,17 @@ watch(
 );
 
 onMounted(async () => {
+  document.addEventListener("selectionchange", rememberComposerSelection);
   await agent.init();
 });
 
+onBeforeUnmount(() => {
+  document.removeEventListener("selectionchange", rememberComposerSelection);
+});
+
 function send() {
-  const text = input.value.trim();
-  if (!text) return;
+  const text = composerText.value.trim();
+  if (!text || !hasComposerBody.value) return;
   // v1.12.2: never send with an empty characterId (Rust would report
   // "角色不存在") — prompt instead.
   if (!agent.characterId) {
@@ -45,24 +59,157 @@ function send() {
     agent.pushSystem("请先选择 Agent");
     return;
   }
-  input.value = "";
+  editorRef.value?.replaceChildren();
+  composerText.value = "";
+  hasComposerBody.value = false;
   void agent.send(text);
 }
 
-function handleComposerKeydown(event: KeyboardEvent) {
-  if (!agent.selectedSkill) return;
-  const target = event.currentTarget as HTMLInputElement;
-  if (
-    shouldRemoveSelectedSkill(
-      event.key,
-      target.value,
-      target.selectionStart ?? 0,
-      target.selectionEnd ?? 0,
-    )
-  ) {
-    event.preventDefault();
-    agent.selectedSkill = null;
+function editorParts(): InlineComposerPart[] {
+  const editor = editorRef.value;
+  if (!editor) return [];
+  return Array.from(editor.childNodes).flatMap<InlineComposerPart>((node) => {
+    if (node instanceof HTMLElement && node.dataset.skill) {
+      return [{ kind: "skill" as const, name: node.dataset.skill }];
+    }
+    const text = node.textContent ?? "";
+    return text ? [{ kind: "text" as const, text }] : [];
+  });
+}
+
+function composerRange(): Range | null {
+  const editor = editorRef.value;
+  const selection = window.getSelection();
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  if (!editor || !range || !editor.contains(range.startContainer) || !editor.contains(range.endContainer)) {
+    return null;
   }
+  return range;
+}
+
+function rememberComposerSelection() {
+  const range = composerRange();
+  if (range) savedComposerRange = range.cloneRange();
+}
+
+function syncComposer() {
+  const parts = editorParts();
+  composerText.value = serializeInlineComposer(parts);
+  hasComposerBody.value = hasInlineComposerBody(parts);
+  rememberComposerSelection();
+}
+
+function restoreComposerSelection(): Range | null {
+  const editor = editorRef.value;
+  if (!editor) return null;
+  editor.focus();
+  const range = savedComposerRange?.cloneRange() ?? document.createRange();
+  if (!savedComposerRange) {
+    range.selectNodeContents(editor);
+    range.collapse(false);
+  }
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  return range;
+}
+
+function caretAtComposerStart(range: Range): boolean {
+  const editor = editorRef.value;
+  if (!editor) return true;
+  const before = range.cloneRange();
+  before.selectNodeContents(editor);
+  before.setEnd(range.startContainer, range.startOffset);
+  return before.toString().length === 0;
+}
+
+function setCaretAfter(node: Node) {
+  const range = document.createRange();
+  range.setStartAfter(node);
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  savedComposerRange = range.cloneRange();
+}
+
+function adjacentNode(range: Range, direction: "backward" | "forward"): Node | null {
+  const editor = editorRef.value;
+  if (!editor || !range.collapsed) return null;
+  const container = range.startContainer;
+  const offset = range.startOffset;
+  if (container === editor) {
+    return direction === "backward"
+      ? editor.childNodes[offset - 1] ?? null
+      : editor.childNodes[offset] ?? null;
+  }
+  if (container.nodeType === Node.TEXT_NODE) {
+    const text = container.textContent ?? "";
+    if (direction === "backward" && offset > 0) return null;
+    if (direction === "forward" && offset < text.length) return null;
+  }
+  return direction === "backward" ? container.previousSibling : container.nextSibling;
+}
+
+function adjacentSkill(range: Range, direction: "backward" | "forward"): HTMLElement | null {
+  let node = adjacentNode(range, direction);
+  while (node?.nodeType === Node.TEXT_NODE && /^\s*$/.test(node.textContent ?? "")) {
+    node = direction === "backward" ? node.previousSibling : node.nextSibling;
+  }
+  return node instanceof HTMLElement && node.dataset.skill ? node : null;
+}
+
+function removeSkillToken(token: HTMLElement) {
+  const before = token.previousSibling;
+  const after = token.nextSibling;
+  if (before?.nodeType === Node.TEXT_NODE && /^\s*$/.test(before.textContent ?? "")) before.remove();
+  token.remove();
+  if (after?.nodeType === Node.TEXT_NODE && /^\s*$/.test(after.textContent ?? "")) after.remove();
+  editorRef.value?.focus();
+  syncComposer();
+}
+
+function handleComposerKeydown(event: KeyboardEvent) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    send();
+    return;
+  }
+  if (event.key !== "Backspace" && event.key !== "Delete") return;
+  const range = composerRange();
+  if (!range) return;
+  const token = adjacentSkill(range, event.key === "Backspace" ? "backward" : "forward");
+  if (!token) return;
+  event.preventDefault();
+  removeSkillToken(token);
+}
+
+function handleComposerPaste(event: ClipboardEvent) {
+  event.preventDefault();
+  document.execCommand("insertText", false, event.clipboardData?.getData("text/plain") ?? "");
+  syncComposer();
+}
+
+function selectSkill(event: Event) {
+  const target = event.target as HTMLSelectElement;
+  skillPicker.value = "";
+  if (!target.value) return;
+  const range = restoreComposerSelection();
+  if (!range) return;
+  range.deleteContents();
+  const fragment = document.createDocumentFragment();
+  if (!caretAtComposerStart(range)) fragment.append(document.createTextNode("  "));
+  const tokenPart = insertSkillToken([], 0, target.value)[0];
+  const token = document.createElement("span");
+  token.className = "skill-chip";
+  token.contentEditable = "false";
+  token.dataset.skill = tokenPart.kind === "skill" ? tokenPart.name : target.value;
+  token.textContent = `$${token.dataset.skill}`;
+  const spacer = document.createTextNode("  ");
+  fragment.append(token, spacer);
+  range.insertNode(fragment);
+  setCaretAfter(spacer);
+  syncComposer();
 }
 
 </script>
@@ -98,28 +245,30 @@ function handleComposerKeydown(event: KeyboardEvent) {
         v-if="agent.skills.length"
         class="skill-select"
         aria-label="Skills"
-        :value="agent.selectedSkill ?? ''"
+        :value="skillPicker"
         :disabled="isBusy || !agent.characterId"
-        @change="agent.selectedSkill = ($event.target as HTMLSelectElement).value || null"
+        @change="selectSkill"
       >
         <option value="">Skills</option>
         <option v-for="skill in agent.skills" :key="skill" :value="skill">{{ skill }}</option>
       </select>
       <div class="composer-input">
-        <span v-if="agent.selectedSkill" class="skill-chip" aria-label="Selected Skill">
-          ${{ agent.selectedSkill }}
-        </span>
-        <input
-          v-model="input"
-          placeholder="输入消息…"
-          :disabled="isBusy || !agent.characterId"
+        <div
+          ref="editorRef"
+          class="composer-editor"
+          :contenteditable="!isBusy && !!agent.characterId"
+          role="textbox"
+          aria-label="输入消息"
+          data-placeholder="输入消息…"
           @keydown="handleComposerKeydown"
-        />
+          @input="syncComposer"
+          @paste="handleComposerPaste"
+        ></div>
       </div>
       <button v-if="agent.phase === 'streaming'" type="button" class="stop" @click="agent.interrupt()">
         停止
       </button>
-      <button type="submit" :disabled="!input.trim() || isBusy || !agent.characterId">发送</button>
+      <button type="submit" :disabled="!hasComposerBody || isBusy || !agent.characterId">发送</button>
     </form>
   </div>
 </template>
@@ -131,7 +280,7 @@ function handleComposerKeydown(event: KeyboardEvent) {
   flex-direction: column;
   background: transparent;
   border: 1px solid var(--glass-border);
-  border-radius: var(--r-lg);
+  border-radius: var(--window-host-radius);
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -266,31 +415,48 @@ function handleComposerKeydown(event: KeyboardEvent) {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  align-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
   border: 1px solid var(--glass-border);
   border-radius: var(--r-sm);
-  padding: 0 8px;
+  min-height: 36px;
+  padding: 3px 8px;
   background: #101a15;
 }
 .skill-chip {
   flex: 0 0 auto;
   padding: 0 8px;
-  color: var(--text-hi);
-  font-size: 15px;
-  font-weight: 800;
-  line-height: 28px;
+  border: 1px solid rgba(190, 222, 163, 0.22);
+  border-radius: 4px;
+  background: #1a281c;
+  color: #d8edcb;
+  font-family: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 26px;
+  letter-spacing: 0;
   white-space: nowrap;
   user-select: none;
 }
-.composer-input input {
-  min-width: 0;
+.composer-editor {
+  min-width: 120px;
   flex: 1;
-  border: none;
   outline: none;
-  padding: 6px 2px;
-  font-size: 13px;
-  background: transparent;
   color: var(--text-hi);
+  font-size: 13px;
+  line-height: 30px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.composer-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-low);
+  pointer-events: none;
+}
+.composer-editor[contenteditable="false"] {
+  opacity: 0.55;
+  pointer-events: none;
 }
 .composer-input:focus-within {
   border-color: var(--accent);

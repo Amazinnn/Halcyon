@@ -26,6 +26,8 @@
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
   /* radius */
   --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-pill: 999px;
+  /* Matches the native floating host curve without changing inner card radii. */
+  --window-host-radius: 10px;
   /* motion */
   --t-fast: 120ms; --t-base: 200ms; --t-slow: 320ms;
   --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
@@ -49,8 +51,9 @@ html.transparent-window #app {
 /* v1.10.2 (#37): clip the page to the same rounded corners as the window
    containers so the WebView2 page edge never shows a second "frame". */
 html.transparent-window,
-html.transparent-window body {
-  border-radius: var(--r-lg);
+html.transparent-window body,
+html.transparent-window #app {
+  border-radius: var(--window-host-radius);
   overflow: hidden;
 }
 

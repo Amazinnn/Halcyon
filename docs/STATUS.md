@@ -1,12 +1,14 @@
 # Focus Desktop 当前状态（压缩交接页）
 
-> 更新：2026-08-11（需求 #86/#87，ADR-0028）。Skill 选择现在是聊天输入中的可见 `$skill-name` 原子字段，发送时按用户看到的完整字符串直通真实 Provider；Focus 不再读取或注入 `SKILL.md`。Agent 消息作者显示当前宠物名。Claude Windows 子进程使用 `CREATE_NO_WINDOW`，保留常驻 stream-json 和 session resume。拖动浮窗时委托 `WM_ERASEBKGND`，并在拖动开始/结束重申无边框/无激活约束。自动测试与构建已通过；移动后的蓝白条视觉、Skill 交互和 Claude 无控制台仍待人工验收，详见 [本轮 Eval](./evals/2026-08-11-float-drag-and-skill-checkpoint.md)。
+> 维修候选：需求 #96–#98 与 ADR-0029。用户已真实确认拖动后的蓝白条、原生 caption 与标题文字已消失；当前只处理原生毛玻璃与网页圆角的轻微弧度差。DWM 圆角偏好保留，网页外层裁切以桌宠为基准由 12px 微调为 10px；本次按用户要求只重建 release，记录见 [维修 Eval](./evals/2026-08-11-float-window-repair-session.md)。
 
-> 更新：2026-08-10（需求 #84/#85，窗口回归修复）。浮窗折叠改用异步原生隐藏，release UI Automation 已确认对话窗口真实隐藏；恢复窗口先原子决定空闲槽位，满格时保持折叠并在主界面提示，避免任何重叠。#83 同步补正跨午夜聊天轮换与每周参数验证。`window-style-probe.ps1` 显示所有内部宿主无 caption/thick frame、未异常激活；淡蓝条需要用户视觉复验，不能写作已验收。后续移动回归见最新 [窗口/Skill Eval](./evals/2026-08-11-float-drag-and-skill-checkpoint.md)。
+> 维修中：需求 #91 将浮窗拖动后的蓝白边框单独收敛为 [维修档案](./maintenance/float-window-blue-border-repair.md) 和 [本轮 Eval](./evals/2026-08-11-float-window-repair-session.md)。在用户完成真实鼠标拖动验收前，不以探针、脚本移动或截图宣称修复。
+
+> 更新：2026-08-10（需求 #84/#85，窗口回归修复）。浮窗折叠改用异步原生隐藏，release UI Automation 已确认对话窗口真实隐藏；恢复窗口先原子决定空闲槽位，满格时保持折叠并在主界面提示，避免任何重叠。#83 同步补正跨午夜聊天轮换与每周参数验证。`window-style-probe.ps1` 显示所有内部宿主无 caption/thick frame、未异常激活；淡蓝条需要用户视觉复验，不能写作已验收。后续移动回归见最新 [窗口/Skill Eval](./evals/2026-08-11-float-host-ownership-and-stacked-skills.md)。
 
 > 更新：2026-08-10（需求 #83，ADR-0026/0027）。Claude 现为按桌宠常驻的 stream-json Provider；重启后当天首轮 `--resume`，可见聊天消息按“桌宠 x Provider x 本地日期”回放。聊天去除生命周期噪音，Skill 选择和用户输入的可见拼接语义由 ADR-0028 修正。工作流画布增加不持久化的触发节点，计划支持间隔、每日和每周。浮窗统一走无激活原生路径；淡蓝条事故仍为 `Fixed pending verification`，不宣称视觉修复已通过。
 >
-> 上一轮自动证据保留在 [2026-08-10 快照](./evals/2026-08-10-conversation-continuity-checkpoint.md)；本轮新增测试、构建和 Claude 隐藏控制台证据保留在 [2026-08-11 快照](./evals/2026-08-11-float-drag-and-skill-checkpoint.md)。真实 Provider、浮窗移动后的视觉和桌面锁仍按 Eval 标为 Pending。
+> 上一轮自动证据保留在 [2026-08-10 快照](./evals/2026-08-10-conversation-continuity-checkpoint.md)；本轮浮窗透明擦除、叠加 Skill、探针和构建证据保留在 [2026-08-11 快照](./evals/2026-08-11-float-host-ownership-and-stacked-skills.md)。真实 Provider、浮窗移动后的视觉和桌面锁仍按 Eval 标为 Pending。
 
 > 更新：2026-08-10（Claude Code 作为第二个真实 Provider 已接入；需求 #79/#80，ADR-0025）。每个桌宠在设置页固定选择 Codex 或 Claude；Focus Demo Pet 的历史迁移使用 SQLite 原子标记，按“桌宠 x Provider”隔离当日 session。聊天窗口不提供 Provider 切换。
 >
@@ -22,7 +24,8 @@
 本地专注桌面 + Agent 桌宠系统（Windows 优先，MIT）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
 
 ## 当前实现与待验收清单
-- v1.12.7（对话连续性、常驻 Provider 与计划触发器，已实现待验收，需求 #83）：Claude 在 Focus 生命周期内按桌宠常驻；同日可见聊天按桌宠 x Provider 隔离回放，应用重启后首轮恢复当天 session；聊天仅显示消息、短暂连接/生成状态和真实错误。Skill 通过 ADR-0028 以可见 `$skill-name  text` 直通用户输入，不再注入 `SKILL.md`。工作流画布固定不可持久化的触发节点，定时支持间隔、每日和每周（周一 0 至周日 6 + 本地 `HH:MM`）；不增加执行图节点。调度在写入运行记录前原子领取工作流，避免 tick 重入遗留重复 `running` 记录。浮窗恢复、移动、缩放、置顶统一为无激活原生路径，扩展样式探针采集宿主/子窗口与前台状态。见 ADR-0026/0027/0028 与最新 Eval。
+- v1.12.8（视图托盘稳定性与内嵌 Skill 输入，已验收发布，需求 #99）：视图托盘圆按钮和四个浮窗入口共用前端 in-flight 动作控制器；一次 `restore` 未返回时条目禁用，后续展开/收起/恢复动作被忽略，不再以 150ms 窗口猜测结束。后端以同一可见性操作门拒绝并发 `restore`/`collapse`，返回「窗口操作正在进行，请稍候」，不排队堆积；既有无空位不恢复、零重叠和无激活原生路径保持。聊天输入改为单行 `contenteditable`：Skill 是光标位置的不可拆分内嵌 Token，可连续叠加；相邻 Backspace/Delete 整块删除；发送严格按编辑器顺序直通 Provider，且不读取或注入 `SKILL.md`。自动化、完整构建、release 重建与用户发布验收均完成；发布证据见 [v1.12.8 Eval](./evals/2026-08-11-v1.12.8-release.md)。
+- v1.12.7（对话连续性、常驻 Provider 与计划触发器，已实现待验收，需求 #83）：Claude 在 Focus 生命周期内按桌宠常驻；同日可见聊天按桌宠 x Provider 隔离回放，应用重启后首轮恢复当天 session；聊天仅显示消息、短暂连接/生成状态和真实错误。Skill 通过 ADR-0028 以可见 `$skill-name  text` 直通用户输入，不再注入 `SKILL.md`。工作流画布固定不可持久化的触发节点，定时支持间隔、每日和每周（周一 0 至周日 6 + 本地 `HH:MM`）；不增加执行图节点。调度在写入运行记录前原子领取工作流，避免 tick 重入遗留重复 `running` 记录。浮窗由 ADR-0029 规定为一次性宿主配置：透明客户区吞掉 `WM_ERASEBKGND`，其余消息走 Tauri/Windows 默认链路；移动、缩放、置顶只走无激活原生路径。扩展样式探针采集宿主/子窗口与前台状态。见 ADR-0026/0027/0028/0029 与最新 Eval。
 - Agent 对话与工作流闭合（已实现，需求 #76–#78，ADR-0024）：正式桌面路径只使用真实 Provider，Provider 不可用直接显示实际错误，Mock 仅供测试注入；聊天仅保留 Agent 选择、连接/生成状态、消息、停止与输入。工作流列表固定展示全部日程，新建日程不绑定 Agent；新 Agent 节点默认当前聊天 Agent、仍可改目标。工作流只在 `showResult` 时向目标 Agent 对话与宠物泡泡各回流一次带「日程 · 名称」来源的最终结果，过程事件不进入聊天；`workflow:changed` 立即刷新列表。真实 Claude 控制面闭环已通过；聊天窗口视觉回流仍待人工验收。
 - v1.12.4（桌面锁退出恢复，已实现待验收，需求 #73）：恢复 Shell_TrayWnd/Progman 的入口不再检查当前进程的 `LOCKED`；watchdog 在主进程被强制结束后调用该无状态入口；专注「跳过」和应用内退出先显式解锁。根因：watchdog 是独立进程，其 LOCKED 初值恒为 false，原先调用 unlock 会直接返回，导致桌面宿主持续隐藏。
 - v1.12.6（三档专注模式，已实现待验收，需求 #75）：轻度不锁定，标准只拦截 Win/Alt+Tab/Alt+F4/Ctrl+Esc，学霸模式额外隐藏 Shell；当前模式保存到设置，新用户默认标准。专注轮次快照模式；开始、暂停、恢复、跳过、自然结束及连续点击均通过串行转换，暂停/休息在可见状态变化前完成桌面恢复；既有 `focus-cli desktop lock/unlock/status` 仍是严格桌面锁语义。
@@ -89,7 +92,7 @@
 
 ## 文档索引
 
-- 需求原话：docs/requirements-verbatim.md（#1–#87，只追加、不改历史原话）。
+- 需求原话：docs/requirements-verbatim.md（#1–#99，只追加、不改历史原话）。
 - ADR：docs/decisions/ADR-0001~0028（0012=M4 工作流引擎；0017=工作流 v2；0018=画布收敛；0019=Agent 概念+工作流冻结；0020=工作流退化为 Agent 日程工具；0021=环状工作流执行语义；0022=M5 Agent 看板；0023=桌面锁；0024=Agent 对话与工作流闭合；0025=Claude Code Provider；0026=可见聊天历史与常驻 Provider；0027=工作流触发节点与每周计划；0028=可见 Skill 用户输入）。
 - 设计稿：local-focus-desktop-agent-design-v0.2.md（权威，保持原样、不移动、不改章节编号）。
 - 质量：[docs/evals/README.md](./evals/README.md)（长期检查点）与 [docs/production-incidents.md](./production-incidents.md)（生产事故台账）。
@@ -98,9 +101,32 @@
 
 - #74 已实现待验收：桌面锁串行化、启动时无状态 Shell 恢复、浮窗无激活显示，以及 Agent 初始化竞态修复。
 - 原生浮窗验收可运行 `scripts/window-style-probe.ps1`；结果应无 caption/thick frame，且内部浮窗不应为前台窗口。#84 的原生/自动化检查已通过，淡蓝条视觉复验仍为 `Pending`；#85 的恢复重叠回归已在 release UI Automation 中通过。
-- 本轮窗口拖动、可见 Skill 输入与 Claude 隐藏控制台证据已写入 [2026-08-11 快照](./evals/2026-08-11-float-drag-and-skill-checkpoint.md)；移动后的蓝白条视觉、Skill 原子删除、真实 Provider 输入、Claude 无控制台和桌面锁手工回归保持 `Pending`，不得写成通过。
+- 本轮窗口拖动、可见 Skill 输入与 Claude 隐藏控制台证据已写入 [2026-08-11 快照](./evals/2026-08-11-float-host-ownership-and-stacked-skills.md)；移动后的蓝白条视觉、Skill 原子删除、真实 Provider 输入、Claude 无控制台和桌面锁手工回归保持 `Pending`，不得写成通过。
 
 ## Agent 对话与工作流验收状态（2026-08-10）
 
 - 实现与自动测试已完成；真实 Claude 控制面已完成一次对话和临时工作流 create/read/update/run/delete 闭环。聊天窗口直接发送与视觉回流仍须手工验收；Codex 认证状态不作为 Claude 验收替代条件。
 - 该工作流仅含目标为当前宠物的 Agent 节点、无桌面副作用；应得到一次合理真实回复、一次「日程 · 名称」来源消息与宠物泡泡、自动刷新的列表、成功运行记录，最后确认临时数据已删除。Provider 不可用、Mock 回退、重复消息或清理失败均不通过。
+## Current Checkpoint Update (2026-08-11)
+
+The recurring float-frame incident is under dedicated repair. The user has
+confirmed that the residual top strip contains the native host title; it is a
+Windows caption, not a Focus web component. ADR-0029 now specifies a one-time
+direct window procedure during hidden creation: `WM_NCCALCSIZE -> 0`,
+`WM_ERASEBKGND -> 1`, and `WM_NCACTIVATE -> 1`; every other message is
+forwarded to Tauri's original procedure. The focused test was red before the
+activation handling and green after it. Build, 173 Rust library tests, and
+schema tests pass; the rebuilt-release manual drag gate remains pending.
+INC-001 is Verified: the user has confirmed the original caption symptom is
+gone after real dragging. The maintenance document retains the evidence.
+
+Native acrylic corners are now a separate open visual regression (INC-017):
+the native composition layer previously escaped the WebView's CSS-rounded
+edge. The current release candidate applies the DWM `ROUND` corner preference
+once while each float host is hidden at creation. Its focused test and all
+automated build gates pass; user visual verification remains required.
+
+The stacked Skill composer is implemented and covered by the 46 frontend
+tests: ordered visible tokens, exact `$skill-a  $skill-b  text` input, and one
+adjacent token removed by Backspace/Delete at the input boundary. The latest
+evidence is [the 2026-08-11 Eval](./evals/2026-08-11-float-host-ownership-and-stacked-skills.md).

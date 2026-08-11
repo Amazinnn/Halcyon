@@ -2,11 +2,13 @@
 
 ## 2026-08-11 当前验收门槛
 
-- 需求 #84/#85 已修复：浮窗折叠走异步原生隐藏；恢复在改变可见状态前寻找空槽，无槽即保持折叠并提示。release UI Automation 已验证折叠和零重叠；移动后的淡蓝条视觉仍待用户按 [最新 Eval](./evals/2026-08-11-float-drag-and-skill-checkpoint.md) 复验。
+- v1.12.8 已验收发布（需求 #99）：视图托盘的展开、收起与四类浮窗恢复都受前端未完成动作状态及后端可见性操作门约束；聊天输入使用真正的单行内嵌 Skill Token，而非输入框外 chip。自动化、完整构建、release 重建与用户发布验收完成；发布证据见 [v1.12.8 Eval](./evals/2026-08-11-v1.12.8-release.md)。
 
-- 需求 #83、#86、#87 已实现待验收：Claude 在 Focus 生命周期内常驻，重启后的当天首轮恢复 session；可见聊天按桌宠 x Provider x 本地日期回放；Skill 以可见 `$skill-name  text` 作为用户输入直通 Provider，Focus 不读取 `SKILL.md`；Claude 子进程 Windows 启动不创建控制台。细节见 ADR-0026、ADR-0028。
+- 需求 #84/#85 已修复：浮窗折叠走异步原生隐藏；恢复在改变可见状态前寻找空槽，无槽即保持折叠并提示。release UI Automation 已验证折叠和零重叠；移动后的淡蓝条视觉仍待用户按 [最新 Eval](./evals/2026-08-11-float-host-ownership-and-stacked-skills.md) 复验。
+
+- 需求 #83、#86、#87、#88、#89、#90 已实现待验收：Claude 在 Focus 生命周期内常驻，重启后的当天首轮恢复 session；可见聊天按桌宠 x Provider x 本地日期回放；Skill 以可见 `$skill-name  text` 作为用户输入直通 Provider，Focus 不读取 `SKILL.md`；Claude 子进程 Windows 启动不创建控制台；浮窗宿主不再被重复接管，多个 Skill token 可叠加并按光标相邻项原子删除。细节见 ADR-0026、ADR-0028、ADR-0029。
 - 工作流仍是精简日程工具；其可见虚拟触发节点只编辑手动、间隔、每日、每周元数据，不进入持久化图或引擎执行图。每周采用周一 `0` 至周日 `6` 加本地 `HH:MM`，见 ADR-0027。
-- 当前自动验证以 [2026-08-11 Eval](./evals/2026-08-11-float-drag-and-skill-checkpoint.md) 为准；新增 Skill 组装、宠物名显示、Rust 直通和 Claude `CREATE_NO_WINDOW` 测试均通过。真实 Provider 连续性、移动浮窗视觉、Skill 原子删除、Claude 无控制台和 Windows 手测状态仍只以 Eval 的 `Pending` 项为准。
+- 当前自动验证以 [2026-08-11 Eval](./evals/2026-08-11-float-host-ownership-and-stacked-skills.md) 为准；新增 Skill 组装、宠物名显示、Rust 直通、透明擦除和 Claude `CREATE_NO_WINDOW` 测试均通过。真实 Provider 连续性、移动浮窗视觉、Skill 原子删除、Claude 无控制台和 Windows 手测状态仍只以 Eval 的 `Pending` 项为准。
 - Claude Code 已作为第二个真实 Provider 接入 M5，取代本文件旧的“Claude Code 冻结”表述，具体语义见 ADR-0025。
 - 每个桌宠固定选用 `codex` 或 `claude`，设置页是唯一 Provider 调整入口；同一桌宠切换 Provider 后，当前聊天 UI 必须新建会话，两个 Provider 的当天 session 分别保留。
 - 控制面真实 Claude 验收已通过：Focus Demo Pet 返回真实结果，临时工作流已完成创建、读取、更新、运行、删除，运行记录为 success，删除后列表为空。剩余门槛是人工打开聊天窗口验证直接发送、恰好一条「日程 · 名称」来源消息、一次宠物气泡与列表刷新。
@@ -105,3 +107,11 @@
 - M1 与 M2 模块边界清晰，可部分并行；M3 依赖 M1 的对话面板可用性。
 
 - M4/M5 方向见 docs/requirements-verbatim.md #26/#27；M4 已冻结并退化为 Agent 日程工具（#64/#67/#68，ADR-0019/0020/0021）；M5 Agent 概念与真实 Provider 闭合实现已由 ADR-0024/0025 定稿，当前只剩 Eval 中明确列出的人工视觉与桌面回归。
+## 2026-08-11 Checkpoint Carryover
+
+The float incident remains the only open item from this round. Automated host
+style/geometry checks, the transparent-background regression, release rebuild,
+and a DPI-aware native move round-trip pass; manual drag, resize, collapse,
+restore, topmost, and hide-button acceptance is still required. Do not reopen
+the window-procedure architecture without new dynamic evidence. Stacked Skill
+input and atomic adjacent-token deletion are implemented and tested.

@@ -113,6 +113,9 @@ mod tests {
             std::process::id(),
             seq
         ));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

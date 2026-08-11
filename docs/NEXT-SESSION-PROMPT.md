@@ -4,9 +4,9 @@
 
 ## 当前提示词
 
-我是 Focus Desktop 项目的维护者。请先阅读 `docs/STATUS.md`，再按需查阅 `docs/next-phase.md`、`docs/requirements-verbatim.md`（只追加，当前 #1–#87）、`docs/decisions/`（至 ADR-0028）、`docs/evals/README.md`、最新日期快照和 `docs/production-incidents.md`。每轮任务结束前必须更新受影响范围的 Eval；不得将 Mock 结果写成真实 Provider 验收。
+我是 Focus Desktop 项目的维护者。请先阅读 `docs/STATUS.md`，再按需查阅 `docs/next-phase.md`、`docs/requirements-verbatim.md`（只追加，当前 #1–#99）、`docs/decisions/`（至 ADR-0029）、`docs/evals/README.md`、最新日期快照和 `docs/production-incidents.md`。每轮任务结束前必须更新受影响范围的 Eval；不得将 Mock 结果写成真实 Provider 验收。
 
-当前真实状态：Claude Code 与 Codex 均按宠物常驻；聊天当天历史按宠物 x Provider 回放，Focus 重启后仅首轮恢复当天 session；Skill 以可见 `$skill-name  text` 作为下一条用户输入，Focus 不读取或注入 `SKILL.md`，聊天作者显示宠物名。工作流的虚拟触发节点支持间隔、每日和每周计划而不进入执行图。Focus Demo Pet 的真实 Claude 控制面工作流闭环已验证；浮窗恢复在无空位时保持折叠而不重叠，折叠已在 release 中自动验证。三轮对话/重启恢复、Skill 原子删除、移动浮窗视觉、Claude 无控制台、聊天视觉回流、桌面锁恢复与淡蓝标题条视觉仍须按最新 Eval 快照逐项人工确认。不要修改权威设计稿 `local-focus-desktop-agent-design-v0.2.md`。
+当前正式版本：v1.12.8 已把托盘圆按钮和四个浮窗恢复入口串成同一未完成动作控制器；后端拒绝并发可见性操作，防止高频混合点击积压。聊天为真正的单行 `contenteditable`，Skill Token 按光标内嵌、可叠加、相邻 Backspace/Delete 整块删除，并按可见顺序直通 Provider。自动化、完整构建、release 重建和用户发布验收均已记录于最新 Eval。下一轮从该基线继续，不要修改权威设计稿 `local-focus-desktop-agent-design-v0.2.md`。
 
 ## 2026-08-08 历史归档（不作为当前指令）
 
@@ -54,3 +54,12 @@ PowerShell 管道传中文会变 ?，写中文用 .NET `WriteAllText`（UTF-8 �
 - 功能优先，**不要花里胡哨但无用的 UI**；用户心疼电脑，不做长时间压测（受控拖动/重叠验收各几轮即可）。
 - 工作流 v1.10.5 语义冻结；M5 Agent 看板细节尚未定稿，先与用户讨论，不默认实施。
 - 用户已确认方向：内置 Agent 看板，保留当前工作流设计但不再更新。
+## Current checkpoint (2026-08-11)
+
+Read `docs/STATUS.md`, the latest Eval, ADR-0029, and `docs/production-incidents.md`.
+The float host uses a one-time managed subclass that consumes only
+`WM_NCCALCSIZE` and `WM_ERASEBKGND`; movement never reconfigures the frame.
+Automated evidence and release rebuild pass, but the user must still perform
+the five-float drag/resize/restore/topmost visual checklist. Skill tokens are
+visible, stackable, sent as literal user text, and one adjacent token is
+removed atomically by Backspace/Delete at the input boundary.

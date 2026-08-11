@@ -774,7 +774,7 @@ function removeOpt(i: number) {
   flex-direction: column;
   background: transparent;
   border: 1px solid var(--glass-border);
-  border-radius: var(--r-lg);
+  border-radius: var(--window-host-radius);
   overflow: hidden;
   box-sizing: border-box;
   color: var(--text-hi);

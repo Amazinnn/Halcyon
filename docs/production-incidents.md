@@ -18,11 +18,11 @@
 
 | 维度 | 统计 |
 | --- | --- |
-| 总事故数 | 16 |
-| 状态 | Open 0；Fixed pending verification 13；Verified 2；Accepted limitation 1 |
-| 严重性 | S1 2；S2 11；S3 3 |
-| 类别 | Window 5；Automation 2；Data 1；Launch 1；Pet 1；Desktop lock 2；Agent/workflow 4 |
-| 缺少自动回归覆盖 | 3（INC-001、INC-002、INC-005）；其余为自动或部分自动覆盖，仍可能要求 Windows 手工验收。 |
+| 总事故数 | 18 |
+| 状态 | Open 0；Fixed pending verification 12；Verified 5；Accepted limitation 1 |
+| 严重性 | S1 2；S2 12；S3 4 |
+| 类别 | Window 6；Automation 2；Data 1；Launch 1；Pet 1；Desktop lock 2；Agent/workflow 5 |
+| 缺少自动回归覆盖 | 1（INC-005）；其余为自动或部分自动覆盖，仍可能要求 Windows 手工验收。 |
 
 ## 记录
 
@@ -30,23 +30,46 @@
 
 | 字段 | 内容 |
 | --- | --- |
-| 类别 / 严重性 / 状态 | Window / S3 / Fixed pending verification |
+| 类别 / 严重性 / 状态 | Window / S2 / Verified |
 | 首次报告 | 2026-08-06，需求 #5；后续 #49、#71、#74、#83、#84、#86 复发。 |
 | 影响与复现 | 内部浮窗重新出现普通窗口标题区、白边或激活时的淡蓝条；本轮确认窗口初次打开正常，但开始移动后出现蓝白条边框。 |
-| 根因证据 | 非客户区样式、Tauri 尺寸路径和窗口激活路径曾分别遗留边框或 caption 高亮；见 ADR-0015、`157d173`、`7e97c1c`、`aef2512`。 |
-| 修复 | 清除完整边框样式、以 `WS_POPUP` 显示；隐藏创建后先配置非客户区和无激活样式，恢复、移动、缩放、置顶统一使用 `SetWindowPos(...SWP_NOACTIVATE)`。 |
-| 验证与回归 | `scripts/window-style-probe.ps1 -AsJson` 采集宿主/子窗口 style、exstyle、client/outer rect 与前台状态；本轮 `WM_ERASEBKGND` 委托 Windows，并在拖拽开始/结束重申无边框/无激活约束（提交 `288f23c`）。自动探针不能证明移动后的视觉结果，淡蓝条仍待人工确认，关联 Eval：`evals/2026-08-11-float-drag-and-skill-checkpoint.md`。 |
+| 根因证据 | 用户确认五类浮窗首次打开正常、拖动中和松开后均出现蓝白条。原生拖动自 v1.10.1 起一直使用 `SetWindowPos(...SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)`；真正改变窗口过程语义的是 `c906df5` 将此前一次性的直接过程改为 managed subclass，并在多个生命周期重配。完全移除过程又暴露原生标题栏，证明透明宿主仍需要全客户区处理。 |
+| 修复 | 恢复历史的直接 `GWLP_WNDPROC`，但仅在隐藏创建时安装一次。它处理 `WM_NCCALCSIZE`/`WM_ERASEBKGND`/`WM_NCACTIVATE`，其他消息转发原 Tauri 过程；移动、恢复、缩放、置顶继续只走无激活 `SetWindowPos`，不重配过程或样式。 |
+| 验证与回归 | 回归测试先在 `WM_NCACTIVATE -> None` 下失败，再在已处理返回后通过；构建、173 项 Rust 测试、schema 测试和 release 重建通过。用户已真实拖动确认不再显示标题条或标题文字。关联 `maintenance/float-window-blue-border-repair.md` 与 `evals/2026-08-11-float-window-repair-session.md`。 |
+
+时间线更新（2026-08-11，需求 #92）：用户在当前 release 确认所有五类浮窗初次打开正常，但拖动中及松开后均出现上端蓝白条。自动探针、脚本移动和截图均不再作为视觉修复依据；维修范围与后续人工验收见 `maintenance/float-window-blue-border-repair.md` 与 `evals/2026-08-11-float-window-repair-session.md`。
+
+时间线更新（2026-08-11，需求 #93）：移除 subclass 的候选经用户否决。浮窗随即暴露上端及左端原生轮廓，WebView 左上角显示默认黑色窗口标题。该结果证明“完全不接管非客户区”不是当前 Tauri 宿主的完整修复；事故保持 `Open / S2`，回到历史路径与创建时序调查。
+
+时间线更新（2026-08-11，需求 #94）：恢复创建期直接窗口过程后，用户确认左侧轮廓消失但上端条仍存。候选仅部分改善；在确认残留是否是系统 caption 或 Focus 网页头部前，不继续添加原生消息或样式处理。
+
+时间线更新（2026-08-11，需求 #95）：用户确认残留上端条含有窗口标题文字，证实它是 Windows 原生 caption。当前根因假设收敛为拖动时 `WM_NCACTIVATE` 落入原 Tauri/default 过程并触发非客户区重绘；仍待以单一回归测试和用户手工验收验证。
+
+时间线更新（2026-08-11，需求 #95）：回归测试先以 `WM_NCACTIVATE -> None` 失败；当前候选仅令创建期直接窗口过程对该消息返回已处理，阻止默认 caption 绘制。未改样式或拖动路径；自动测试已通过，人工拖动验收待执行。
+
+时间线更新（2026-08-11，需求 #96）：用户已确认候选通过原生标题条与标题文字的真实拖动验收。INC-001 的 caption 症状标记为 `Verified`；同次发现原生毛玻璃层在 WebView 圆角外的矩形外溢，作为独立合成/圆角缺陷继续维修。
+
+### INC-017 浮窗原生毛玻璃层越出圆角
+
+| 字段 | 内容 |
+| --- | --- |
+| 类别 / 严重性 / 状态 | Window / S3 / Fixed pending verification |
+| 首次报告 | 2026-08-11，需求 #96。 |
+| 影响与复现 | 五类内部浮窗的网页内容为圆角，但启用原生 SWCA 毛玻璃时，四角仍保留矩形的毛玻璃凸出部分。 |
+| 根因证据 | 网页 `html` 与 `body` 的 `border-radius + overflow: hidden` 已裁切 WebView 内容；毛玻璃由宿主 HWND 的 `SetWindowCompositionAttribute` 产生，不受网页裁切影响。 |
+| 修复 | DWM `DWMWA_WINDOW_CORNER_PREFERENCE = ROUND` 在隐藏创建时一次性配置；随后将透明 WebView 裁切与五类浮窗外层统一为 10px 的 `--window-host-radius`，并以无网页外壳的桌宠窗口作为视觉基准。未恢复 `SetWindowRgn`，未改变窗口过程或拖动路径。 |
+| 验证证据 / 回归覆盖 | Rust DWM attribute/value 测试与前端五类宿主半径测试均已通过；构建、174 项 Rust 测试、schema 测试和 release 重建通过。用户视觉验收待完成。关联需求 #96/#97、ADR-0029、维修文档与本轮 Eval。 |
 
 ### INC-002 频繁打开或点击内部窗口导致 Focus 卡死
 
 | 字段 | 内容 |
 | --- | --- |
-| 类别 / 严重性 / 状态 | Window / S2 / Fixed pending verification |
+| 类别 / 严重性 / 状态 | Window / S2 / Verified |
 | 首次报告 | 2026-08-06，需求 #12；2026-08-08 需求 #31 再次报告。 |
 | 影响与复现 | 连续双击快捷方式或反复打开内部页时，对话、统计、音乐等窗口可能卡死，用户需要结束进程。 |
-| 根因证据 | 窗口恢复、置顶、定位等重复操作在高频点击下堆叠；修复轮记录于 STATUS 的 v1.10。 |
-| 修复 | 去重窗口操作、前端 150ms 防抖、独立 hang detector 和 `launch-focus.cmd monitor`。 |
-| 验证与回归 | 受控连续打开/关闭仍待人工复验；无针对高频窗口序列的自动回归。 |
+| 根因证据 | 原前端只按 label 做 150ms 时间窗去重，无法代表一次原生 `restore` 已结束，也不覆盖托盘展开/收起与不同窗口混合点击；后端 `restore`/`collapse` 没有共享可见性门，显示、隐藏、定位和置顶可并发进入同一浮窗生命周期。 |
+| 修复 | v1.12.8 以单一前端 in-flight 控制器统一托盘动作；未返回期间禁用条目并忽略新动作。Rust 端增加共享可见性操作门，并发 `restore`/`collapse` 返回「窗口操作正在进行，请稍候」，不再排队。无空位不恢复、零重叠及 `SWP_NOACTIVATE` 路径不变。 |
+| 验证与回归 | 前端覆盖未完成 restore 期间的重复托盘动作；Rust 覆盖可见性门拒绝重入并在释放后重新开放；v1.12.8 的 48 项前端、175 项 Rust、schema、release 重建和用户发布验收均已记录。关联需求 #31/#99、v1.12.8 Eval。 |
 
 ### INC-003 拖动或重叠浮窗触发 AppHangB1
 
@@ -195,9 +218,20 @@
 
 | 字段 | 内容 |
 | --- | --- |
-| 类别 / 严重性 / 状态 | Agent/workflow / S3 / Fixed pending verification |
+| 类别 / 严重性 / 状态 | Agent/workflow / S3 / Verified |
 | 首次报告 | 2026-08-11，需求 #87。 |
 | 影响与复现 | 每次 Focus 调用 Claude Code 时出现独立的纯黑色控制台窗口，打断聊天并暴露实现细节。 |
 | 根因证据 | Windows 子进程通过 `cmd.exe`/`claude.cmd` 启动时未设置 `CREATE_NO_WINDOW`；现有 stdin/stdout/stderr 管道本身不要求可见控制台。 |
 | 修复 | `ClaudeProvider` 在所有 Claude 子进程创建路径设置 `CREATE_NO_WINDOW`，保留现有流式管道、session resume 与取消语义。 |
 | 验证与回归 | Rust `claude_child_uses_no_console_creation_flag`、stream-json 参数和 stdin 传输测试通过；真实 release 聊天启动是否完全不显示控制台仍待 Windows 人工确认，关联 Eval：`evals/2026-08-11-float-drag-and-skill-checkpoint.md`。 |
+
+### INC-018 Skill 输入被实现为输入框外 chip，不能作为真实混排文本编辑
+
+| 字段 | 内容 |
+| --- | --- |
+| 类别 / 严重性 / 状态 | Agent/workflow / S3 / Fixed pending verification |
+| 首次报告 | 2026-08-11，需求 #88/#90/#99。 |
+| 影响与复现 | 点击 Skill 后标记在输入框外或仅由 store 预拼接；用户无法在文字内按光标插入、连续叠加或只删除相邻一个 Skill，所见顺序与真实 Provider 收到的文本可能不一致。 |
+| 根因证据 | 旧 ChatView 由独立 chip + `<input>` 组成，发送时 `agent` store 再把 `selectedSkills` 前置拼接到输入值；它不是浏览器编辑模型中的同一文本序列。 |
+| 修复 | 改为单行 `contenteditable`，Skill 为 `contenteditable=false` 的内嵌 Token；选择时依当前 selection 插入并留空格，Backspace/Delete 只整体移除紧邻 Token。发送根据 DOM 子节点实际顺序序列化，store 不再重写消息或读取 `SKILL.md`。 |
+| 验证与回归 | 前端覆盖 Token 插入、叠加、左右相邻删除、文本混排、序列化与清空；48 项前端、175 项 Rust、schema、release 重建及用户发布验收已记录。关联 ADR-0028、需求 #99、v1.12.8 Eval。 |

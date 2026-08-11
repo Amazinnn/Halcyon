@@ -2,7 +2,6 @@ import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import type { AgentEventEnvelope, AgentState, PetReaction } from "@focus/event-schema";
-import { composeSkillMessage } from "../lib/chat-composer";
 
 export interface ChatMessage {
   role: "agent" | "user";
@@ -117,7 +116,6 @@ export const useAgentStore = defineStore("agent", {
     phase: "idle" as AgentPhase,
     historyKey: "",
     skills: [] as string[],
-    selectedSkill: null as string | null,
     errorMessage: "",
     characterName: "对话",
     initialized: false,
@@ -193,7 +191,6 @@ export const useAgentStore = defineStore("agent", {
       this.tools = [];
       this.phase = "idle";
       this.errorMessage = "";
-      this.selectedSkill = null;
       const pendingForSelection = this.pendingWorkflowResults[id] ?? [];
       const pendingLatest = pendingForSelection[pendingForSelection.length - 1];
       if (pendingLatest) this.showBubble(pendingLatest.text, "normal");
@@ -324,8 +321,7 @@ export const useAgentStore = defineStore("agent", {
     async send(text: string) {
       const trimmed = text.trim();
       if (!trimmed) return;
-      const message = composeSkillMessage(this.selectedSkill, trimmed);
-      this.selectedSkill = null;
+      const message = trimmed;
       this.addUserMessage(message);
       if (!this.currentThreadId) {
         await this.startThread(message);
@@ -385,7 +381,6 @@ export const useAgentStore = defineStore("agent", {
       this.phase = "idle";
       this.messages = [];
       this.tools = [];
-      this.selectedSkill = null;
       this.errorMessage = "";
     },
     pushSystem(_text: string) {
