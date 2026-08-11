@@ -1,5 +1,6 @@
 param(
-    [int]$ProcessId = 0
+    [int]$ProcessId = 0,
+    [switch]$AsJson
 )
 
 if (-not ("FocusWindowProbe" -as [type])) {
@@ -17,12 +18,15 @@ public static class FocusWindowProbe {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hwnd);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 }
 '@
 }
+
+[void][FocusWindowProbe]::SetProcessDPIAware()
 
 $targetPids = if ($ProcessId) { @($ProcessId) } else {
     @(Get-Process -ErrorAction SilentlyContinue |
@@ -68,4 +72,8 @@ $callback = [FocusWindowProbe+EnumWindowsProc]{
     return $true
 }
 [void][FocusWindowProbe]::EnumWindows($callback, [IntPtr]::Zero)
-$rows | Sort-Object Kind, Title, Hwnd | Format-Table -AutoSize
+if ($AsJson) {
+    $rows | Sort-Object Kind, Title, Hwnd | ConvertTo-Json -Depth 3
+} else {
+    $rows | Sort-Object Kind, Title, Hwnd | Format-Table -AutoSize
+}

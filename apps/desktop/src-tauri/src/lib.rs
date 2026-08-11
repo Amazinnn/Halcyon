@@ -98,8 +98,7 @@ fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
 }
 
 fn set_float_topmost_noactivate(w: &tauri::WebviewWindow, topmost: bool) {
-    strip_float_frame(w);
-    float_noactivate(w);
+    enforce_float_invariants(w);
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = w.hwnd() {
         use windows::Win32::Foundation::HWND;
@@ -131,8 +130,7 @@ fn set_float_topmost_noactivate(w: &tauri::WebviewWindow, topmost: bool) {
 fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &GridManager) {
     if let Some(w) = app.get_webview_window(label) {
         if is_float_label(label) {
-            strip_float_frame(&w);
-            float_noactivate(&w);
+            enforce_float_invariants(&w);
         }
         let (x, y, wpx, hpx) = gm.rect_to_logical(rect);
         // v1.10: skip when already at the target (avoid Win32 churn under
@@ -1755,13 +1753,11 @@ fn quit_app(app: tauri::AppHandle) {
 /// v1.10.3.1 (#46): physical initial rect for a float at its saved grid slot.
 
 const WM_NCCALCSIZE: u32 = 0x0083;
-const WM_ERASEBKGND: u32 = 0x0014;
 const FLOAT_SUBCLASS_ID: usize = 0x464F_4355;
 
 fn float_nonclient_message_result(message: u32) -> Option<isize> {
     match message {
         WM_NCCALCSIZE => Some(0),
-        WM_ERASEBKGND => Some(1),
         _ => None,
     }
 }
@@ -1905,9 +1901,18 @@ fn float_noactivate(w: &tauri::WebviewWindow) {
     }
 }
 
-fn show_float_noactivate(w: &tauri::WebviewWindow) {
+/// Re-assert the native invariants required by every floating window.
+///
+/// This is intentionally called only from main-thread lifecycle paths. The
+/// drag poller must stay limited to asynchronous native movement so it never
+/// dispatches synchronous window operations while the renderer is busy.
+pub(crate) fn enforce_float_invariants(w: &tauri::WebviewWindow) {
     strip_float_frame(w);
     float_noactivate(w);
+}
+
+fn show_float_noactivate(w: &tauri::WebviewWindow) {
+    enforce_float_invariants(w);
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = w.hwnd() {
         use windows::Win32::Foundation::HWND;
@@ -1989,8 +1994,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(chat_pw, chat_ph)
         .visible(false)
         .build()?;
-    strip_float_frame(&chat);
-    float_noactivate(&chat);
+    enforce_float_invariants(&chat);
 
     let (stats_px, stats_py, stats_pw, stats_ph, stats_collapsed) = initial_float_rect(
         &grid,
@@ -2016,8 +2020,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(stats_pw, stats_ph)
         .visible(false)
         .build()?;
-    strip_float_frame(&stats);
-    float_noactivate(&stats);
+    enforce_float_invariants(&stats);
 
     let (music_px, music_py, music_pw, music_ph, music_collapsed) = initial_float_rect(
         &grid,
@@ -2043,8 +2046,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(music_pw, music_ph)
         .visible(false)
         .build()?;
-    strip_float_frame(&music);
-    float_noactivate(&music);
+    enforce_float_invariants(&music);
 
     let (pet_px, pet_py, pet_pw, pet_ph, pet_collapsed) = initial_float_rect(
         &grid,
@@ -2070,8 +2072,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(pet_pw, pet_ph)
         .visible(false)
         .build()?;
-    strip_float_frame(&pet);
-    float_noactivate(&pet);
+    enforce_float_invariants(&pet);
 
     let (workflow_px, workflow_py, workflow_pw, workflow_ph, workflow_collapsed) =
         initial_float_rect(
@@ -2098,8 +2099,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .inner_size(workflow_pw, workflow_ph)
         .visible(false)
         .build()?;
-    strip_float_frame(&workflow);
-    float_noactivate(&workflow);
+    enforce_float_invariants(&workflow);
 
     for (label, collapsed) in [
         ("chat", chat_collapsed),
@@ -3595,9 +3595,9 @@ mod tests {
     }
 
     #[test]
-    fn float_nonclient_handler_makes_the_outer_rect_client_only() {
+    fn float_nonclient_handler_preserves_client_area_without_suppressing_erase() {
         assert_eq!(float_nonclient_message_result(0x0083), Some(0));
-        assert_eq!(float_nonclient_message_result(0x0014), Some(1));
+        assert_eq!(float_nonclient_message_result(0x0014), None);
         assert_eq!(float_nonclient_message_result(0x000F), None);
     }
 
