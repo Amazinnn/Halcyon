@@ -21,6 +21,19 @@ use crate::workflow_engine::engine::AgentDisplay;
 
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 
+#[cfg(windows)]
+const CLAUDE_CHILD_CREATION_FLAGS: u32 =
+    windows::Win32::System::Threading::CREATE_NO_WINDOW.0;
+
+#[cfg(windows)]
+fn configure_claude_child(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(CLAUDE_CHILD_CREATION_FLAGS);
+}
+
+#[cfg(not(windows))]
+fn configure_claude_child(_command: &mut Command) {}
+
 pub const FOCUS_CLI_SKILL: &str = include_str!("../assets/agent-skills/focus-cli/SKILL.md");
 
 pub fn find_claude_exe() -> Option<PathBuf> {
@@ -352,6 +365,7 @@ impl ClaudeProvider {
             .map(str::to_string)
             .unwrap_or_else(|| turn.session_id());
         let mut command = command_for(&self.exe_path, &args);
+        configure_claude_child(&mut command);
         command.env("FOCUS_AGENT_THREAD", focus_thread);
         if !workspace.trim().is_empty() {
             command.current_dir(&workspace);
@@ -916,6 +930,15 @@ mod tests {
     use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+
+    #[cfg(windows)]
+    #[test]
+    fn claude_child_uses_no_console_creation_flag() {
+        assert_eq!(
+            CLAUDE_CHILD_CREATION_FLAGS,
+            windows::Win32::System::Threading::CREATE_NO_WINDOW.0,
+        );
+    }
 
     fn full_display() -> AgentDisplay {
         AgentDisplay {
