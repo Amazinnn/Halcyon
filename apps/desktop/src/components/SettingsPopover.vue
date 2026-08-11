@@ -21,7 +21,7 @@ const petImporting = ref(false);
 const petError = ref("");
 const musicFolder = ref("");
 
-const version = "v0.1.0";
+const version = "v1.12.10";
 const wallpaperUrl = ref("");
 const acrylicOn = ref(true);
 
@@ -282,6 +282,7 @@ onMounted(load);
 
     <section class="group">
       <h4>专注锁定模式</h4>
+      <p class="group-note">只影响本轮专注的锁定强度；开始后固定，暂停会完全解锁。</p>
       <div class="mode-help">
         <p><strong>轻度：</strong>不锁定桌面，任务栏、桌面与快捷键均可使用。</p>
         <p><strong>标准：</strong>拦截 Win、Alt+Tab、Alt+F4 与 Ctrl+Esc，保留任务栏和桌面。</p>
@@ -291,6 +292,7 @@ onMounted(load);
 
     <section class="group">
       <h4>壁纸</h4>
+      <p class="group-note">导入后作为主界面背景；支持 PNG、JPG、JPEG、WebP。</p>
       <div class="row">
         <div class="btns">
           <button @click="pickWallpaper">导入</button>
@@ -302,6 +304,7 @@ onMounted(load);
 
     <section class="group">
       <h4>外观</h4>
+      <p class="group-note">控制毛玻璃、提示音与顶条显示，不改变专注计时或锁定规则。</p>
       <div class="row">
         <span class="label">毛玻璃</span>
         <button class="switch" :class="{ on: acrylicOn }" @click="toggleAcrylic">
@@ -326,6 +329,7 @@ onMounted(load);
 
     <section class="group">
       <h4>计时（下一轮生效）</h4>
+      <p class="group-note">设置下一轮的专注与休息时长，不会中断正在进行的计时。</p>
       <div class="row presets">
         <button v-for="p in PRESETS" :key="p.label" @click="applyPreset(p)">{{ p.label }}</button>
       </div>
@@ -346,6 +350,7 @@ onMounted(load);
 
     <section class="group">
       <h4>任务</h4>
+      <p class="group-note">为当前专注标记任务名称和可选预计时长，便于回看。</p>
       <div class="row">
         <span class="label">名称</span>
         <input v-model="taskName" type="text" class="text-input" placeholder="当前任务" />
@@ -361,6 +366,7 @@ onMounted(load);
 
     <section class="group">
       <h4>监督</h4>
+      <p class="group-note">发现分心应用时只提醒，不会强制关闭应用；清单每行一个名称。</p>
       <div class="row">
         <span class="label">启用</span>
         <button class="switch" :class="{ on: settings.supervisionEnabled }" @click="settings.setSupervisionEnabled(!settings.supervisionEnabled)">
@@ -400,8 +406,9 @@ onMounted(load);
     </section>
 
 
-    <section class="group">
+     <section class="group">
       <h4>宠物</h4>
+      <p class="group-note">手动导入含 pet.json + spritesheet.webp/png 的文件夹（1536×1872）；生成与质量标准见 README。</p>
       <div class="row">
         <span class="label">当前</span>
         <span class="ok">{{ petInfo?.displayName ?? "内置占位" }}</span>
@@ -430,6 +437,7 @@ onMounted(load);
 
     <section class="group">
       <h4>Agent</h4>
+      <p class="group-note">每只宠物固定使用 Codex 或 Claude；登录由对应 CLI 自行管理。</p>
       <div v-if="agentError" class="err">{{ agentError }}</div>
       <div v-if="agentList.length" class="pack-list">
         <div v-for="a in agentList" :key="a.id" class="pack-row">
@@ -458,6 +466,7 @@ onMounted(load);
 
     <section class="group">
       <h4>音乐</h4>
+      <p class="group-note">选择本地音乐文件夹后扫描播放；支持 MP3、FLAC、M4A。</p>
       <div class="row">
         <span class="label">文件夹</span>
         <span class="text-input folder-path">{{ musicFolder || "未选择" }}</span>
@@ -469,6 +478,7 @@ onMounted(load);
 
     <section class="group">
       <h4>运行记录</h4>
+      <p class="group-note">保留最近的工作流执行结果；清空只删除这些记录，不删除工作流。</p>
       <div v-if="!workflow.recentRuns.length" class="row">
         <span class="label">暂无工作流运行记录</span>
       </div>
@@ -486,7 +496,7 @@ onMounted(load);
       </div>
     </section>
 
-    <div class="about">Focus Desktop {{ version }} · MIT</div>
+    <div class="about">Focus Desktop {{ version }} · AGPLv3</div>
   </div>
 </template>
 
@@ -519,6 +529,7 @@ onMounted(load);
 .ghost:hover { color: var(--accent); background: var(--accent-wash); }
 .group { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: 1px solid var(--glass-border); }
 .group h4 { margin: 0; font-size: 11px; color: var(--text-low); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.group-note { margin: -2px 0 0; color: var(--text-low); font-size: 11px; line-height: 1.45; }
 .row { display: flex; align-items: center; gap: 8px; }
 .row.col { flex-direction: column; align-items: stretch; }
 .label { font-size: 12px; color: var(--text-mid); flex-shrink: 0; }

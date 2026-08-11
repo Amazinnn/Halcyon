@@ -164,8 +164,9 @@ fn position_window(app: &tauri::AppHandle, label: &str, rect: &GridRect, gm: &Gr
         let (pwp, php) = ((wpx * scale).round() as u32, (hpx * scale).round() as u32);
         // Grid coordinates are client-area coordinates. Query the live frame
         // instead of assuming that a platform host has no non-client extent.
+        let geometry = client_geometry_snapshot(&w);
         let (outer_x, outer_y, outer_w, outer_h) =
-            outer_rect_for_client(px, py, pwp, php, client_frame(&w));
+            geometry.outer_rect_for_client(px, py, pwp, php);
         let same = w.outer_position().map(|p| (p.x, p.y)).ok() == Some((outer_x, outer_y))
             && w.outer_size().map(|s| (s.width, s.height)).ok() == Some((outer_w, outer_h));
         if !same {
@@ -1750,6 +1751,59 @@ pub(crate) struct ClientFrame {
     pub extra_height: u32,
 }
 
+/// A single snapshot of the visible client rectangle for a floating HWND.
+/// Every drag coordinate is derived from this geometry: Windows moves the
+/// outer HWND, while Focus renders and snaps the client content.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ClientGeometry {
+    frame: ClientFrame,
+    client_width: u32,
+    client_height: u32,
+}
+
+impl ClientGeometry {
+    pub(crate) fn from_native_rects(
+        outer_x: i32,
+        outer_y: i32,
+        outer_width: u32,
+        outer_height: u32,
+        client_x: i32,
+        client_y: i32,
+        client_width: u32,
+        client_height: u32,
+    ) -> Self {
+        Self {
+            frame: ClientFrame {
+                origin_x: client_x - outer_x,
+                origin_y: client_y - outer_y,
+                extra_width: outer_width.saturating_sub(client_width),
+                extra_height: outer_height.saturating_sub(client_height),
+            },
+            client_width,
+            client_height,
+        }
+    }
+
+    pub(crate) fn client_rect_for_outer(&self, outer_x: i32, outer_y: i32) -> (i32, i32, u32, u32) {
+        (
+            outer_x + self.frame.origin_x,
+            outer_y + self.frame.origin_y,
+            self.client_width,
+            self.client_height,
+        )
+    }
+
+    pub(crate) fn outer_rect_for_client(
+        &self,
+        client_x: i32,
+        client_y: i32,
+        client_width: u32,
+        client_height: u32,
+    ) -> (i32, i32, u32, u32) {
+        outer_rect_for_client(client_x, client_y, client_width, client_height, self.frame)
+    }
+}
+
 pub(crate) fn float_host_style(style: isize) -> isize {
     (style & !FLOAT_NONCLIENT_STYLE_BITS) | WS_POPUP_STYLE
 }
@@ -1812,7 +1866,7 @@ pub(crate) fn outer_rect_for_client(
     )
 }
 
-fn client_frame(w: &tauri::WebviewWindow) -> ClientFrame {
+pub(crate) fn client_geometry_snapshot(w: &tauri::WebviewWindow) -> ClientGeometry {
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::Foundation::{HWND, POINT, RECT};
@@ -1832,22 +1886,22 @@ fn client_frame(w: &tauri::WebviewWindow) -> ClientFrame {
                         y: client.top,
                     };
                     if ClientToScreen(hwnd_win, &mut client_origin).as_bool() {
-                        return ClientFrame {
-                            origin_x: client_origin.x - outer.left,
-                            origin_y: client_origin.y - outer.top,
-                            extra_width: ((outer.right - outer.left)
-                                - (client.right - client.left))
-                                .max(0) as u32,
-                            extra_height: ((outer.bottom - outer.top)
-                                - (client.bottom - client.top))
-                                .max(0) as u32,
-                        };
+                    return ClientGeometry::from_native_rects(
+                        outer.left,
+                        outer.top,
+                        (outer.right - outer.left).max(0) as u32,
+                        (outer.bottom - outer.top).max(0) as u32,
+                        client_origin.x,
+                        client_origin.y,
+                        (client.right - client.left).max(0) as u32,
+                        (client.bottom - client.top).max(0) as u32,
+                    );
                     }
                 }
             }
         }
     }
-    ClientFrame::default()
+    ClientGeometry::default()
 }
 
 /// Configure each float host exactly once, while it is still hidden. No later
@@ -1955,35 +2009,6 @@ fn configure_float_host(w: &tauri::WebviewWindow) {
     }
     #[cfg(not(target_os = "windows"))]
     let _ = w;
-}
-
-/// v1.10.3.1 (#48): physical offset of the client-area origin from the window
-/// origin (non-client border). Used to position the *content* exactly at the
-/// grid-cell origin even if the host window keeps a non-client frame.
-pub(crate) fn client_origin_offset(w: &tauri::WebviewWindow) -> (i32, i32) {
-    let frame = client_frame(w);
-    (frame.origin_x, frame.origin_y)
-}
-
-/// v1.10.4 (#50): client-area geometry (origin offset + size, physical px) for
-/// the drag preview so the brightness center tracks the visible content.
-pub(crate) fn client_geometry(w: &tauri::WebviewWindow) -> (i32, i32, u32, u32) {
-    let (ox, oy) = client_origin_offset(w);
-    #[cfg(target_os = "windows")]
-    {
-        use windows::Win32::Foundation::RECT;
-        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
-        if let Ok(hwnd) = w.hwnd() {
-            let hwnd_win = windows::Win32::Foundation::HWND(hwnd.0 as *mut core::ffi::c_void);
-            unsafe {
-                let mut cr = RECT::default();
-                if GetClientRect(hwnd_win, &mut cr).is_ok() {
-                    return (ox, oy, cr.right as u32, cr.bottom as u32);
-                }
-            }
-        }
-    }
-    (ox, oy, 0, 0)
 }
 
 fn initial_float_rect(
@@ -2877,7 +2902,8 @@ mod tests {
         discard_runtime_after_provider_error, elapsed_sec, ensure_runtime_serialized,
         float_corner_preference_attribute, float_corner_preference_value, float_host_style,
         float_nonclient_message_result, frame_change_required, is_float_label, list_provider_skills,
-        outer_rect_for_client, provider_ready, provider_skills_dir, ClientFrame, FloatVisibilityGate,
+        outer_rect_for_client, provider_ready, provider_skills_dir, ClientFrame, ClientGeometry,
+        FloatVisibilityGate,
         resume_with_initial_message, saved_session_for_today, select_status_character,
         set_agent_provider_serialized_with, topbar_visible, with_agent_runtime_serialized,
     };
@@ -3727,6 +3753,27 @@ mod tests {
             outer_rect_for_client(320, 180, 1024, 768, frame),
             (307, 172, 1050, 784)
         );
+    }
+
+    #[test]
+    fn client_geometry_keeps_drag_preview_snap_and_final_placement_aligned() {
+        let geometry = ClientGeometry::from_native_rects(
+            307,
+            172,
+            1050,
+            784,
+            320,
+            180,
+            1024,
+            768,
+        );
+
+        // A drag moves the outer HWND; the preview must use the corresponding
+        // visible client rect, and restoring that client rect must yield the
+        // same outer rect used by final placement.
+        let preview = geometry.client_rect_for_outer(507, 372);
+        assert_eq!(preview, (520, 380, 1024, 768));
+        assert_eq!(geometry.outer_rect_for_client(preview.0, preview.1, preview.2, preview.3), (507, 372, 1050, 784));
     }
 
     #[test]

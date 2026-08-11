@@ -1,6 +1,8 @@
+> Since v1.12.9, Focus Desktop's own source code is AGPL-3.0-only (see LICENSE). Third-party dependencies and imported pet packs retain their respective licenses; historical v1.12.8 and earlier MIT releases remain under their original terms.
+
 # Third-Party Notices
 
-本项目（Focus Desktop）采用 MIT License（见 `LICENSE`）。本文件记录本项目直接依赖与参考来源的许可证信息，随许可证审计（`docs/licenses/audit-v0.md`，2026-08-05）更新。
+Focus Desktop 的自有源代码自 v1.12.9 起采用 AGPL-3.0-only（见 `LICENSE`）。本文件记录本项目直接依赖与参考来源的许可证信息，随许可证审计（`docs/licenses/audit-v0.md`，2026-08-05）更新。
 
 ## 直接依赖
 

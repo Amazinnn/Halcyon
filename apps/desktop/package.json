@@ -1,7 +1,8 @@
 {
     "name": "desktop",
     "private": true,
-    "version": "1.12.8",
+    "version": "1.12.10",
+    "license": "AGPL-3.0-only",
     "type": "module",
     "scripts": {
         "dev": "vite",

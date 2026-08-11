@@ -92,7 +92,7 @@
 
 ## 文档索引
 
-- 需求原话：docs/requirements-verbatim.md（#1–#99，只追加、不改历史原话）。
+- 需求原话：docs/requirements-verbatim.md（#1–#100，只追加、不改历史原话）。
 - ADR：docs/decisions/ADR-0001~0028（0012=M4 工作流引擎；0017=工作流 v2；0018=画布收敛；0019=Agent 概念+工作流冻结；0020=工作流退化为 Agent 日程工具；0021=环状工作流执行语义；0022=M5 Agent 看板；0023=桌面锁；0024=Agent 对话与工作流闭合；0025=Claude Code Provider；0026=可见聊天历史与常驻 Provider；0027=工作流触发节点与每周计划；0028=可见 Skill 用户输入）。
 - 设计稿：local-focus-desktop-agent-design-v0.2.md（权威，保持原样、不移动、不改章节编号）。
 - 质量：[docs/evals/README.md](./evals/README.md)（长期检查点）与 [docs/production-incidents.md](./production-incidents.md)（生产事故台账）。
@@ -130,3 +130,26 @@ The stacked Skill composer is implemented and covered by the 46 frontend
 tests: ordered visible tokens, exact `$skill-a  $skill-b  text` input, and one
 adjacent token removed by Backspace/Delete at the input boundary. The latest
 evidence is [the 2026-08-11 Eval](./evals/2026-08-11-float-host-ownership-and-stacked-skills.md).
+
+## 用户文档与设置说明检查点（2026-08-11）
+
+需求 #100 的 README 与设置说明已纳入 v1.12.9；四张只含 Focus 窗口的演示截图已复制到 README 资产目录。当前发布验证见 [v1.12.9 Eval](./evals/2026-08-11-v1.12.9-agpl-user-guide.md)。
+
+## v1.12.9 Public Release Checkpoint (2026-08-11)
+
+Requirements #100/#101 add the ordinary-user README, four real Focus screenshots,
+and an AGPL public-release policy. From v1.12.9 onward Focus Desktop's own source
+code is AGPL-3.0-only; v1.12.8 remains the historical MIT tag. The release
+metadata is aligned across the desktop package, Rust crate, event schema, Settings
+UI, README, LICENSE, and third-party notice. See [ADR-0030](./decisions/ADR-0030-agpl-public-release.md)
+and [the v1.12.9 Eval](./evals/2026-08-11-v1.12.9-agpl-user-guide.md). The pet-host
+visual follow-up remains outside this release scope.
+## v1.12.10 Float Geometry Checkpoint (2026-08-11)
+
+Requirement #102 records a first-open/restore drag regression: the grid glow
+could appear about two cells left of the visible float. v1.12.10 replaces the
+parallel client/outer geometry paths with one native ClientGeometry snapshot
+used by drag preview, snap, and final placement. Caption handling, acrylic,
+corners, window sizing, view tray, and zero-overlap policy are unchanged. See
+[the v1.12.10 Eval](./evals/2026-08-11-v1.12.10-float-geometry.md) and INC-019.
+The user completed the real mouse-drag acceptance gate: glow center, caption/title, overlap, and tray behavior all passed.

@@ -27,4 +27,15 @@ describe("per-Agent provider settings", () => {
     expect(setProvider).toContain("if (id === agent.characterId)");
     expect(setProvider).toContain("await agent.refreshStatus();");
   });
+
+  it("keeps concise setup guidance beside user-facing settings", () => {
+    expect(source).toContain('const version = "v1.12.10"');
+    expect(source).toContain("支持 PNG、JPG、JPEG、WebP");
+    expect(source).toContain("只提醒，不会强制关闭应用");
+    expect(source).toContain("pet.json + spritesheet.webp/png");
+    expect(source).toContain("1536×1872");
+    expect(source).toContain("MP3、FLAC、M4A");
+    expect(source).toContain("登录由对应 CLI 自行管理");
+    expect(source).toContain("AGPLv3");
+  });
 });

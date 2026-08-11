@@ -1,8 +1,9 @@
 [package]
 name = "focus-desktop"
-version = "1.12.8"
+version = "1.12.10"
 description = "Focus Desktop spike: local focus desktop & agent pet (Tauri 2 + Vue 3)"
-authors = ["Focus Desktop Contributors"]
+authors = ["Amazinnn"]
+license = "AGPL-3.0-only"
 edition = "2021"
 default-run = "desktop"
 

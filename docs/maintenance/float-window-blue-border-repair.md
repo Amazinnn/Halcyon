@@ -149,3 +149,13 @@
 - 桌宠没有带描边的网页外壳，因此以它的原生曲线为视觉基准：共享
   `--window-host-radius` 从 12px 微调至 10px。内部卡片、DWM、窗口过程与拖动路径不变。
 - 用户明确要求本次只重建，不另做自动或人工视觉验证。
+
+## 2026-08-11: Grid glow center regression (#102)
+
+After the accepted caption repair, the first drag after opening or restoring a
+float could place the grid glow about two cells left of the visible client area.
+The release had two coordinate sources: positioning used a live client/outer
+frame conversion, while drag preview and snap carried separately sampled
+origin and dimensions. v1.12.10 introduces one ClientGeometry snapshot from
+GetWindowRect, GetClientRect, and ClientToScreen; preview, snap, and
+final placement derive from it. Manual mouse-drag verification remains required.

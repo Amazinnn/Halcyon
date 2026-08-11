@@ -18,10 +18,10 @@
 
 | 维度 | 统计 |
 | --- | --- |
-| 总事故数 | 18 |
-| 状态 | Open 0；Fixed pending verification 12；Verified 5；Accepted limitation 1 |
+| 总事故数 | 19 |
+| 状态 | Open 0；Fixed pending verification 12；Verified 6；Accepted limitation 1 |
 | 严重性 | S1 2；S2 12；S3 4 |
-| 类别 | Window 6；Automation 2；Data 1；Launch 1；Pet 1；Desktop lock 2；Agent/workflow 5 |
+| 类别 | Window 7；Automation 2；Data 1；Launch 1；Pet 1；Desktop lock 2；Agent/workflow 5 |
 | 缺少自动回归覆盖 | 1（INC-005）；其余为自动或部分自动覆盖，仍可能要求 Windows 手工验收。 |
 
 ## 记录
@@ -235,3 +235,15 @@
 | 根因证据 | 旧 ChatView 由独立 chip + `<input>` 组成，发送时 `agent` store 再把 `selectedSkills` 前置拼接到输入值；它不是浏览器编辑模型中的同一文本序列。 |
 | 修复 | 改为单行 `contenteditable`，Skill 为 `contenteditable=false` 的内嵌 Token；选择时依当前 selection 插入并留空格，Backspace/Delete 只整体移除紧邻 Token。发送根据 DOM 子节点实际顺序序列化，store 不再重写消息或读取 `SKILL.md`。 |
 | 验证与回归 | 前端覆盖 Token 插入、叠加、左右相邻删除、文本混排、序列化与清空；48 项前端、175 项 Rust、schema、release 重建及用户发布验收已记录。关联 ADR-0028、需求 #99、v1.12.8 Eval。 |
+
+### INC-019 Float grid-glow center offset
+
+| Field | Detail |
+| --- | --- |
+| Category / severity / status | Window / S3 / Verified |
+| First report | 2026-08-11, requirement #102 |
+| Impact and reproduction | On the first drag after opening or restoring an internal float, its grid brightness center could appear about two cells left and up to one cell below the visible window. A later drag could appear normal. |
+| Root-cause evidence | v1.12.8's native-host repair introduced parallel client/outer geometry paths: positioning sampled a live frame while preview and snap carried independent origin and size values. First-show lifecycle timing could leave those values inconsistent. |
+| Fix | v1.12.10 uses one ClientGeometry snapshot for preview, snap, and final client-to-outer conversion. |
+| Verification and regression coverage | The red-first Rust test proves preview client geometry converts back to final outer placement; 49 frontend tests, 176 Rust tests, schema tests, build, and release rebuild passed. User completed the real mouse-drag gate with no glow, caption, overlap, or tray-freeze regression. |
+| Links | Requirement #102; docs/maintenance/float-window-blue-border-repair.md; docs/evals/2026-08-11-v1.12.10-float-geometry.md |
