@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
-import { useSettingsStore } from "../../stores/settings";
 import { useAgentStore } from "../../stores/agent";
 import type { FocusState } from "../../stores/ui";
 
@@ -12,7 +11,6 @@ import type { FocusState } from "../../stores/ui";
  * blocks clicks on apps underneath. Mirrors the live focus timer via the
  * `focus:tick` event and the supervision state via `supervision:status`.
  */
-const settings = useSettingsStore();
 const agent = useAgentStore();
 
 const state = ref<FocusState>("idle");
@@ -20,7 +18,7 @@ const focusRemaining = ref(0);
 const restRemaining = ref(0);
 const paused = ref(false);
 const phaseDone = ref(false);
-const supStatus = ref<"ok" | "drift" | "paused">("ok");
+const supStatus = ref<"ok" | "drift">("ok");
 
 function fmt(totalSec: number) {
   const s = Math.max(0, Math.floor(totalSec));
@@ -43,11 +41,10 @@ const modeText = computed(() => {
   return "未开始";
 });
 const supText = computed(() =>
-  supStatus.value === "drift" ? "走神中" : supStatus.value === "paused" ? "监督暂停" : "",
+  supStatus.value === "drift" ? "走神中" : "",
 );
 
 onMounted(async () => {
-  await settings.load();
   void agent.init();
   await listen<{
     state: FocusState;
@@ -64,16 +61,13 @@ onMounted(async () => {
   });
   await listen<{ status: string }>("supervision:status", (e) => {
     const st = e.payload.status;
-    if (st === "drift" || st === "paused" || st === "ok") supStatus.value = st;
+    if (st === "drift" || st === "ok") supStatus.value = st;
   });
 });
 </script>
 
 <template>
   <div class="capsule">
-    <span class="task" :title="settings.currentTask?.name ?? ''">
-      {{ settings.currentTask?.name ?? "未设置任务" }}
-    </span>
     <span class="agent-status">
       Agent
       <span class="dot" :class="`st-${agent.state}`"></span>
@@ -99,13 +93,6 @@ onMounted(async () => {
   color: var(--text-hi);
   overflow: hidden;
 }
-.task {
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 160px;
-}
 .agent-status { display: flex; align-items: center; gap: 6px; color: var(--text-mid); white-space: nowrap; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-low); flex-shrink: 0; }
 .dot.st-thinking, .dot.st-reading, .dot.st-searching { background: var(--accent); }
@@ -129,5 +116,4 @@ onMounted(async () => {
   white-space: nowrap;
 }
 .sup-status.drift { color: var(--warn); border-color: rgba(251, 191, 36, 0.5); }
-.sup-status.paused { color: var(--text-mid); border-color: var(--glass-border); }
 </style>

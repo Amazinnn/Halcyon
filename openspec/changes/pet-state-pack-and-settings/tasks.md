@@ -1,0 +1,50 @@
+## 1. Pet drag stability gate
+
+- [x] 1.1 Trace the browser and poller release paths and add a red-first Rust
+  regression proving that only one release can claim an active drag.
+- [x] 1.2 Make drag finalization single-owner and make pointer cancellation and
+  lost capture share the frontend release path.
+- [x] 1.3 Hide the native pet host and companion when the current Agent has no
+  readable package; synchronize only after persistence locks are released.
+- [x] 1.4 Add the no-package visibility predicate test and document the
+  focused automated evidence in the Eval.
+- [x] 1.5 Rebuild and pause for user acceptance: the user verified drag,
+  release, later Focus clicks, and a second drag remain responsive. The
+  no-package-host visual check remains part of the final deferred gate.
+
+## 2. Package compatibility and proportional rendering
+
+- [x] 2.1 Replace the retired `hatch-pet-draft-0.2` plan with explicit official
+  Hatch Pet and `focus-hatch-pet` adapters.
+- [x] 2.2 Validate JSON-declared image paths and package geometry without
+  hard-coded filenames; add package fixtures and red-first coverage.
+- [x] 2.3 Render packages proportionally within the existing safety margin;
+  verify no horizontal or vertical stretching.
+- [x] 2.4 Create the desktop-only `focus-hatch-pet` review Skill and document
+  its contract without overwriting the global official Skill.
+- [x] 2.5 Add stable-content analysis, non-blocking artifact warnings, DPI-safe
+  canvas geometry, package-scoped horizontal correction, and pet-only derived
+  host tint, with automated coverage and real-package read-only evidence.
+- [ ] 2.6 Run the deferred package/rendering manual gate.
+
+## 3. Focus state mapping and companion bubble
+
+- [x] 3.1 Define only Focus-owned continuous states and Agent-local mapping to
+  discovered package animations.
+- [x] 3.2 Implement success-duration return to waiting and state playback
+  tests.
+- [x] 3.3 Implement and test exactly-once successful direct-reply bubbles,
+  chat-independent visibility, six-candidate placement, pet/chat avoidance,
+  drag suppression, replacement, two-line pagination, rotation, and fades.
+- [ ] 3.4 Run the state/bubble manual gate.
+
+## 4. Restricted controls and closeout
+
+- [x] 4.1 Hide restricted controls in standard/scholar work focus without
+  changing the backend desktop-lock or forced-exit recovery paths.
+- [x] 4.2 Record the top status capsule as a separate future change.
+- [x] 4.3 Update the relevant ADR, README, STATUS, handoff, incident ledger,
+  and Eval for each phase actually completed.
+- [x] 4.4 Run the full automated gates and rebuild. Commit and push the Pending
+  checkpoint to `main` as explicitly authorized; do not tag or archive before
+  all affected manual gates pass.

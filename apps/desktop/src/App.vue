@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import DesktopView from "./views/desktop/DesktopView.vue";
@@ -8,6 +9,7 @@ import StatsView from "./views/stats/StatsView.vue";
 import MusicView from "./views/music/MusicView.vue";
 import WorkflowView from "./views/workflow/WorkflowView.vue";
 import PetView from "./views/pet/PetView.vue";
+import PetBubbleView from "./views/pet/PetBubbleView.vue";
 import TopbarView from "./views/topbar/TopbarView.vue";
 import GridOverlayView from "./views/overlay/GridOverlayView.vue";
 import { useUiStore } from "./stores/ui";
@@ -25,6 +27,7 @@ const view = computed(() => {
     case "music": return MusicView;
     case "workflow": return WorkflowView;
     case "pet": return PetView;
+    case "pet-bubble": return PetBubbleView;
     case "topbar": return TopbarView;
     case "grid-overlay": return GridOverlayView;
     default: return DesktopView;
@@ -32,15 +35,20 @@ const view = computed(() => {
 });
 
 onMounted(() => {
-  if (["pet", "music", "topbar", "chat", "stats", "workflow", "grid-overlay"].includes(label)) {
+  if (["pet", "pet-bubble", "music", "topbar", "chat", "stats", "workflow", "grid-overlay"].includes(label)) {
     document.documentElement.classList.add("transparent-window");
     document.body.classList.add("transparent-window");
   }
   void useUiStore().init();
   void useAgentStore().init();
-  void listen("supervision:alert", (e) => {
-    const p = (e.payload ?? {}) as { text?: string };
-    useAgentStore().showBubble(p.text ?? "注意保持专注", "high");
+  window.addEventListener("pointerdown", () => {
+    void invoke("drag_diagnostic_browser_event", {
+      label: "pet",
+      stage: `browser:post-release-first-click:${label}`,
+      sequence: null,
+    }).catch(() => undefined);
+  }, { capture: true, once: false });
+  void listen("supervision:alert", () => {
     if (useSettingsStore().soundEnabled) playChime();
   });
 });

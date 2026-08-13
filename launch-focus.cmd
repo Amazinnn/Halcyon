@@ -6,9 +6,12 @@ set "EXE=%~dp0apps\desktop\src-tauri\target\release\desktop.exe"
 
 set "REBUILD="
 set "MONITOR="
+set "DIAGNOSTICS="
 if /I "%~1"=="rebuild" set REBUILD=1
 if /I "%~1"=="monitor" set MONITOR=1
+if /I "%~1"=="diagnostics" set DIAGNOSTICS=1
 if /I "%~2"=="monitor" set MONITOR=1
+if /I "%~2"=="diagnostics" set DIAGNOSTICS=1
 
 if defined REBUILD goto build
 if exist "%EXE%" goto launch
@@ -46,7 +49,13 @@ if not errorlevel 1 (
 )
 
 echo [Focus] Starting Focus Desktop...
-start "" "%EXE%" <nul >nul 2>nul
+if defined DIAGNOSTICS (
+  echo [Focus] Pet drag diagnostics enabled for this launch.
+  set "FOCUS_DRAG_DIAGNOSTICS=1"
+  start "" "%EXE%" <nul >nul 2>nul
+) else (
+  start "" "%EXE%" <nul >nul 2>nul
+)
 
 :monitor
 if not defined MONITOR exit /b 0

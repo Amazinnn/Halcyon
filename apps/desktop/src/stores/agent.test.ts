@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
 const { emit, invoke, listen } = vi.hoisted(() => ({
@@ -68,7 +68,7 @@ describe("workflow result messages", () => {
     });
   });
 
-  it("delivers one pending workflow result and bubble when its target Agent is selected", async () => {
+  it("delivers one pending workflow result without synthesizing a second bubble", async () => {
     const agent = useAgentStore();
     await agent.init();
     agent.messages = [];
@@ -103,14 +103,14 @@ describe("workflow result messages", () => {
         source: "日程 · 别人的日程",
       },
     ]);
-    expect(agent.bubble).toMatchObject({ text: "不应出现", priority: "normal" });
+    expect(agent.bubble).toBeNull();
 
     await agent.selectCharacter("char-a");
     await agent.selectCharacter("char-b");
     expect(agent.messages.filter((message) => message.source)).toHaveLength(1);
   });
 
-  it("shows a pending target Agent result in the separate Pet store after Chat broadcasts selection", async () => {
+  it("keeps pending workflow history separate from the authoritative bubble event", async () => {
     const chatPinia = createPinia();
     setActivePinia(chatPinia);
     const chat = useAgentStore();
@@ -135,7 +135,24 @@ describe("workflow result messages", () => {
     await chat.selectCharacter("char-b");
 
     expect(pet.characterId).toBe("char-b");
-    expect(pet.bubble).toMatchObject({ text: "Only the selected pet should show this", priority: "normal" });
+    expect(pet.bubble).toBeNull();
+  });
+
+  it("does not synthesize a bubble from a current Agent workflow history event", async () => {
+    const agent = useAgentStore();
+    await agent.init();
+    const resultHandler = handlers.get("workflow:agent_result")?.[0];
+    expect(resultHandler).toBeDefined();
+    resultHandler?.({
+      payload: {
+        workflowId: "wf-current",
+        workflowName: "Current result",
+        agentId: "char-a",
+        text: "history only",
+      },
+    });
+    expect(agent.messages[agent.messages.length - 1]?.source).toBe("日程 · Current result");
+    expect(agent.bubble).toBeNull();
   });
 });
 
@@ -194,6 +211,40 @@ describe("direct chat stream convergence", () => {
     });
 
     expect(agent.messages).toEqual([{ role: "agent", text: "正在回答", kind: "completed" }]);
+    expect(agent.bubble).toBeNull();
+  });
+
+  it("uses only the authoritative bubble event after a completed direct reply", async () => {
+    const agent = useAgentStore();
+    agent.characterId = "char-a";
+    await agent.init();
+
+    agent.handleEvent({
+      schemaVersion: 1,
+      agentId: "char-a",
+      sessionId: "thread-1",
+      timestamp: "2026-08-13T00:00:00.000Z",
+      event: { type: "message.completed", text: "同一条回复" },
+    });
+    expect(agent.bubble).toBeNull();
+
+    handlers.get("bubble:requested")?.[0]?.({
+      payload: { text: "同一条回复", priority: "normal", agentId: "char-a" },
+    });
+    expect(agent.bubble?.text).toBe("同一条回复");
+  });
+
+  it("gives identical consecutive bubble replies distinct playback identities", async () => {
+    const agent = useAgentStore();
+    agent.characterId = "char-a";
+    await agent.init();
+    const bubbleHandler = handlers.get("bubble:requested")?.[0];
+
+    bubbleHandler?.({ payload: { text: "重复回复", priority: "normal", agentId: "char-a" } });
+    const firstId = agent.bubble?.id;
+    bubbleHandler?.({ payload: { text: "重复回复", priority: "normal", agentId: "char-a" } });
+
+    expect(agent.bubble?.id).not.toBe(firstId);
   });
 
   it("keeps same-day visible history isolated by character and provider", async () => {
@@ -268,6 +319,53 @@ describe("direct chat stream convergence", () => {
       text: "$focus-cli  $readme  check status",
       kind: "completed",
     }]);
+  });
+});
+
+describe("Focus-owned pet states", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    setActivePinia(createPinia());
+    installEventHarness();
+    storage.clear();
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps happy for five seconds before waiting", () => {
+    const agent = useAgentStore();
+    agent.handleEvent({
+      schemaVersion: 1, agentId: "char-a", sessionId: "turn", timestamp: "2026-08-13T00:00:00Z",
+      event: { type: "status.changed", state: "success" },
+    });
+    expect(agent.petState).toBe("happy");
+    vi.advanceTimersByTime(4999);
+    expect(agent.petState).toBe("happy");
+    vi.advanceTimersByTime(1);
+    expect(agent.petState).toBe("waiting");
+  });
+
+  it("does not let the Provider success-to-idle tail cancel the happy duration", () => {
+    const agent = useAgentStore();
+    agent.applyProviderPetState("success");
+    agent.applyProviderPetState("idle");
+    expect(agent.petState).toBe("happy");
+    vi.advanceTimersByTime(5000);
+    expect(agent.petState).toBe("waiting");
+  });
+
+  it("keeps troubled until another Agent task begins", () => {
+    const agent = useAgentStore();
+    agent.handleEvent({
+      schemaVersion: 1, agentId: "char-a", sessionId: "turn", timestamp: "2026-08-13T00:00:00Z",
+      event: { type: "status.changed", state: "error" },
+    });
+    expect(agent.petState).toBe("troubled");
+    agent.handleEvent({
+      schemaVersion: 1, agentId: "char-a", sessionId: "turn", timestamp: "2026-08-13T00:00:01Z",
+      event: { type: "status.changed", state: "thinking" },
+    });
+    expect(agent.petState).toBe("working");
   });
 });
 
@@ -396,6 +494,34 @@ describe("per-character provider selection", () => {
 
     expect(agent.provider).toBe("claude");
     expect(agent.workspaceDir).toBe("claude-workspace");
+  });
+
+  it("clears transient pet presentation when selecting another character", async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = useAgentStore();
+      agent.characterId = "char-a";
+      agent.characters = [
+        { id: "char-a", name: "A", tool: "codex" },
+        { id: "char-b", name: "B", tool: "claude" },
+      ];
+      agent.showBubble("A reply");
+      agent.applyProviderPetState("success");
+      invoke.mockImplementation(async (command: string) => {
+        if (command === "agent_status") return { characterId: "char-b", provider: "claude", ready: true, exePath: null, workspaceDir: "B" };
+        if (command === "agent_list_skills") return [];
+        return undefined;
+      });
+
+      await agent.selectCharacter("char-b", false);
+
+      expect(agent.bubble).toBeNull();
+      expect(agent.petState).toBe("resting");
+      vi.advanceTimersByTime(5000);
+      expect(agent.petState).toBe("resting");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ignores status events for a different character", async () => {

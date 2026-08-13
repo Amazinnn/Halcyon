@@ -1,5 +1,7 @@
 # 下一阶段拆分建议（M0 收尾 → M1）
 
+> 2026-08-13 OpenSpec 当前变更：`pet-state-pack-and-settings` 的校准、主色宿主、持续状态和独立气泡已进入自动化检查点。下一步是 [本轮 Eval](./evals/2026-08-13-agent-first-pets-and-focus-controls.md) 的九项 Windows 人工门槛；按需求 #113，本检查点先推送 `main`，但不创建 tag。顶端状态胶囊的语义与视觉作为下一项独立 OpenSpec 候选讨论。
+
 ## 2026-08-11 当前验收门槛
 
 - v1.12.8 已验收发布（需求 #99）：视图托盘的展开、收起与四类浮窗恢复都受前端未完成动作状态及后端可见性操作门约束；聊天输入使用真正的单行内嵌 Skill Token，而非输入框外 chip。自动化、完整构建、release 重建与用户发布验收完成；发布证据见 [v1.12.8 Eval](./evals/2026-08-11-v1.12.8-release.md)。
@@ -115,3 +117,9 @@ and a DPI-aware native move round-trip pass; manual drag, resize, collapse,
 restore, topmost, and hide-button acceptance is still required. Do not reopen
 the window-procedure architecture without new dynamic evidence. Stacked Skill
 input and atomic adjacent-token deletion are implemented and tested.
+## 2026-08-13 Current Manual Gate
+
+- `pet-state-pack-and-settings` now contains the explicit package adapters, stable subject calibration, proportional rendering, Agent-local state mapping, derived pet tint, companion bubble, and restricted-control hiding. Automated evidence may be pushed as the authorized Pending checkpoint; do not tag or report its native visuals as accepted before the numbered Eval gate.
+- `pet-drag-post-release-freeze` was accepted by the user and is archived after its diagnostic spec is synced. Do not reopen its native lifecycle without new evidence.
+- Requirement #114 has an automated repair in the same change: resize a loaded pet through every supported grid size during the existing manual package/rendering gate. Do not treat the green source-level regression test as Windows visual acceptance.
+- Create a separate future OpenSpec change before redesigning the top status capsule; its unclear state meaning and dated visual style are recorded but intentionally out of this change.

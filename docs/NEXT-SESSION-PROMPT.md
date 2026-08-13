@@ -63,3 +63,13 @@ Automated evidence and release rebuild pass, but the user must still perform
 the five-float drag/resize/restore/topmost visual checklist. Skill tokens are
 visible, stackable, sent as literal user text, and one adjacent token is
 removed atomically by Backspace/Delete at the input boundary.
+## Current checkpoint (2026-08-13)
+
+Read `docs/STATUS.md`, ADR-0031, ADR-0032, `openspec/changes/pet-state-pack-and-settings/`, `docs/evals/2026-08-13-agent-first-pets-and-focus-controls.md`, and `docs/production-incidents.md` first. The pushed Pending checkpoint includes official Hatch Pet and `focus-hatch-pet` adapters, stable per-animation subject calibration, DPI-safe proportional rendering, package-scoped horizontal correction, Agent-local continuous state mapping, pet-only derived tint, and a chat-independent companion bubble. The desktop review skill is `C:\Users\yanwei\Desktop\focus-hatch-pet\SKILL.md`; it does not replace the global official skill. INC-020 is Verified and its diagnostic change is archived. Run the Eval's nine Windows checks before closing or archiving `pet-state-pack-and-settings`; do not tag or claim native visual acceptance before the user reports them. The top status capsule is a separate future OpenSpec candidate. Update an Eval for every future task.
+
+## 2026-08-14 Resize Regression
+
+Requirement #114 is covered by a stable `pet-stage` `ResizeObserver` and a
+post-`nextTick` canvas refit after package loading. The regression test,
+full automated gates, and release rebuild passed; the existing Windows
+package/rendering acceptance remains Pending. INC-021 records this incident.

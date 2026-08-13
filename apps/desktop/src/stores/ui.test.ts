@@ -25,6 +25,23 @@ describe("focus pause transition", () => {
     });
   });
 
+  it("rejects pause and skip at the action boundary during scholar work focus", async () => {
+    const ui = useUiStore();
+    ui.focusState = "focus";
+    ui.activeFocusMode = "scholar";
+    ui.focusRemainingSec = 120;
+    ui._ticker = 7;
+
+    await ui.pause();
+    await ui.skip();
+
+    expect(ui.timerPaused).toBe(false);
+    expect(ui.focusState).toBe("focus");
+    expect(ui.focusRemainingSec).toBe(120);
+    expect(window.clearInterval).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith("desktop_set_focus_lock", expect.anything());
+  });
+
   it("stops the ticker before waiting for the pause unlock", async () => {
     let releaseUnlock!: () => void;
     const unlockPending = new Promise<void>((resolve) => { releaseUnlock = resolve; });

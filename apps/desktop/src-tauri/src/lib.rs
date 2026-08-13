@@ -31,19 +31,21 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use base64::Engine;
 use serde::Serialize;
 use tauri::{Emitter, Listener, Manager};
-use tauri::{LogicalPosition, LogicalSize};
+use tauri::LogicalPosition;
 
 use event_bus::CoreEvent;
 use grid::GridManager;
-use settings::{GridRect, Settings, ShortcutType, Task};
+use settings::{GridRect, Settings, ShortcutType};
 
 pub struct AppState {
     pub settings: Mutex<Settings>,
     pub data_dir: PathBuf,
     pub screen: Mutex<(f64, f64)>, // logical width/height
     pub active_drag: Mutex<Option<drag::ActiveDrag>>,
+    pub drag_diagnostics: drag::DragDiagnosticRecorder,
     /// Single-flight guard for shortcut launches (async, non-blocking).
     pub launch_lock: tokio::sync::Mutex<()>,
     /// A float visibility transition includes native show/hide/position/topmost
@@ -51,6 +53,7 @@ pub struct AppState {
     float_visibility_gate: FloatVisibilityGate,
     pub focus_track: Mutex<supervision::FocusTrack>,
     pub focus_state: Mutex<String>,
+    pub active_focus_mode: Mutex<Option<String>>,
     pub cli_pending: Mutex<HashMap<u64, std::sync::mpsc::Sender<serde_json::Value>>>,
     pub cli_next_id: AtomicU64,
     pub cli_token: Mutex<String>,
@@ -124,6 +127,41 @@ fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
     let _ = (w, enabled);
 }
 
+fn parse_rgb_hex(value: &str) -> Option<(u8, u8, u8)> {
+    let value = value.strip_prefix('#')?;
+    if value.len() != 6 { return None; }
+    Some((
+        u8::from_str_radix(&value[0..2], 16).ok()?,
+        u8::from_str_radix(&value[2..4], 16).ok()?,
+        u8::from_str_radix(&value[4..6], 16).ok()?,
+    ))
+}
+
+fn current_pet_host_tint(state: &AppState) -> Option<(u8, u8, u8)> {
+    let character_id = state.settings.lock().unwrap().current_agent_id.clone()?;
+    let row = state.store.lock().unwrap().get_character(&character_id).ok().flatten()?;
+    let workspace = ensure_agent_workspace(state, &row).ok()?;
+    let info = pets::info_for_agent(Path::new(&workspace)).ok()?;
+    parse_rgb_hex(&info.host_tint)
+}
+
+fn apply_current_pet_acrylic(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let enabled = state.settings.lock().unwrap().acrylic_enabled;
+    let tint = current_pet_host_tint(&state).unwrap_or((14, 24, 18));
+    let Some(window) = app.get_webview_window("pet") else { return };
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        if enabled && std::env::var_os("FOCUS_NO_ACRYLIC").is_none() {
+            acrylic::apply(hwnd.0, (tint.0, tint.1, tint.2, 64));
+        } else {
+            acrylic::clear(hwnd.0);
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = (window, enabled, tint);
+}
+
 fn set_float_topmost_noactivate(w: &tauri::WebviewWindow, topmost: bool) {
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = w.hwnd() {
@@ -195,6 +233,43 @@ fn emit_visibility(app: &tauri::AppHandle, label: &str, visible: bool) {
     );
 }
 
+fn pet_window_should_be_visible(has_valid_package: bool, collapsed: bool) -> bool {
+    has_valid_package && !collapsed
+}
+
+fn current_agent_has_valid_pet(state: &AppState) -> bool {
+    let current = state.settings.lock().unwrap().current_agent_id.clone();
+    let Some(character_id) = current else { return false };
+    let row = match state.store.lock().unwrap().get_character(&character_id) {
+        Ok(Some(row)) if row.pet_pack_id.is_some() => row,
+        _ => return false,
+    };
+    let Ok(workspace) = ensure_agent_workspace(state, &row) else { return false };
+    pets::info_for_agent(Path::new(&workspace)).is_ok()
+}
+
+/// The pet host must not be a visible empty or transparent window when the
+/// current Agent has no readable package. This is native-window visibility,
+/// not merely a Vue empty state, so it cannot start a drag lifecycle.
+fn sync_pet_host_visibility(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let collapsed = state.settings.lock().unwrap().collapsed.contains(&"pet".to_string());
+    let visible = pet_window_should_be_visible(current_agent_has_valid_pet(&state), collapsed);
+    if let Some(pet) = app.get_webview_window("pet") {
+        if visible {
+            show_window_noactivate(&pet);
+        } else {
+            hide_window_noactivate(&pet);
+        }
+    }
+    if !visible {
+        if let Some(bubble) = app.get_webview_window("pet-bubble") {
+            hide_window_noactivate(&bubble);
+        }
+    }
+    emit_visibility(app, "pet", visible);
+}
+
 pub(crate) fn occupied_rects(settings: &Settings, except: Option<&str>) -> Vec<GridRect> {
     settings
         .grid
@@ -218,19 +293,15 @@ struct Bootstrap {
     shortcuts: Vec<storage::ShortcutRow>,
     acrylic_enabled: bool,
     focus_subtitle: String,
-    tasks: Vec<Task>,
-    current_task_id: Option<String>,
     focus_minutes: u32,
     rest_minutes: u32,
     distraction_apps: Vec<String>,
-    allowed_apps: Vec<String>,
-    supervision_enabled: bool,
-    supervision_pause_until: Option<i64>,
     sound_enabled: bool,
     show_topbar: String,
     focus_mode: String,
     agent_workspace_dir: Option<String>,
     pet_bg_fade: bool,
+    current_agent_id: Option<String>,
 }
 
 #[tauri::command]
@@ -251,19 +322,15 @@ fn get_bootstrap(
         shortcuts,
         acrylic_enabled: s.acrylic_enabled,
         focus_subtitle: s.focus_subtitle.clone(),
-        tasks: s.tasks.clone(),
-        current_task_id: s.current_task_id.clone(),
         focus_minutes: s.focus_minutes,
         rest_minutes: s.rest_minutes,
         distraction_apps: s.distraction_apps.clone(),
-        allowed_apps: s.allowed_apps.clone(),
-        supervision_enabled: s.supervision_enabled,
-        supervision_pause_until: s.supervision_pause_until,
         sound_enabled: s.sound_enabled,
         show_topbar: s.show_topbar.clone(),
         focus_mode: s.focus_mode.clone(),
         agent_workspace_dir: s.agent_workspace_dir.clone(),
         pet_bg_fade: s.pet_bg_fade,
+        current_agent_id: s.current_agent_id.clone(),
     }
 }
 
@@ -769,28 +836,77 @@ fn agent_list_skills(
     */
 }
 
-/// M5 (ADR-0022): delete an Agent — remove its workspace dir (AGENTS.md +
-/// any session files) and clear the stored session hash.
 #[tauri::command]
-fn agent_delete(app: tauri::AppHandle, character_id: String) -> Result<(), String> {
+fn agent_delete(app: tauri::AppHandle, character_id: String) -> Result<usize, String> {
     let state = app.state::<AppState>();
-    let ws = {
+    let row = state.store.lock().unwrap().get_character(&character_id)
+        .map_err(|e| e.to_string())?.ok_or_else(|| "Agent 不存在".to_string())?;
+    let workspace = ensure_agent_workspace(&state, &row)?;
+    let pet_dir = Path::new(&workspace).join(pets::AGENT_PET_DIR);
+    let backup = Path::new(&workspace).with_extension(format!("delete-backup-{}", std::process::id()));
+    let had_pet = pet_dir.is_dir();
+    if had_pet {
+        std::fs::rename(&pet_dir, &backup).map_err(|e| format!("桌宠包删除准备失败: {e}"))?;
+    }
+    let removed = {
         let store = state.store.clone();
         let s = store.lock().unwrap();
-        s.get_character(&character_id)
-            .ok()
-            .flatten()
-            .and_then(|c| c.workspace_dir)
+        match s.delete_agent_and_workflows(&character_id) {
+            Ok(removed) => removed,
+            Err(error) => {
+                if had_pet { let _ = std::fs::rename(&backup, &pet_dir); }
+                return Err(error.to_string());
+            }
+        }
     };
-    if let Some(ws) = ws {
-        let _ = std::fs::remove_dir_all(&ws);
+    if had_pet { let _ = std::fs::remove_dir_all(&backup); }
+    state.agents.lock().unwrap().runtimes.remove(&character_id);
+    let removed_current = {
+        let mut settings = state.settings.lock().unwrap();
+        let is_current = settings.current_agent_id.as_deref() == Some(character_id.as_str());
+        if is_current {
+            settings.current_agent_id = None;
+            let _ = settings.save(&state.data_dir);
+        }
+        is_current
+    };
+    if removed_current {
+        sync_pet_host_visibility(&app);
+    }
+    Ok(removed)
+}
+
+#[tauri::command]
+fn agent_workflow_reference_count(app: tauri::AppHandle, character_id: String) -> Result<usize, String> {
+    app.state::<AppState>().store.lock().unwrap()
+        .count_agent_workflow_references(&character_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn agent_create(app: tauri::AppHandle, name: String, provider: String) -> Result<storage::CharacterRow, String> {
+    let name = name.trim();
+    if name.is_empty() { return Err("Agent 名称不能为空".into()); }
+    if !matches!(provider.as_str(), "codex" | "claude") { return Err("未知 Provider".into()); }
+    let state = app.state::<AppState>();
+    let row = state.store.lock().unwrap().create_agent(name, &provider).map_err(|e| e.to_string())?;
+    ensure_agent_workspace(&state, &row)?;
+    Ok(row)
+}
+
+#[tauri::command]
+fn agent_set_current(app: tauri::AppHandle, character_id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if state.store.lock().unwrap().get_character(&character_id).map_err(|e| e.to_string())?.is_none() {
+        return Err("Agent 不存在".into());
     }
     {
-        let store = state.store.clone();
-        let s = store.lock().unwrap();
-        let _ = s.update_character_agent(&character_id, None, None, None);
+        let mut settings = state.settings.lock().unwrap();
+        settings.current_agent_id = Some(character_id);
+        settings.save(&state.data_dir)?;
     }
-    state.agents.lock().unwrap().runtimes.remove(&character_id);
+    sync_pet_host_visibility(&app);
+    apply_current_pet_acrylic(&app);
     Ok(())
 }
 
@@ -916,57 +1032,240 @@ fn set_agent_workspace_dir(app: tauri::AppHandle, dir: String) -> Result<(), Str
 }
 #[tauri::command]
 fn pet_import_pack(
-    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
     dir: String,
+    character_id: String,
 ) -> Result<pets::PetInfo, String> {
-    let info = pets::import(std::path::Path::new(&dir), &state.data_dir)?;
-    {
-        let mut s = state.settings.lock().unwrap();
-        s.pet_pack_id = Some(info.id.clone());
-        let _ = s.save(&state.data_dir);
+    let state = app.state::<AppState>();
+    let row = state.store.lock().unwrap().get_character(&character_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| "Agent 不存在".to_string())?;
+    let workspace = ensure_agent_workspace(&state, &row)?;
+    let pending = pets::prepare_import_for_agent(Path::new(&dir), Path::new(&workspace))?;
+    let info = pending.info().clone();
+    let persistence = {
+        let store = state.store.lock().unwrap();
+        let existing = store.load_pet_state_mapping(&character_id).map_err(|e| e.to_string())?;
+        let mapping = pets::reconcile_state_mapping(&existing, &info.animations);
+        store.replace_character_pet_and_state_mapping(&character_id, &info.id, &mapping)
+            .map_err(|e| e.to_string())
+    };
+    if let Err(error) = persistence {
+        pending.rollback();
+        return Err(error);
+    }
+    pending.commit();
+    let is_current = state.settings.lock().unwrap().current_agent_id.as_deref() == Some(character_id.as_str());
+    if is_current {
+        sync_pet_host_visibility(&app);
+        apply_current_pet_acrylic(&app);
     }
     Ok(info)
 }
 
 #[tauri::command]
-fn pet_remove_pack(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
-    let was_active = state.settings.lock().unwrap().pet_pack_id.as_deref() == Some(id.as_str());
-    pets::remove(&state.data_dir, &id)?;
-    if was_active {
-        state.settings.lock().unwrap().pet_pack_id = None;
-        let _ = state.settings.lock().unwrap().save(&state.data_dir);
+fn pet_remove_pack(app: tauri::AppHandle, character_id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let row = state.store.lock().unwrap().get_character(&character_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| "Agent 不存在".to_string())?;
+    let workspace = ensure_agent_workspace(&state, &row)?;
+    pets::remove_for_agent(Path::new(&workspace))?;
+    state.store.lock().unwrap().set_character_pet(&character_id, None).map_err(|e| e.to_string())?;
+    let is_current = state.settings.lock().unwrap().current_agent_id.as_deref() == Some(character_id.as_str());
+    if is_current {
+        sync_pet_host_visibility(&app);
     }
     Ok(())
 }
 
 #[tauri::command]
 fn pet_list_packs(state: tauri::State<'_, AppState>) -> Result<Vec<pets::PetInfo>, String> {
-    pets::list(&state.data_dir)
+    let characters = state.store.lock().unwrap().list_characters().map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in characters {
+        let workspace = ensure_agent_workspace(&state, &row)?;
+        if let Ok(info) = pets::info_for_agent(Path::new(&workspace)) { out.push(info); }
+    }
+    Ok(out)
 }
 
 #[tauri::command]
-fn pet_sheet_data(state: tauri::State<'_, AppState>, id: String) -> Result<String, String> {
-    pets::sheet_base64(&state.data_dir, &id)
+fn pet_sheet_data(state: tauri::State<'_, AppState>, character_id: String) -> Result<String, String> {
+    let row = state.store.lock().unwrap().get_character(&character_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| "Agent 不存在".to_string())?;
+    if row.pet_pack_id.is_none() { return Err("Agent 未导入桌宠包".into()); }
+    let workspace = ensure_agent_workspace(&state, &row)?;
+    let info = pets::info_for_agent(Path::new(&workspace))?;
+    let bytes = std::fs::read(&info.spritesheet_path).map_err(|e| e.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PetAnimationData {
+    animation: pets::PetAnimation,
+    source_rect: pets::PetSourceRect,
+    horizontal_correction: f32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PetBubblePlacement {
+    anchor_x: f32,
+    anchor_y: f32,
+    accent: String,
+}
+
+#[tauri::command]
+fn pet_bubble_placement(state: tauri::State<'_, AppState>) -> Result<Option<PetBubblePlacement>, String> {
+    let current = state.settings.lock().unwrap().current_agent_id.clone();
+    let Some(character_id) = current else { return Ok(None) };
+    let row = state.store.lock().unwrap().get_character(&character_id).map_err(|e| e.to_string())?;
+    let Some(row) = row else { return Ok(None) };
+    if row.pet_pack_id.is_none() { return Ok(None) }
+    let workspace = ensure_agent_workspace(&state, &row)?;
+    let info = pets::info_for_agent(Path::new(&workspace))?;
+    let anchor = info.bubble_anchor.unwrap_or(pets::PetAnchor { x: 0.5, y: 0.05 });
+    Ok(Some(PetBubblePlacement {
+        anchor_x: anchor.x.clamp(0.0, 1.0),
+        anchor_y: anchor.y.clamp(0.0, 1.0),
+        accent: info.bubble_accent,
+    }))
+}
+
+#[tauri::command]
+fn pet_animation_data(
+    state: tauri::State<'_, AppState>,
+    character_id: String,
+    pet_state: String,
+) -> Result<PetAnimationData, String> {
+    if !pets::FOCUS_PET_STATES.contains(&pet_state.as_str()) {
+        return Err("未知桌宠状态".into());
+    }
+    let row = state.store.lock().unwrap().get_character(&character_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| "Agent 不存在".to_string())?;
+    let workspace = ensure_agent_workspace(&state, &row)?;
+    let package = pets::info_for_agent(Path::new(&workspace))?;
+    let mapping = state.store.lock().unwrap().load_pet_state_mapping(&character_id).map_err(|e| e.to_string())?;
+    let animation = pets::resolve_state_animation(&pet_state, &mapping, &package.animations)
+        .ok_or_else(|| "宠物包未发现可播放动画".to_string())?
+        .clone();
+    let source_rect = package.analyses.get(&animation.id)
+        .map(|analysis| analysis.source_rect)
+        .unwrap_or(pets::PetSourceRect {
+            x: 0,
+            y: 0,
+            width: animation.cell_width,
+            height: animation.cell_height,
+        });
+    Ok(PetAnimationData {
+        animation,
+        source_rect,
+        horizontal_correction: package.horizontal_correction,
+    })
+}
+
+#[tauri::command]
+fn pet_set_horizontal_correction(
+    app: tauri::AppHandle,
+    character_id: String,
+    horizontal_correction: f32,
+) -> Result<pets::PetInfo, String> {
+    let state = app.state::<AppState>();
+    let row = state.store.lock().unwrap().get_character(&character_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| "Agent 不存在".to_string())?;
+    let workspace = ensure_agent_workspace(&state, &row)?;
+    pets::set_horizontal_correction_for_agent(Path::new(&workspace), horizontal_correction)?;
+    let info = pets::info_for_agent(Path::new(&workspace))?;
+    if state.settings.lock().unwrap().current_agent_id.as_deref() == Some(character_id.as_str()) {
+        apply_current_pet_acrylic(&app);
+    }
+    let _ = app.emit("pet:changed", serde_json::json!({ "characterId": character_id }));
+    Ok(info)
+}
+
+fn migrate_legacy_pet_packs(state: &AppState) -> Result<(), String> {
+    let legacy = state.data_dir.join(pets::PETS_DIR);
+    if !legacy.is_dir() { return Ok(()); }
+    let mut first_agent_id = None;
+    for pack in pets::list(&state.data_dir)? {
+        let row = {
+            let store = state.store.lock().unwrap();
+            let existing = store.list_characters().map_err(|e| e.to_string())?
+                .into_iter().find(|c| c.pet_pack_id.as_deref() == Some(pack.id.as_str()));
+            match existing {
+                Some(row) => row,
+                None => store.create_agent(&pack.display_name, if pack.id == "focus-demo-pet" { "claude" } else { "codex" })
+                    .map_err(|e| e.to_string())?,
+            }
+        };
+        let workspace = ensure_agent_workspace(state, &row)?;
+        let target = Path::new(&workspace).join(pets::AGENT_PET_DIR);
+        if !target.is_dir() {
+            pets::prepare_legacy_import_for_agent(&legacy.join(&pack.id), Path::new(&workspace))?
+                .commit();
+        }
+        state.store.lock().unwrap().set_character_pet(&row.id, Some(&pack.id)).map_err(|e| e.to_string())?;
+        if first_agent_id.is_none() { first_agent_id = Some(row.id); }
+    }
+    if let Some(id) = first_agent_id {
+        let mut settings = state.settings.lock().unwrap();
+        if settings.current_agent_id.is_none() {
+            settings.current_agent_id = Some(id);
+            settings.save(&state.data_dir)?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn pet_activate(state: tauri::State<'_, AppState>, id: String) -> Result<pets::PetInfo, String> {
-    let info = pets::info_for(&state.data_dir, &id)?;
-    {
-        let mut s = state.settings.lock().unwrap();
-        s.pet_pack_id = Some(id);
-        let _ = s.save(&state.data_dir);
-    }
-    Ok(info)
+    let chars = state.store.lock().unwrap().list_characters().map_err(|e| e.to_string())?;
+    let row = chars.into_iter().find(|c| c.pet_pack_id.as_deref() == Some(id.as_str()))
+        .ok_or_else(|| "桌宠包不存在".to_string())?;
+    let workspace = ensure_agent_workspace(&state, &row)?;
+    pets::info_for_agent(Path::new(&workspace))
 }
 
 #[tauri::command]
 fn pet_active(state: tauri::State<'_, AppState>) -> Result<Option<pets::PetInfo>, String> {
-    let id = state.settings.lock().unwrap().pet_pack_id.clone();
-    match id {
-        Some(id) => pets::info_for(&state.data_dir, &id).map(Some),
-        None => Ok(None),
+    let current = state.settings.lock().unwrap().current_agent_id.clone();
+    let Some(id) = current else { return Ok(None) };
+    let row = state.store.lock().unwrap().get_character(&id).map_err(|e| e.to_string())?;
+    let Some(row) = row else { return Ok(None) };
+    if row.pet_pack_id.is_none() { return Ok(None); }
+    let workspace = ensure_agent_workspace(&state, &row)?;
+    pets::info_for_agent(Path::new(&workspace)).map(Some)
+}
+
+#[tauri::command]
+fn pet_get_state_mapping(
+    state: tauri::State<'_, AppState>,
+    character_id: String,
+) -> Result<pets::StateMapping, String> {
+    state.store.lock().unwrap().load_pet_state_mapping(&character_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn pet_save_state_mapping(
+    app: tauri::AppHandle,
+    character_id: String,
+    mapping: pets::StateMapping,
+) -> Result<(), String> {
+    if mapping.keys().any(|state| !pets::FOCUS_PET_STATES.contains(&state.as_str())) {
+        return Err("包含未知桌宠状态".into());
     }
+    let state = app.state::<AppState>();
+    let row = state.store.lock().unwrap().get_character(&character_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| "Agent 不存在".to_string())?;
+    let workspace = ensure_agent_workspace(&state, &row)?;
+    let package = pets::info_for_agent(Path::new(&workspace))?;
+    if let Some(invalid) = mapping.values().flatten().find(|id| !package.animations.iter().any(|animation| animation.id == **id)) {
+        return Err(format!("动画不存在: {invalid}"));
+    }
+    let result = state.store.lock().unwrap()
+        .save_pet_state_mapping(&character_id, &mapping)
+        .map_err(|e| e.to_string());
+    result
 }
 #[tauri::command]
 fn resize_preview(
@@ -1064,6 +1363,7 @@ fn resize_window(
     let _ = settings.save(&state.data_dir);
     drop(settings);
     position_window(&app, &label, &rect, &gm);
+    if label == "pet" { position_pet_bubble_for_current_pet(&app); }
     Ok(rect)
 }
 
@@ -1075,6 +1375,32 @@ fn get_grid_metrics(state: tauri::State<'_, AppState>) -> grid::GridMetrics {
         screen_h: h,
     }
     .metrics()
+}
+
+fn resolve_window_placement(
+    settings: &Mutex<Settings>,
+    data_dir: &Path,
+    gm: &GridManager,
+    label: &str,
+    col: usize,
+    row: usize,
+) -> GridRect {
+    let mut settings = settings.lock().unwrap();
+    let current = settings.grid.get(label).copied().unwrap_or(GridRect {
+        col: 0,
+        row: 0,
+        cols: 2,
+        rows: 2,
+    });
+    let occupied = occupied_rects(&settings, Some(label));
+    match gm.place(label, &current, col, row, &occupied) {
+        Ok(new_rect) => {
+            settings.grid.insert(label.to_string(), new_rect);
+            let _ = settings.save(data_dir);
+            new_rect
+        }
+        Err(()) => current,
+    }
 }
 
 pub(crate) fn place_window_inner(
@@ -1089,29 +1415,21 @@ pub(crate) fn place_window_inner(
         screen_w: w,
         screen_h: h,
     };
-    let mut settings = state.settings.lock().unwrap();
-    let current = settings.grid.get(label).copied().unwrap_or(GridRect {
-        col: 0,
-        row: 0,
-        cols: 2,
-        rows: 2,
-    });
-    let occupied = occupied_rects(&settings, Some(label));
-    match gm.place(label, &current, col, row, &occupied) {
-        Ok(new_rect) => {
-            settings.grid.insert(label.to_string(), new_rect);
-            let _ = settings.save(&state.data_dir);
-            position_window(app, label, &new_rect, &gm);
-            raise_topbar(app);
-            Ok(new_rect)
-        }
-        Err(()) => {
-            // occupied: snap back to the current cell
-            position_window(app, label, &current, &gm);
-            raise_topbar(app);
-            Ok(current)
-        }
+    let rect = resolve_window_placement(
+        &state.settings,
+        &state.data_dir,
+        &gm,
+        label,
+        col,
+        row,
+    );
+
+    position_window(app, label, &rect, &gm);
+    if label == "pet" {
+        position_pet_bubble_for_current_pet(app);
     }
+    raise_topbar(app);
+    Ok(rect)
 }
 
 #[tauri::command]
@@ -1185,6 +1503,10 @@ fn restore(
 /// restore command and the M4 `show_window` node).
 pub(crate) fn restore_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
+    if label == "pet" && !current_agent_has_valid_pet(&state) {
+        sync_pet_host_visibility(app);
+        return Err("The current Agent has no valid pet package".into());
+    }
     let _operation = state.float_visibility_gate.try_enter()?;
     // v1.10: dedupe — restoring an already-visible window must not churn
     // show/position/topmost/raise (root cause of the freeze, #31).
@@ -1496,34 +1818,12 @@ fn set_acrylic(
         s.acrylic_enabled = enabled;
         let _ = s.save(&state.data_dir);
     }
-    for label in ["chat", "stats", "music", "pet", "workflow"] {
+    for label in ["chat", "stats", "music", "workflow"] {
         if let Some(w) = app.get_webview_window(label) {
             apply_acrylic_opt(&w, enabled);
         }
     }
-    Ok(())
-}
-
-#[tauri::command]
-fn save_task(state: tauri::State<'_, AppState>, task: Task) -> Result<Task, String> {
-    let mut settings = state.settings.lock().unwrap();
-    if task.id.is_empty() {
-        return Err("task id required".into());
-    }
-    if let Some(existing) = settings.tasks.iter_mut().find(|t| t.id == task.id) {
-        *existing = task.clone();
-    } else {
-        settings.tasks.push(task.clone());
-    }
-    let _ = settings.save(&state.data_dir);
-    Ok(task)
-}
-
-#[tauri::command]
-fn set_current_task(state: tauri::State<'_, AppState>, id: Option<String>) -> Result<(), String> {
-    let mut settings = state.settings.lock().unwrap();
-    settings.current_task_id = id;
-    let _ = settings.save(&state.data_dir);
+    apply_current_pet_acrylic(&app);
     Ok(())
 }
 
@@ -1554,29 +1854,9 @@ fn set_focus_mode(state: tauri::State<'_, AppState>, mode: String) -> Result<(),
 fn set_distraction_lists(
     state: tauri::State<'_, AppState>,
     black: Vec<String>,
-    white: Vec<String>,
 ) -> Result<(), String> {
     let mut settings = state.settings.lock().unwrap();
     settings.distraction_apps = black;
-    settings.allowed_apps = white;
-    let _ = settings.save(&state.data_dir);
-    Ok(())
-}
-
-#[tauri::command]
-fn set_supervision_paused(app: tauri::AppHandle, minutes: i64) -> Result<(), String> {
-    supervision::pause_for(&app, minutes)
-}
-
-#[tauri::command]
-fn resume_supervision(app: tauri::AppHandle) -> Result<(), String> {
-    supervision::resume(&app)
-}
-
-#[tauri::command]
-fn set_supervision_enabled(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
-    let mut settings = state.settings.lock().unwrap();
-    settings.supervision_enabled = enabled;
     let _ = settings.save(&state.data_dir);
     Ok(())
 }
@@ -1627,12 +1907,11 @@ fn record_focus_session(
     started_at: String,
     ended_at: String,
     duration_sec: i64,
-    task_id: Option<String>,
 ) -> Result<(), String> {
     store
         .lock()
         .map_err(|e| e.to_string())?
-        .record_focus_session(&started_at, &ended_at, duration_sec, task_id.as_deref())
+        .record_focus_session(&started_at, &ended_at, duration_sec, None)
         .map_err(|e| e.to_string())?;
     let _ = app.emit("stats:changed", ());
     Ok(())
@@ -1714,9 +1993,27 @@ fn list_running_apps() -> Vec<String> {
 }
 
 #[tauri::command]
-fn quit_app(app: tauri::AppHandle) {
+fn list_apps_catalog() -> Vec<String> {
+    apps::list_apps_catalog()
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let focus_state = state.focus_state.lock().unwrap().clone();
+    let active_focus_mode = state.active_focus_mode.lock().unwrap().clone();
+    let is_restricted = should_reject_quit(&focus_state, active_focus_mode.as_deref());
+    if is_restricted {
+        return Err("当前专注模式不允许退出 Focus".into());
+    }
     let _ = crate::desktop_lock::unlock_desktop();
     app.exit(0);
+    Ok(())
+}
+
+fn should_reject_quit(focus_state: &str, active_focus_mode: Option<&str>) -> bool {
+    focus_state == "focus"
+        && matches!(active_focus_mode, Some("standard" | "scholar"))
 }
 
 // ---------------------------------------------------------------------------
@@ -2026,7 +2323,7 @@ fn initial_float_rect(
 /// v1.12.3: floats must never become the active window — activation paints
 /// the system caption highlight (the light-blue bar). Same treatment as the
 /// grid-overlay (v1.7.2).
-fn show_window_noactivate(w: &tauri::WebviewWindow) {
+pub(crate) fn show_window_noactivate(w: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = w.hwnd() {
         use windows::Win32::Foundation::HWND;
@@ -2040,7 +2337,7 @@ fn show_window_noactivate(w: &tauri::WebviewWindow) {
     let _ = w.show();
 }
 
-fn hide_window_noactivate(w: &tauri::WebviewWindow) {
+pub(crate) fn hide_window_noactivate(w: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = w.hwnd() {
         use windows::Win32::Foundation::HWND;
@@ -2052,6 +2349,179 @@ fn hide_window_noactivate(w: &tauri::WebviewWindow) {
     }
     #[cfg(not(target_os = "windows"))]
     let _ = w.hide();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScreenRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl ScreenRect {
+    const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
+        Self { x, y, width, height }
+    }
+
+    fn right(self) -> i32 { self.x.saturating_add(self.width as i32) }
+    fn bottom(self) -> i32 { self.y.saturating_add(self.height as i32) }
+    fn intersection_area(self, other: Self) -> u64 {
+        let width = (self.right().min(other.right()) - self.x.max(other.x)).max(0) as u64;
+        let height = (self.bottom().min(other.bottom()) - self.y.max(other.y)).max(0) as u64;
+        width * height
+    }
+    fn contains(self, other: Self) -> bool {
+        other.x >= self.x && other.y >= self.y && other.right() <= self.right() && other.bottom() <= self.bottom()
+    }
+    fn clamp_inside(self, work: Self) -> Self {
+        let max_x = work.right().saturating_sub(self.width as i32).max(work.x);
+        let max_y = work.bottom().saturating_sub(self.height as i32).max(work.y);
+        Self { x: self.x.clamp(work.x, max_x), y: self.y.clamp(work.y, max_y), ..self }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum BubbleDirection { Above, AboveLeft, AboveRight, Right, Left, Below }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BubblePosition {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    direction: BubbleDirection,
+}
+
+impl BubblePosition {
+    fn rect(self) -> ScreenRect { ScreenRect::new(self.x, self.y, self.width, self.height) }
+}
+
+fn choose_bubble_placement(
+    pet: ScreenRect,
+    work: ScreenRect,
+    chat: Option<ScreenRect>,
+    bubble_width: u32,
+    bubble_height: u32,
+) -> Option<BubblePosition> {
+    const GAP: i32 = 10;
+    let bw = bubble_width as i32;
+    let bh = bubble_height as i32;
+    let center_x = pet.x + pet.width as i32 / 2 - bw / 2;
+    let candidates = [
+        (BubbleDirection::Above, center_x, pet.y - bh - GAP),
+        (BubbleDirection::AboveLeft, pet.x - bw + pet.width as i32 / 3, pet.y - bh - GAP),
+        (BubbleDirection::AboveRight, pet.right() - pet.width as i32 / 3, pet.y - bh - GAP),
+        (BubbleDirection::Right, pet.right() + GAP, pet.y + pet.height as i32 / 2 - bh / 2),
+        (BubbleDirection::Left, pet.x - bw - GAP, pet.y + pet.height as i32 / 2 - bh / 2),
+        (BubbleDirection::Below, center_x, pet.bottom() + GAP),
+    ];
+
+    candidates.into_iter().enumerate()
+        .map(|(index, (direction, x, y))| {
+            let rect = ScreenRect::new(x, y, bubble_width, bubble_height).clamp_inside(work);
+            let pet_overlap = rect.intersection_area(pet);
+            let chat_overlap = chat.map(|chat| rect.intersection_area(chat)).unwrap_or(0);
+            (pet_overlap, chat_overlap, index, BubblePosition {
+                x: rect.x, y: rect.y, width: bubble_width, height: bubble_height, direction,
+            })
+        })
+        .filter(|(pet_overlap, _, _, _)| *pet_overlap == 0)
+        .min_by_key(|(_, chat_overlap, index, _)| (*chat_overlap, *index))
+        .map(|(_, _, _, placement)| placement)
+}
+
+fn window_screen_rect(window: &tauri::WebviewWindow) -> Option<ScreenRect> {
+    let position = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    Some(ScreenRect::new(position.x, position.y, size.width, size.height))
+}
+
+fn desktop_work_area(fallback: ScreenRect) -> ScreenRect {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS};
+        let mut rect = RECT::default();
+        if SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some((&mut rect as *mut RECT).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        ).is_ok() {
+            return ScreenRect::new(
+                rect.left,
+                rect.top,
+                (rect.right - rect.left).max(0) as u32,
+                (rect.bottom - rect.top).max(0) as u32,
+            );
+        }
+    }
+    fallback
+}
+
+fn position_pet_bubble(app: &tauri::AppHandle, _anchor_x: f32, _anchor_y: f32) -> Option<BubbleDirection> {
+    let pet = app.get_webview_window("pet")?;
+    let bubble = app.get_webview_window("pet-bubble")?;
+    let geometry = client_geometry_snapshot(&pet);
+    let pet_outer = pet.outer_position().unwrap_or_default();
+    let (client_x, client_y, client_w, client_h) = geometry.client_rect_for_outer(pet_outer.x, pet_outer.y);
+    let bubble_size = bubble.outer_size().unwrap_or(tauri::PhysicalSize::new(248, 82));
+    let monitor_rect = pet.current_monitor().ok().flatten()
+        .map(|monitor| {
+            let pos = monitor.position();
+            let size = monitor.size();
+            ScreenRect::new(pos.x, pos.y, size.width, size.height)
+        })
+        .unwrap_or(ScreenRect::new(0, 0, 1920, 1080));
+    let work = desktop_work_area(monitor_rect);
+    let chat = app.get_webview_window("chat")
+        .filter(|window| window.is_visible().unwrap_or(false))
+        .and_then(|window| window_screen_rect(&window));
+    let placement = choose_bubble_placement(
+        ScreenRect::new(client_x, client_y, client_w, client_h),
+        work,
+        chat,
+        bubble_size.width,
+        bubble_size.height,
+    )?;
+    let _ = crate::drag::move_window_raw(&bubble, placement.x, placement.y);
+    Some(placement.direction)
+}
+
+fn position_pet_bubble_for_current_pet(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let current = state.settings.lock().unwrap().current_agent_id.clone();
+    let Some(character_id) = current else { return };
+    let row = state.store.lock().unwrap().get_character(&character_id).ok().flatten();
+    let Some(row) = row else { return };
+    let Ok(workspace) = ensure_agent_workspace(&state, &row) else { return };
+    let anchor = pets::info_for_agent(Path::new(&workspace))
+        .ok()
+        .and_then(|info| info.bubble_anchor)
+        .unwrap_or(pets::PetAnchor { x: 0.5, y: 0.05 });
+    let _ = position_pet_bubble(app, anchor.x.clamp(0.0, 1.0), anchor.y.clamp(0.0, 1.0));
+}
+
+#[tauri::command]
+fn pet_bubble_show(app: tauri::AppHandle, anchor_x: Option<f32>, anchor_y: Option<f32>) -> Option<BubbleDirection> {
+    let direction = position_pet_bubble(&app, anchor_x.unwrap_or(0.5), anchor_y.unwrap_or(0.05));
+    if let Some(bubble) = app.get_webview_window("pet-bubble") {
+        if direction.is_some() {
+            show_window_noactivate(&bubble);
+        } else {
+            hide_window_noactivate(&bubble);
+        }
+    }
+    direction
+}
+
+#[tauri::command]
+fn pet_bubble_hide(app: tauri::AppHandle) {
+    if let Some(bubble) = app.get_webview_window("pet-bubble") {
+        hide_window_noactivate(&bubble);
+    }
 }
 
 fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
@@ -2188,6 +2658,22 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .build()?;
     configure_float_host(&pet);
 
+    let bubble = tauri::WebviewWindowBuilder::new(app, "pet-bubble", url.clone())
+        .title("Focus Pet Bubble")
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .background_color(tauri::window::Color::from((0, 0, 0, 0)))
+        .inner_size(248.0, 82.0)
+        .visible(false)
+        .build()?;
+    bubble.set_ignore_cursor_events(true)?;
+    if let Ok(hwnd) = bubble.hwnd() {
+        acrylic::noactivate(hwnd.0);
+    }
+
     let (workflow_px, workflow_py, workflow_pw, workflow_ph, workflow_collapsed) =
         initial_float_rect(
             &grid,
@@ -2222,7 +2708,9 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         ("pet", pet_collapsed),
         ("workflow", workflow_collapsed),
     ] {
-        if !collapsed {
+        if !collapsed
+            && (label != "pet" || current_agent_has_valid_pet(&app.state::<AppState>()))
+        {
             if let Some(window) = app.get_webview_window(label) {
                 show_window_noactivate(&window);
             }
@@ -2404,7 +2892,9 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
         if let Some(win) = app.get_webview_window(label) {
             let top = *topmost.get(label).unwrap_or(&true);
             set_float_topmost_noactivate(&win, top);
-            let visible = resolved.contains_key(label) && !collapsed.contains(&label.to_string());
+            let visible = resolved.contains_key(label)
+                && !collapsed.contains(&label.to_string())
+                && (label != "pet" || current_agent_has_valid_pet(state));
             if !visible {
                 hide_window_noactivate(&win);
             }
@@ -2538,10 +3028,12 @@ pub fn run() {
                 data_dir,
                 screen: Mutex::new((sw, sh)),
                 active_drag: Mutex::new(None),
+                drag_diagnostics: drag::DragDiagnosticRecorder::from_environment(data_dir_clone.clone()),
                 launch_lock: tokio::sync::Mutex::new(()),
                 float_visibility_gate: FloatVisibilityGate::default(),
                 focus_track: Mutex::new(supervision::FocusTrack::default()),
                 focus_state: Mutex::new("idle".to_string()),
+                active_focus_mode: Mutex::new(None),
                 cli_pending: Mutex::new(HashMap::new()),
                 cli_next_id: AtomicU64::new(0),
                 cli_token: Mutex::new(String::new()),
@@ -2571,6 +3063,7 @@ pub fn run() {
             }
 
             let _ = desktop_lock::restore_desktop_after_process_exit();
+            migrate_legacy_pet_packs(&app.state::<AppState>())?;
             let app_handle = app.handle().clone();
             let wm = std::sync::Arc::new(workflow::WorkflowManager::new(
                 app_handle.clone(),
@@ -2594,11 +3087,12 @@ pub fn run() {
                 .lock()
                 .unwrap()
                 .acrylic_enabled;
-            for label in ["chat", "stats", "music", "pet", "workflow", "topbar"] {
+            for label in ["chat", "stats", "music", "workflow", "topbar"] {
                 if let Some(w) = app.get_webview_window(label) {
                     apply_acrylic_opt(&w, acrylic_enabled);
                 }
             }
+            apply_current_pet_acrylic(&app.handle());
 
             let app_state = app.state::<AppState>();
             apply_initial_layout(app, &app_state);
@@ -2712,7 +3206,12 @@ pub fn run() {
                     .unwrap_or("")
                     .to_string();
                 if !label.is_empty() {
-                    drag::finalize(&hd, &label);
+                    let state = hd.state::<AppState>();
+                    if let Some(finished) = drag::finish_drag(&state, &label) {
+                        state.drag_diagnostics.record(finished.sequence, &label, "rust", "release:claimed", false);
+                        state.drag_diagnostics.arm_post_release_click();
+                        drag::finalize(&hd, &label, finished.sequence);
+                    }
                 }
             });
 
@@ -2727,12 +3226,18 @@ pub fn run() {
                     .unwrap_or("")
                     .to_string();
                 let paused = v.get("paused").and_then(|x| x.as_bool()).unwrap_or(false);
+                let mode = v.get("mode").and_then(|x| x.as_str()).map(str::to_string);
                 let completed = v
                     .get("completed")
                     .and_then(|x| x.as_bool())
                     .unwrap_or(false);
                 let app_state = hf.state::<AppState>();
                 *app_state.focus_state.lock().unwrap() = state.clone();
+                *app_state.active_focus_mode.lock().unwrap() = if state == "focus" {
+                    mode
+                } else {
+                    None
+                };
                 // M4/ADR-0012: focus-end trigger via the core event bus
                 let _ = app_state.events_tx.send(CoreEvent::FocusStateChanged {
                     state: state.clone(),
@@ -2742,8 +3247,6 @@ pub fn run() {
                 match state.as_str() {
                     "focus" => {
                         if !ft.active {
-                            let settings = app_state.settings.lock().unwrap();
-                            ft.task_id = settings.current_task_id.clone();
                             ft.session_started_at = Some(chrono::Local::now().to_rfc3339());
                             ft.session_focus_sec = 0;
                         }
@@ -2759,7 +3262,6 @@ pub fn run() {
                             let ended = chrono::Local::now().to_rfc3339();
                             let dur = elapsed_sec(&started, &ended)
                                 .unwrap_or_else(|| ft.session_focus_sec.max(1));
-                            let tid = ft.task_id.clone();
                             let store_state = hf.state::<std::sync::Arc<Mutex<storage::Store>>>();
                             match store_state.lock() {
                                 Ok(store) => {
@@ -2767,7 +3269,7 @@ pub fn run() {
                                         &started,
                                         &ended,
                                         dur,
-                                        tid.as_deref(),
+                                        None,
                                     ) {
                                         eprintln!("[focus] record_focus_session failed: {e}");
                                     }
@@ -2821,6 +3323,7 @@ pub fn run() {
             place_window,
             drag::drag_start,
             drag::drag_end,
+            drag::drag_diagnostic_browser_event,
             set_topmost,
             collapse,
             restore,
@@ -2832,17 +3335,13 @@ pub fn run() {
             set_shortcut_fit,
             launch_shortcut,
             set_acrylic,
-            save_task,
-            set_current_task,
             set_focus_durations,
             set_focus_mode,
             set_distraction_lists,
-            set_supervision_paused,
-            resume_supervision,
-            set_supervision_enabled,
             set_sound_enabled,
             set_show_topbar,
             list_running_apps,
+            list_apps_catalog,
             record_focus_session,
             get_today_focus_summary,
             stats_dashboard,
@@ -2862,6 +3361,9 @@ pub fn run() {
             agent_interrupt,
             agent_list_skills,
             agent_delete,
+            agent_workflow_reference_count,
+            agent_create,
+            agent_set_current,
             agent_open_workspace,
             desktop_lock,
             desktop_unlock,
@@ -2873,7 +3375,14 @@ pub fn run() {
             pet_list_packs,
             pet_activate,
             pet_sheet_data,
+            pet_animation_data,
+            pet_set_horizontal_correction,
             pet_active,
+            pet_bubble_placement,
+            pet_bubble_show,
+            pet_bubble_hide,
+            pet_get_state_mapping,
+            pet_save_state_mapping,
             resize_preview,
             set_pet_bg_fade,
             resize_window,
@@ -2902,11 +3411,70 @@ mod tests {
         discard_runtime_after_provider_error, elapsed_sec, ensure_runtime_serialized,
         float_corner_preference_attribute, float_corner_preference_value, float_host_style,
         float_nonclient_message_result, frame_change_required, is_float_label, list_provider_skills,
-        outer_rect_for_client, provider_ready, provider_skills_dir, ClientFrame, ClientGeometry,
+        outer_rect_for_client, pet_window_should_be_visible, provider_ready, provider_skills_dir,
+        resolve_window_placement, ClientFrame, ClientGeometry,
         FloatVisibilityGate,
         resume_with_initial_message, saved_session_for_today, select_status_character,
         set_agent_provider_serialized_with, topbar_visible, with_agent_runtime_serialized,
     };
+
+    #[test]
+    fn successful_placement_releases_settings_before_post_placement_work() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "focus-placement-lock-success-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let mut initial = crate::settings::Settings::default();
+        initial.grid.clear();
+        initial.grid.insert(
+            "pet".into(),
+            crate::settings::GridRect { col: 0, row: 0, cols: 1, rows: 1 },
+        );
+        let settings = std::sync::Mutex::new(initial);
+        let gm = crate::grid::GridManager { screen_w: 1200.0, screen_h: 800.0 };
+
+        let rect = resolve_window_placement(&settings, &data_dir, &gm, "pet", 2, 2);
+
+        assert_eq!((rect.col, rect.row), (2, 2));
+        assert!(settings.try_lock().is_ok());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn occupied_placement_releases_settings_before_snap_back_work() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "focus-placement-lock-occupied-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let mut initial = crate::settings::Settings::default();
+        initial.grid.clear();
+        initial.grid.insert(
+            "pet".into(),
+            crate::settings::GridRect { col: 0, row: 0, cols: 1, rows: 1 },
+        );
+        initial.grid.insert(
+            "music".into(),
+            crate::settings::GridRect { col: 2, row: 2, cols: 1, rows: 1 },
+        );
+        let settings = std::sync::Mutex::new(initial);
+        let gm = crate::grid::GridManager { screen_w: 1200.0, screen_h: 800.0 };
+
+        let rect = resolve_window_placement(&settings, &data_dir, &gm, "pet", 2, 2);
+
+        assert_eq!((rect.col, rect.row), (0, 0));
+        assert!(settings.try_lock().is_ok());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
 
     fn status_character(id: &str, tool: &str) -> crate::storage::CharacterRow {
         crate::storage::CharacterRow {
@@ -2919,6 +3487,21 @@ mod tests {
             current_session_hash: None,
             session_date: None,
         }
+    }
+
+    #[test]
+    fn pet_window_requires_a_valid_current_agent_package() {
+        assert!(pet_window_should_be_visible(true, false));
+        assert!(!pet_window_should_be_visible(false, false));
+        assert!(!pet_window_should_be_visible(true, true));
+    }
+
+    #[test]
+    fn pet_host_tint_accepts_only_a_complete_rgb_hex_value() {
+        assert_eq!(super::parse_rgb_hex("#1a80ff"), Some((0x1a, 0x80, 0xff)));
+        assert_eq!(super::parse_rgb_hex("1a80ff"), None);
+        assert_eq!(super::parse_rgb_hex("#fff"), None);
+        assert_eq!(super::parse_rgb_hex("#zz80ff"), None);
     }
 
     #[test]
@@ -3703,6 +4286,10 @@ mod tests {
         }
         assert!(!is_float_label("desktop"));
         assert!(!is_float_label("topbar"));
+        assert!(
+            !is_float_label("pet-bubble"),
+            "the mouse-through companion must never enter the grid or tray lifecycle"
+        );
     }
 
     #[test]
@@ -3777,6 +4364,57 @@ mod tests {
     }
 
     #[test]
+    fn bubble_placement_uses_client_geometry_and_normalized_package_anchor() {
+        let placement = super::choose_bubble_placement(
+            super::ScreenRect::new(100, 200, 192, 208),
+            super::ScreenRect::new(0, 0, 1200, 800),
+            None,
+            248,
+            82,
+        ).expect("a pet-safe candidate should exist");
+        assert_eq!(placement.direction, super::BubbleDirection::Above);
+        assert_eq!((placement.x, placement.y), (72, 108));
+        assert_eq!(placement.rect().intersection_area(super::ScreenRect::new(100, 200, 192, 208)), 0);
+    }
+
+    #[test]
+    fn bubble_placement_uses_all_six_directions_and_never_covers_the_pet() {
+        let work = super::ScreenRect::new(0, 0, 640, 480);
+        for pet in [
+            super::ScreenRect::new(220, 180, 120, 140),
+            super::ScreenRect::new(0, 0, 120, 140),
+            super::ScreenRect::new(520, 0, 120, 140),
+            super::ScreenRect::new(0, 340, 120, 140),
+            super::ScreenRect::new(520, 340, 120, 140),
+        ] {
+            let placement = super::choose_bubble_placement(pet, work, None, 248, 82)
+                .expect("a pet-safe candidate should exist");
+            assert_eq!(placement.rect().intersection_area(pet), 0, "{placement:?}");
+            assert!(work.contains(placement.rect()), "{placement:?}");
+        }
+    }
+
+    #[test]
+    fn bubble_placement_prefers_a_later_candidate_when_chat_blocks_above() {
+        let pet = super::ScreenRect::new(300, 260, 120, 140);
+        let work = super::ScreenRect::new(0, 0, 900, 700);
+        let chat = super::ScreenRect::new(260, 120, 360, 130);
+        let placement = super::choose_bubble_placement(pet, work, Some(chat), 248, 82)
+            .expect("a pet-safe candidate should exist");
+
+        assert_eq!(placement.rect().intersection_area(pet), 0);
+        assert_eq!(placement.rect().intersection_area(chat), 0);
+        assert_ne!(placement.direction, super::BubbleDirection::Above);
+    }
+
+    #[test]
+    fn bubble_placement_returns_none_when_no_candidate_is_pet_safe() {
+        let work = super::ScreenRect::new(0, 0, 120, 120);
+        let pet = super::ScreenRect::new(0, 0, 120, 120);
+        assert!(super::choose_bubble_placement(pet, work, None, 100, 80).is_none());
+    }
+
+    #[test]
     fn free_cell_skips_forbidden_zones() {
         use super::free_cell_for;
         let (c0, r0) = free_cell_for(&[]);
@@ -3803,5 +4441,13 @@ mod tests {
             (0, 0),
             "occupied (0,4) does not block the top-left"
         );
+    }
+    #[test]
+    fn quit_restriction_uses_the_frozen_round_mode() {
+        assert!(super::should_reject_quit("focus", Some("standard")));
+        assert!(super::should_reject_quit("focus", Some("scholar")));
+        assert!(!super::should_reject_quit("focus", Some("light")));
+        assert!(!super::should_reject_quit("rest", Some("scholar")));
+        assert!(!super::should_reject_quit("focus", None));
     }
 }

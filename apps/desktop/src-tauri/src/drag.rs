@@ -28,8 +28,12 @@
 //! - The main thread never `join()`s the poller (that would deadlock if the
 //!   poller were blocked on a getter); it waits on a `finished` atomic instead.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(test))]
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -46,10 +50,149 @@ const POLL_MS: u64 = 24;
 const PREVIEW_INTERVAL_MS: u64 = 50;
 const GRID_LABELS: [&str; 5] = ["chat", "stats", "music", "pet", "workflow"]; // v1.10.3.1 (#47)
 
+const DIAGNOSTICS_ENV: &str = "FOCUS_DRAG_DIAGNOSTICS";
+#[cfg(not(test))]
+const DIAGNOSTICS_FILE: &str = "pet-drag.jsonl";
+
+#[derive(Clone)]
+pub struct DragDiagnosticRecorder {
+    inner: Arc<DragDiagnosticInner>,
+}
+
+struct DragDiagnosticInner {
+    enabled: bool,
+    #[cfg_attr(test, allow(dead_code))]
+    data_dir: PathBuf,
+    next_sequence: AtomicU64,
+    latest_sequence: AtomicU64,
+    post_release_click_pending: AtomicBool,
+    #[cfg(test)]
+    entries: Mutex<Vec<String>>,
+}
+
+impl DragDiagnosticRecorder {
+    pub fn from_environment(data_dir: PathBuf) -> Self {
+        let enabled = std::env::var(DIAGNOSTICS_ENV)
+            .map(|value| value == "1")
+            .unwrap_or(false);
+        let recorder = Self {
+            inner: Arc::new(DragDiagnosticInner {
+                enabled,
+                data_dir,
+                next_sequence: AtomicU64::new(1),
+                latest_sequence: AtomicU64::new(0),
+                post_release_click_pending: AtomicBool::new(false),
+                #[cfg(test)]
+                entries: Mutex::new(Vec::new()),
+            }),
+        };
+        recorder.record(Some(0), "pet", "rust", "diagnostics:enabled", false);
+        recorder
+    }
+
+    pub fn start_sequence(&self) -> Option<u64> {
+        let sequence = self.inner
+            .enabled
+            .then(|| self.inner.next_sequence.fetch_add(1, Ordering::Relaxed));
+        if let Some(sequence) = sequence {
+            self.inner.latest_sequence.store(sequence, Ordering::Relaxed);
+        }
+        sequence
+    }
+
+    pub fn latest_sequence(&self) -> Option<u64> {
+        let sequence = self.inner.latest_sequence.load(Ordering::Relaxed);
+        (sequence != 0).then_some(sequence)
+    }
+
+    pub fn arm_post_release_click(&self) {
+        if self.inner.enabled {
+            self.inner.post_release_click_pending.store(true, Ordering::Release);
+        }
+    }
+
+    pub fn claim_post_release_click(&self) -> bool {
+        self.inner.enabled
+            && self
+                .inner
+                .post_release_click_pending
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+    }
+
+    pub fn record(&self, sequence: Option<u64>, label: &str, source: &str, stage: &str, active_drag: bool) {
+        if !self.inner.enabled {
+            return;
+        }
+        #[cfg(test)]
+        {
+            let _ = (sequence, label, source, active_drag);
+            self.inner.entries.lock().unwrap().push(stage.to_string());
+            return;
+        }
+
+        #[cfg(not(test))]
+        {
+            let Some(sequence) = sequence else { return };
+            let dir = self.inner.data_dir.join("diagnostics");
+            let _ = std::fs::create_dir_all(&dir);
+            let record = serde_json::json!({
+                "sequence": sequence,
+                "label": label,
+                "source": source,
+                "stage": stage,
+                "timestampMs": chrono::Utc::now().timestamp_millis(),
+                "activeDrag": active_drag,
+            });
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join(DIAGNOSTICS_FILE))
+            {
+                let _ = writeln!(file, "{}", record);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn disabled_for_test() -> Self {
+        Self {
+            inner: Arc::new(DragDiagnosticInner {
+                enabled: false,
+                data_dir: std::env::temp_dir(),
+                next_sequence: AtomicU64::new(1),
+                latest_sequence: AtomicU64::new(0),
+                post_release_click_pending: AtomicBool::new(false),
+                entries: Mutex::new(Vec::new()),
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    fn enabled_for_test() -> Self {
+        Self {
+            inner: Arc::new(DragDiagnosticInner {
+                enabled: true,
+                data_dir: std::env::temp_dir(),
+                next_sequence: AtomicU64::new(1),
+                latest_sequence: AtomicU64::new(0),
+                post_release_click_pending: AtomicBool::new(false),
+                entries: Mutex::new(Vec::new()),
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    fn entries_for_test(&self) -> Vec<String> {
+        self.inner.entries.lock().unwrap().clone()
+    }
+}
+
 /// The in-flight drag (serialized in `AppState.active_drag`). Only one drag
 /// runs at a time; a repeated `drag_start` first terminates the previous one.
 pub struct ActiveDrag {
     pub label: String,
+    pub sequence: Option<u64>,
     pub stop: Arc<AtomicBool>,
     pub finished: Arc<AtomicBool>,
     pub handle: Option<JoinHandle<()>>,
@@ -158,6 +301,33 @@ fn stop_drag(ad: ActiveDrag) {
     // handle is dropped (detached); the thread is short-lived
 }
 
+pub struct FinishedDrag {
+    pub sequence: Option<u64>,
+}
+
+/// Claim a drag exactly once. Browser pointer release and the native poller
+/// can report the same release; only the claimant may finalize the window.
+fn take_active_drag(active: &mut Option<ActiveDrag>, label: &str) -> Option<ActiveDrag> {
+    if active.as_ref().is_some_and(|drag| drag.label == label) {
+        active.take()
+    } else {
+        None
+    }
+}
+
+/// Stop and remove the active drag before any main-thread window getters run.
+/// Returns false when the same release was already consumed by the other path.
+pub fn finish_drag(state: &AppState, label: &str) -> Option<FinishedDrag> {
+    let active = {
+        let mut current = state.active_drag.lock().unwrap();
+        take_active_drag(&mut current, label)
+    };
+    let Some(active) = active else { return None };
+    active.stop.store(true, Ordering::Relaxed);
+    wait_finished(&active.finished, Duration::from_millis(250));
+    Some(FinishedDrag { sequence: active.sequence })
+}
+
 fn emit_preview(
     app: &AppHandle,
     label: &str,
@@ -204,14 +374,17 @@ fn emit_preview(
 /// Finalize a drag: hide the overlay, then snap + persist. Runs ONLY on the
 /// main thread (called from the `drag:released` listener or `drag_end`),
 /// because it uses window getters that dispatch to the main thread.
-pub fn finalize(app: &AppHandle, label: &str) {
+pub fn finalize(app: &AppHandle, label: &str, sequence: Option<u64>) {
+    let state = app.state::<AppState>();
+    state.drag_diagnostics.record(sequence, label, "rust", "finalize:overlay-hide:start", false);
     if let Some(ov) = app.get_webview_window("grid-overlay") {
         let _ = ov.hide();
     }
+    state.drag_diagnostics.record(sequence, label, "rust", "finalize:overlay-hide:complete", false);
     let _ = app.emit("grid:preview", serde_json::json!({ "visible": false }));
 
-    let state = app.state::<AppState>();
     let Some(w) = app.get_webview_window(label) else { return };
+    state.drag_diagnostics.record(sequence, label, "rust", "finalize:geometry:start", false);
     let pos = w.outer_position().unwrap_or_default();
     let scale = w.scale_factor().unwrap_or(1.0);
     // v1.10.4 (#50): snap from the client origin so the content lands on the
@@ -223,7 +396,12 @@ pub fn finalize(app: &AppHandle, label: &str) {
     let m = gm.metrics();
     let col = ((client_x as f64 / scale) / m.cell_w).round() as usize;
     let row = ((client_y as f64 / scale) / m.cell_h).round() as usize;
+    state.drag_diagnostics.record(sequence, label, "rust", "finalize:snap:start", false);
     let _ = place_window_inner(app, &state, label, col, row);
+    state.drag_diagnostics.record(sequence, label, "rust", "finalize:snap:complete", false);
+    if label == "pet" {
+        let _ = app.emit("pet:drag-ended", ());
+    }
     // the float was just raised above the topbar; put the capsule back on top
     crate::raise_topbar(app);
 }
@@ -237,6 +415,7 @@ fn poller(
     win_w: u32,
     win_h: u32,
     geometry: ClientGeometry,
+    sequence: Option<u64>,
     stop: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
 ) {
@@ -298,13 +477,21 @@ fn poller(
         }
         std::thread::sleep(Duration::from_millis(POLL_MS));
     }
-    if !stop.load(Ordering::Relaxed) {
+    let released_naturally = !stop.load(Ordering::Relaxed);
+    finished.store(true, Ordering::Relaxed);
+    app.state::<AppState>().drag_diagnostics.record(
+        sequence,
+        &label,
+        "poller",
+        if released_naturally { "poller:released" } else { "poller:stopped" },
+        true,
+    );
+    if released_naturally {
         // Natural release (button up) detected by the poller: the main thread
         // finalizes (getters are main-thread-only). Safe even if the frontend
         // pointerup is swallowed by the overlay.
         let _ = app.emit("drag:released", serde_json::json!({ "label": label }));
     }
-    finished.store(true, Ordering::Relaxed);
 }
 
 /// Start a drag for `label`: record grab offset, show the overlay, poll the
@@ -314,7 +501,7 @@ pub fn drag_start(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     label: String,
-) -> Result<(), String> {
+) -> Result<Option<u64>, String> {
     // Serialize: only one drag at a time; end any previous drag first.
     {
         let mut ad = state.active_drag.lock().unwrap();
@@ -329,7 +516,13 @@ pub fn drag_start(
     // Never start a drag on a hidden/collapsed window: the poller would fight
     // an invisible window and could leave a zombie thread behind.
     if !w.is_visible().unwrap_or(true) {
-        return Ok(());
+        return Ok(None);
+    }
+    if label == "pet" {
+        let _ = app.emit("pet:drag-started", ());
+        if let Some(bubble) = app.get_webview_window("pet-bubble") {
+            crate::hide_window_noactivate(&bubble);
+        }
     }
     // getters on the main thread only
     let pos = w.outer_position().map_err(|e| format!("outer_position: {e}"))?;
@@ -348,8 +541,7 @@ pub fn drag_start(
     // Overlay preview: re-assert input transparency before showing so the
     // layer can never swallow the mouse during the drag.
     if let Some(ov) = app.get_webview_window("grid-overlay") {
-        let _ = ov.set_ignore_cursor_events(true);
-        let _ = ov.show();
+        crate::show_window_noactivate(&ov);
     }
 
     // Initial preview with the window's current rect.
@@ -379,6 +571,8 @@ pub fn drag_start(
         );
     }
 
+    let sequence = state.drag_diagnostics.start_sequence();
+    state.drag_diagnostics.record(sequence, &label, "rust", "drag:start", true);
     let stop = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
@@ -386,15 +580,16 @@ pub fn drag_start(
     let app2 = app.clone();
     let label2 = label.clone();
     let handle = std::thread::spawn(move || {
-        poller(app2, label2, off_x, off_y, scale, size.width, size.height, geometry, stop2, fin2)
+        poller(app2, label2, off_x, off_y, scale, size.width, size.height, geometry, sequence, stop2, fin2)
     });
     *state.active_drag.lock().unwrap() = Some(ActiveDrag {
         label,
+        sequence,
         stop,
         finished,
         handle: Some(handle),
     });
-    Ok(())
+    Ok(sequence)
 }
 
 /// Stop the drag for `label` (frontend pointerup fallback; the poller also
@@ -405,30 +600,83 @@ pub fn drag_end(
     state: tauri::State<'_, AppState>,
     label: String,
 ) -> Result<(), String> {
-    let mut stopped = false;
-    {
-        let mut ad = state.active_drag.lock().unwrap();
-        if let Some(prev) = ad.as_ref() {
-            if prev.label == label {
-                prev.stop.store(true, Ordering::Relaxed);
-                stopped = true;
-            }
-        }
-        if stopped {
-            if let Some(prev) = ad.take() {
-                wait_finished(&prev.finished, Duration::from_millis(250));
-            }
-        }
-    }
-    if stopped {
-        finalize(&app, &label);
+    if let Some(finished) = finish_drag(&state, &label) {
+        state.drag_diagnostics.record(finished.sequence, &label, "rust", "release:claimed", false);
+        state.drag_diagnostics.arm_post_release_click();
+        finalize(&app, &label, finished.sequence);
     }
     Ok(())
+}
+
+/// Browser-side boundary report used only when FOCUS_DRAG_DIAGNOSTICS=1.
+/// The native recorder owns the sequence because browser events can arrive
+/// after an async release has already claimed and removed ActiveDrag.
+#[tauri::command]
+pub fn drag_diagnostic_browser_event(
+    state: tauri::State<'_, AppState>,
+    label: String,
+    stage: String,
+    sequence: Option<u64>,
+) {
+    let active_drag = state.active_drag.lock().unwrap().is_some();
+    if stage.starts_with("browser:post-release-first-click") && !state.drag_diagnostics.claim_post_release_click() {
+        return;
+    }
+    state.drag_diagnostics.record(
+        sequence.or_else(|| state.drag_diagnostics.latest_sequence()),
+        &label,
+        "browser",
+        &stage,
+        active_drag,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_are_disabled_without_the_enablement_flag() {
+        let recorder = DragDiagnosticRecorder::disabled_for_test();
+
+        recorder.record(Some(7), "pet", "browser", "browser:pointerdown", false);
+
+        assert!(recorder.entries_for_test().is_empty());
+    }
+
+    #[test]
+    fn diagnostics_keep_drag_boundaries_in_recorded_order() {
+        let recorder = DragDiagnosticRecorder::enabled_for_test();
+
+        recorder.record(Some(12), "pet", "browser", "browser:pointerdown", true);
+        recorder.record(Some(12), "pet", "rust", "release:claimed", false);
+        recorder.record(Some(12), "pet", "rust", "finalize:complete", false);
+
+        assert_eq!(
+            recorder.entries_for_test(),
+            vec![
+                "browser:pointerdown",
+                "release:claimed",
+                "finalize:complete",
+            ],
+        );
+    }
+
+    #[test]
+    fn only_the_first_release_claims_an_active_drag() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(true));
+        let mut active = Some(ActiveDrag {
+            label: "pet".into(),
+            sequence: None,
+            stop,
+            finished,
+            handle: None,
+        });
+
+        assert!(take_active_drag(&mut active, "pet").is_some());
+        assert!(take_active_drag(&mut active, "pet").is_none());
+    }
 
     #[test]
     fn clamp_negative_to_zero() {

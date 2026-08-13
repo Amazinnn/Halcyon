@@ -1,35 +1,29 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useAgentStore } from "../../stores/agent";
 import { useSettingsStore } from "../../stores/settings";
 import { useUiStore } from "../../stores/ui";
 import { useGridDrag } from "../../composables/useGridDrag";
-
-// Official hatch-pet contract (ADR-0009): fixed 8x9 atlas, 192x208 cells.
-const ATLAS_COLS = 8;
-const ATLAS_ROWS = 9;
-const CELL_W = 192;
-const CELL_H = 208;
-const ATLAS_W = ATLAS_COLS * CELL_W; // 1536
-const ATLAS_H = ATLAS_ROWS * CELL_H; // 1872
+import {
+  PetRequestCoordinator,
+  type PetPackageRequest,
+  petCanvasMetrics,
+  replacePetBitmap,
+} from "../../lib/pet-render";
 
 interface AnimDef {
-  row: number;
-  durations: number[]; // per-frame ms; last entry holds the final frame
+  columns: number;
+  rows: number;
+  frames: number;
+  fps: number;
   loop: boolean;
+  startRow: number;
+  cellWidth: number;
+  cellHeight: number;
+  sourceRect: { x: number; y: number; width: number; height: number };
 }
-
-// App animation name -> official hatch-pet row (animation-rows.md).
-const ANIMS: Record<string, AnimDef> = {
-  idle: { row: 0, durations: [280, 110, 110, 140, 140, 320], loop: true },
-  thinking: { row: 7, durations: [120, 120, 120, 120, 120, 120, 120, 220], loop: true }, // running
-  editing: { row: 8, durations: [150, 150, 150, 150, 150, 280], loop: true }, // review
-  waiting: { row: 6, durations: [150, 150, 150, 150, 150, 260], loop: true },
-  success: { row: 4, durations: [140, 140, 140, 140, 280], loop: false }, // jumping
-  error: { row: 5, durations: [140, 140, 140, 140, 140, 140, 140, 240], loop: false }, // failed
-};
 
 const SIZES: Array<[number, number]> = [
   [1, 1],
@@ -43,37 +37,65 @@ interface PetInfo {
   displayName: string;
   description: string;
   spritesheetPath: string;
+  animations: Array<{ id: string; cellWidth: number; cellHeight: number }>;
+  hostTint: string;
+  bubbleAccent: string;
+  horizontalCorrection: number;
+  qualityWarnings: string[];
 }
 
 const agent = useAgentStore();
 const ui = useUiStore();
 const settingsStore = useSettingsStore();
-const { onPointerDown, onPointerMove, onPointerUp } = useGridDrag("pet");
+const {
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
+  onLostPointerCapture,
+} = useGridDrag("pet");
 
 // ---- pet pack state ----
 const pet = ref<PetInfo | null>(null);
-const sheet = ref<HTMLImageElement | ImageBitmap | null>(null);
+const sheet = ref<ImageBitmap | null>(null);
 const sheetError = ref("");
 const hovered = ref(false);
+const petRequests = new PetRequestCoordinator();
 
 // ---- sprite playback ----
 const canvasRef = ref<HTMLCanvasElement | null>(null);
+const stageRef = ref<HTMLElement | null>(null);
 const frameIdx = ref(0);
-const animKey = computed(() => ANIMS[agent.animation] ? agent.animation : "idle");
-// Actually playing animation; non-loop animations switch back to "idle" here.
-let currentAnim = "idle" as string;
+const animKey = computed(() => agent.petState);
+let currentAnim: AnimDef | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 
 function drawFrame(idx: number) {
   const canvas = canvasRef.value;
   const img = sheet.value;
   if (!canvas || !img) return;
-  const def = ANIMS[currentAnim] ?? ANIMS.idle;
-  const col = idx % ATLAS_COLS;
+  const def = currentAnim;
+  if (!def) return;
+  const col = idx % def.columns;
+  const row = def.startRow + Math.floor(idx / def.columns);
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(img, col * CELL_W, def.row * CELL_H, CELL_W, CELL_H, 0, 0, canvas.width, canvas.height);
+  const sourceW = def.cellWidth;
+  const sourceH = def.cellHeight;
+  const source = def.sourceRect;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(
+    img,
+    col * sourceW + source.x,
+    row * sourceH + source.y,
+    source.width,
+    source.height,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  );
   if (settingsStore.petBgFade) applyEdgeFade(ctx);
 }
 
@@ -105,19 +127,17 @@ function applyEdgeFade(ctx: CanvasRenderingContext2D) {
 
 function scheduleNext(idx: number) {
   if (timer) clearTimeout(timer);
-  const def = ANIMS[currentAnim] ?? ANIMS.idle;
-  const d = def.durations[Math.min(idx, def.durations.length - 1)];
+  const def = currentAnim;
+  if (!def) return;
+  const d = Math.max(16, Math.round(1000 / def.fps));
   timer = setTimeout(() => {
     let next = idx + 1;
-    if (next >= def.durations.length) {
+    if (next >= def.frames) {
       if (def.loop) {
         next = 0;
       } else {
-        // non-loop finished: snap back to idle
-        currentAnim = "idle";
         frameIdx.value = 0;
-        drawFrame(0);
-        scheduleIdleLoop();
+        scheduleNext(0);
         return;
       }
     }
@@ -127,63 +147,104 @@ function scheduleNext(idx: number) {
   }, d);
 }
 
-function scheduleIdleLoop() {
-  if (timer) clearTimeout(timer);
-  const def = ANIMS.idle;
-  const d = def.durations[Math.min(frameIdx.value, def.durations.length - 1)];
-  timer = setTimeout(() => {
-    const next = (frameIdx.value + 1) % def.durations.length;
-    frameIdx.value = next;
-    drawFrame(next);
-    scheduleIdleLoop();
-  }, d);
+interface AnimationPayload {
+  animation: { assetPath: string; columns: number; rows: number; frames: number; fps: number; looped: boolean; startRow: number; cellWidth: number; cellHeight: number };
+  sourceRect: { x: number; y: number; width: number; height: number };
+  horizontalCorrection: number;
 }
 
-function resetPlayback() {
-  if (timer) clearTimeout(timer);
-  currentAnim = animKey.value;
+function applyAnimation(payload: AnimationPayload) {
+  const source = payload.animation;
+  currentAnim = { columns: source.columns, rows: source.rows, frames: source.frames, fps: source.fps, loop: source.looped, startRow: source.startRow, cellWidth: source.cellWidth, cellHeight: source.cellHeight, sourceRect: payload.sourceRect };
+  if (pet.value) pet.value.horizontalCorrection = payload.horizontalCorrection;
+  fitCanvas();
   frameIdx.value = 0;
   drawFrame(0);
   scheduleNext(0);
 }
 
+async function resetPlayback() {
+  if (timer) clearTimeout(timer);
+  const characterId = agent.characterId;
+  if (!characterId) return;
+  const request = petRequests.beginAnimation(characterId);
+  if (!request) return;
+  const payload = await invoke<AnimationPayload>("pet_animation_data", {
+    characterId,
+    petState: animKey.value,
+  });
+  if (!petRequests.isCurrentAnimation(request) || agent.characterId !== characterId || pet.value?.id !== request.petId) return;
+  applyAnimation(payload);
+}
+
+async function decodeSheet(data: string, assetPath: string) {
+  const bin = atob(data);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: assetPath.toLowerCase().endsWith(".png") ? "image/png" : "image/webp" });
+  return createImageBitmap(blob);
+}
+
 watch(animKey, () => {
-  if (sheet.value) resetPlayback();
+  if (pet.value) void resetPlayback();
 });
 
 // ---- load active pack / sheet ----
-async function loadSheet(info: PetInfo) {
-  sheetError.value = "";
+async function loadSheet(info: PetInfo, request: PetPackageRequest) {
   // v1.10 (#32): load pixels same-origin (base64 -> Blob -> createImageBitmap)
   // so canvas getImageData (edge fade) is not blocked by cross-origin taint.
-  const b64 = await invoke<string>("pet_sheet_data", { id: info.id });
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const mime = info.spritesheetPath.toLowerCase().endsWith(".png") ? "image/png" : "image/webp";
-  const blob = new Blob([bytes], { type: mime });
-  const bmp = await createImageBitmap(blob);
-  if (bmp.width !== ATLAS_W || bmp.height !== ATLAS_H) {
-    throw new Error(`spritesheet 尺寸不符：需要 ${ATLAS_W}x${ATLAS_H}，实际 ${bmp.width}x${bmp.height}`);
+  const characterId = request.characterId;
+  const requestedState = animKey.value;
+  const [data, payload] = await Promise.all([
+    invoke<string>("pet_sheet_data", { characterId }),
+    invoke<AnimationPayload>("pet_animation_data", { characterId, petState: requestedState }),
+  ]);
+  const bitmap = await decodeSheet(data, payload.animation.assetPath);
+  if (!petRequests.isCurrentPackage(request) || agent.characterId !== characterId) {
+    bitmap.close();
+    return;
   }
-  sheet.value = bmp;
+  if (!petRequests.commitPackage(request, info.id)) {
+    bitmap.close();
+    return;
+  }
+  sheetError.value = "";
   pet.value = info;
-  resetPlayback();
+  sheet.value = replacePetBitmap(sheet.value, bitmap);
+  await nextTick();
+  if (!petRequests.isCurrentPackage(request) || agent.characterId !== characterId || pet.value?.id !== info.id) {
+    return;
+  }
+  observePetStage();
+  if (animKey.value === requestedState) {
+    applyAnimation(payload);
+  } else {
+    void resetPlayback();
+  }
 }
 
 async function refresh() {
+  const characterId = agent.characterId ?? "";
+  const request = petRequests.beginPackage(characterId);
   try {
     const active = await invoke<PetInfo | null>("pet_active");
+    if (!petRequests.isCurrentPackage(request) || agent.characterId !== characterId) return;
     if (active) {
-      await loadSheet(active);
+      await loadSheet(active, request);
     } else {
+      if (!petRequests.clearPackage(request)) return;
+      sheetError.value = "";
       pet.value = null;
-      sheet.value = null;
+      sheet.value = replacePetBitmap(sheet.value, null);
+      resizeObserver?.disconnect();
     }
   } catch (e) {
+    if (!petRequests.isCurrentPackage(request) || agent.characterId !== characterId) return;
+    if (!petRequests.clearPackage(request)) return;
     sheetError.value = String(e);
     pet.value = null;
-    sheet.value = null;
+    sheet.value = replacePetBitmap(sheet.value, null);
+    resizeObserver?.disconnect();
   }
   try {
     const b = await invoke<{ grid?: Record<string, { cols: number; rows: number }> }>("get_bootstrap");
@@ -292,16 +353,6 @@ function onResizeCancel() {
   });
 }
 
-// ---- bubble / chat ----
-const bubbleVisible = computed(() => {
-  if (!agent.bubble) return false;
-  if (ui.chatOpen) return false;
-  if (ui.focusState === "focus" && (agent.bubble.priority === "low" || agent.bubble.priority === "normal")) {
-    return false;
-  }
-  return Date.now() < agent.bubble.expiresAt;
-});
-
 function toggleChat() {
   hovered.value = false;
   void emit("ui:toggle_chat", {});
@@ -309,17 +360,43 @@ function toggleChat() {
 
 let resizeObserver: ResizeObserver | null = null;
 
+function observePetStage() {
+  if (!resizeObserver) return;
+  resizeObserver.disconnect();
+  if (stageRef.value) resizeObserver.observe(stageRef.value);
+}
+
+function onPetPointerUp() {
+  onPointerUp();
+}
+
+function onPetPointerCancel() {
+  onPointerCancel();
+}
+
+function onPetLostPointerCapture() {
+  onLostPointerCapture();
+}
+
 function fitCanvas() {
   const canvas = canvasRef.value;
-  const wrap = canvas?.parentElement;
+  const wrap = stageRef.value;
   if (!canvas || !wrap) return;
-  const availW = wrap.clientWidth - 16;
-  const availH = wrap.clientHeight - 16;
-  const scale = Math.min(availW / CELL_W, availH / CELL_H);
-  const w = Math.max(16, Math.floor(CELL_W * scale));
-  const h = Math.max(18, Math.floor(CELL_H * scale));
-  canvas.width = w;
-  canvas.height = h;
+  const anim = currentAnim;
+  if (!anim) return;
+  const frame = petCanvasMetrics(
+    anim.sourceRect.width,
+    anim.sourceRect.height,
+    wrap.clientWidth,
+    wrap.clientHeight,
+    8,
+    window.devicePixelRatio,
+    pet.value?.horizontalCorrection ?? 1,
+  );
+  canvas.style.width = `${frame.cssWidth}px`;
+  canvas.style.height = `${frame.cssHeight}px`;
+  canvas.width = frame.backingWidth;
+  canvas.height = frame.backingHeight;
   drawFrame(frameIdx.value);
 }
 
@@ -327,42 +404,45 @@ let unlistenPet: (() => void) | null = null;
 
 onMounted(async () => {
   unlistenPet = await listen("pet:changed", () => void refresh());
-  await refresh();
   resizeObserver = new ResizeObserver(() => fitCanvas());
-  if (canvasRef.value?.parentElement) resizeObserver.observe(canvasRef.value.parentElement);
+  await refresh();
+  await nextTick();
+  observePetStage();
   fitCanvas();
 });
 
 onBeforeUnmount(() => {
+  petRequests.invalidate();
   unlistenPet?.();
   if (timer) clearTimeout(timer);
+  sheet.value = replacePetBitmap(sheet.value, null);
   resizeObserver?.disconnect();
 });
 </script>
 
 <template>
   <div
+    v-if="pet"
     class="pet-window"
+    :style="{ '--pet-host-tint': pet.hostTint, '--pet-accent': pet.bubbleAccent }"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
-    @pointerup="onPointerUp"
+    @pointerup="onPetPointerUp"
+    @pointercancel="onPetPointerCancel"
+    @lostpointercapture="onPetLostPointerCapture"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
   >
-    <div v-if="bubbleVisible" class="bubble" :class="`prio-${agent.bubble?.priority}`" data-no-drag>
-      {{ agent.bubble?.text }}
-    </div>
-
     <div v-if="hovered && pet?.displayName" class="pet-name" data-no-drag>{{ pet.displayName }}</div>
 
-    <div class="pet-stage">
+    <div ref="stageRef" class="pet-stage">
       <canvas
         v-if="sheet"
         ref="canvasRef"
         class="pet-canvas"
         :title="pet?.displayName ?? ''"
       ></canvas>
-      <div v-else class="sprout" :class="`anim-${agent.animation}`">
+      <div v-else class="sprout" :class="`anim-${agent.petState}`">
         <svg viewBox="0 0 64 64" width="72" height="72">
           <path d="M32 58 C32 42 32 30 32 22" stroke="#a3e635" stroke-width="3" fill="none" stroke-linecap="round" />
           <path d="M32 34 C20 30 15 20 19 11 C28 11 34 21 32 34Z" fill="#4ade80" />
@@ -401,6 +481,7 @@ onBeforeUnmount(() => {
   cursor: grab;
   border-radius: var(--window-host-radius);
   overflow: hidden;
+  background: color-mix(in srgb, var(--pet-host-tint, #122018) 72%, transparent);
 }
 .pet-stage {
   width: 100%;
@@ -413,8 +494,8 @@ onBeforeUnmount(() => {
   position: relative;
 }
 .pet-canvas {
-  max-width: 100%;
-  max-height: 100%;
+  display: block;
+  flex: none;
 }
 .sprout { position: relative; display: flex; align-items: center; justify-content: center; }
 .halo {
@@ -434,14 +515,6 @@ onBeforeUnmount(() => {
 @keyframes shake { from { transform: translateX(-3px); } to { transform: translateX(3px); } }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
 @keyframes bloom { 0% { transform: scale(0.8); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
-.bubble {
-  position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
-  max-width: 150px; background: #eef7e6; color: #12211a;
-  border-radius: 10px; padding: 5px 10px; font-size: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 5;
-}
-.bubble.prio-high, .bubble.prio-critical { border: 2px solid var(--warn); }
 .pet-name {
   position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
   font-size: 11px; color: var(--text-hi); background: var(--glass-strong);

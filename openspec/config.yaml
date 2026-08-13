@@ -1,0 +1,35 @@
+schema: spec-driven
+
+context: |
+  Focus Desktop is a Windows-first local focus desktop and Agent-pet system.
+  Stack: Tauri 2, Vue 3, TypeScript, Rust, and SQLite in a monorepo.
+  The immutable authority design document is local-focus-desktop-agent-design-v0.2.md;
+  never move, rewrite, or renumber it.
+  docs/requirements-verbatim.md is the verbatim user-request log. docs/decisions/
+  records architectural decisions. docs/evals/ records release evidence, and
+  docs/production-incidents.md is the production-incident ledger.
+  Native Windows visual behavior requires real mouse-driven acceptance. Do not
+  substitute screenshots, probes, or automated tests for that acceptance.
+
+rules:
+  proposal:
+    - Append the new user requirement verbatim to docs/requirements-verbatim.md before proposing behavior work.
+    - Cite the relevant existing requirement, ADR, Eval, and production incident when they exist.
+    - State non-goals for changes touching focus locking, native windows, providers, or workflows.
+  design:
+    - Preserve the existing Tauri, Vue, Rust, SQLite, and native-window ownership boundaries unless the proposal explicitly changes them.
+    - Do not add recovery daemons, watchdog layers, or defensive architecture without an explicit approved decision.
+  tasks:
+    - Include focused automated tests and the applicable Eval/manual acceptance gate.
+    - Any frontend or Rust behavior change requires npm run build, cargo test --lib, packages/event-schema npm test, and launch-focus.cmd rebuild.
+
+operations:
+  apply:
+    guidance:
+      - Keep edits narrowly scoped and preserve unrelated dirty worktree changes.
+      - Do not claim completion of Windows-native, desktop-lock, or real Provider behavior before the required human gate passes.
+      - Update the affected Eval on every task, including documentation-only tasks.
+  archive:
+    guidance:
+      - Archive only after required automated checks and the approved manual gate are recorded.
+      - Keep docs/requirements-verbatim.md, docs/decisions/, docs/evals/, and docs/production-incidents.md as their existing authoritative records; do not duplicate them into OpenSpec.

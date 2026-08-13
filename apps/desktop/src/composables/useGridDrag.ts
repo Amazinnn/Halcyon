@@ -2,6 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 let dragging = false;
 
+function recordBrowserBoundary(label: string, stage: string, sequence?: number | null) {
+  void invoke("drag_diagnostic_browser_event", { label, stage, sequence: sequence ?? null }).catch(() => undefined);
+}
+
 /**
  * v1.2.1: dragging is driven by Rust (src-tauri/src/drag.rs), which polls the
  * physical cursor on a ~15ms thread and repositions the window in raw physical
@@ -19,23 +23,50 @@ export function useGridDrag(label: string) {
     } catch {
       /* non-pointer input; ignore */
     }
-    void invoke("drag_start", { label }).catch((err) => {
-      console.error("[grid-drag] drag_start failed", err);
-      dragging = false;
-    });
+    void invoke<number | null>("drag_start", { label })
+      .then((sequence) => recordBrowserBoundary(label, "browser:pointerdown", sequence))
+      .catch((err) => {
+        console.error("[grid-drag] drag_start failed", err);
+        dragging = false;
+      });
   }
 
   function onPointerMove() {
     // movement is handled by the Rust poller
   }
 
-  function onPointerUp() {
+  function finishPointerDrag(stage = "browser:pointerup") {
     if (!dragging) return;
     dragging = false;
+    recordBrowserBoundary(label, stage);
     void invoke("drag_end", { label }).catch((err) => {
       console.error("[grid-drag] drag_end failed", err);
     });
   }
 
-  return { onPointerDown, onPointerMove, onPointerUp };
+  function onPointerUp() {
+    finishPointerDrag();
+  }
+
+  function onPointerCancel() {
+    finishPointerDrag("browser:pointercancel");
+  }
+
+  function onLostPointerCapture() {
+    finishPointerDrag("browser:lostpointercapture");
+  }
+
+  function recordFirstPostReleaseClick() {
+    recordBrowserBoundary(label, "browser:post-release-first-click");
+  }
+
+  return {
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel,
+    onLostPointerCapture,
+    finishPointerDrag,
+    recordFirstPostReleaseClick,
+  };
 }

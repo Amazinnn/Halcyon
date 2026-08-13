@@ -31,11 +31,39 @@ describe("per-Agent provider settings", () => {
   it("keeps concise setup guidance beside user-facing settings", () => {
     expect(source).toContain('const version = "v1.12.10"');
     expect(source).toContain("支持 PNG、JPG、JPEG、WebP");
-    expect(source).toContain("只提醒，不会强制关闭应用");
-    expect(source).toContain("pet.json + spritesheet.webp/png");
-    expect(source).toContain("1536×1872");
+    expect(source).toContain("黑名单应用在专注时只提醒，不会强制关闭");
+    expect(source).toContain('format 为 focus-hatch-pet');
+    expect(source).toContain("官方 Hatch Pet 原样 pet.json");
+    expect(source).not.toContain("hatch-pet-draft-0.2");
+    expect(source).toContain("pet_get_state_mapping");
     expect(source).toContain("MP3、FLAC、M4A");
-    expect(source).toContain("登录由对应 CLI 自行管理");
+    expect(source).toContain("Provider 登录由 Codex 或 Claude CLI 自行管理");
     expect(source).toContain("AGPLv3");
+  });
+
+  it("removes retired task, preset, allow-list, and supervision controls", () => {
+    expect(source).not.toContain("PRESETS");
+    expect(source).not.toContain("saveTask");
+    expect(source).not.toContain("setCurrentTask");
+    expect(source).not.toContain("allowedApps");
+    expect(source).not.toContain("setSupervisionEnabled");
+  });
+
+  it("keeps the current Agent pet-state mapping collapsed and package-driven", () => {
+    expect(source).toContain("pet_get_state_mapping");
+    expect(source).toContain("pet_save_state_mapping");
+    expect(source).toContain("stateMappingOpen");
+    expect(source).toContain("petAnimations");
+    expect(source).toContain("resting");
+    expect(source).toContain("troubled");
+  });
+
+  it("offers package-scoped pet correction and non-blocking quality warnings", () => {
+    expect(source).toContain("宽高校正");
+    expect(source).toContain('min="0.75"');
+    expect(source).toContain('max="1.33"');
+    expect(source).toContain('step="0.01"');
+    expect(source).toContain("pet_set_horizontal_correction");
+    expect(source).toContain("qualityWarnings");
   });
 });

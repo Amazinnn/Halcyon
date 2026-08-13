@@ -1,5 +1,9 @@
 # Focus Desktop 当前状态（压缩交接页）
 
+> 当前检查点：需求 #109–#113 / OpenSpec `pet-state-pack-and-settings`。稳定主体校准、包级宽高校正、宠物专属主色宿主、Focus 持续状态和独立回复气泡已实现并进入自动化交付门槛；Windows 比例、tint、气泡避让和既有浮窗回归仍待用户人工验收。按 #113，本轮自动化与 rebuild 通过后先推送 `main`，但不打 tag、不把 Pending 写作通过。见 [本轮 Eval](./evals/2026-08-13-agent-first-pets-and-focus-controls.md)。
+
+> 已关闭：需求 #108 / `INC-020`（Verified / S2）。真实诊断定位到吸附持有 `state.settings` 时气泡定位重入同一把非重入锁；修复把原生定位与气泡跟随移到锁外。用户完成拖动、松手、后续 Focus 点击和再次拖动后报告正常；独立 OpenSpec 变更已进入归档收尾。见 [诊断与修复 Eval](./evals/2026-08-13-pet-drag-post-release-freeze-diagnostics.md)。
+
 > 维修候选：需求 #96–#98 与 ADR-0029。用户已真实确认拖动后的蓝白条、原生 caption 与标题文字已消失；当前只处理原生毛玻璃与网页圆角的轻微弧度差。DWM 圆角偏好保留，网页外层裁切以桌宠为基准由 12px 微调为 10px；本次按用户要求只重建 release，记录见 [维修 Eval](./evals/2026-08-11-float-window-repair-session.md)。
 
 > 维修中：需求 #91 将浮窗拖动后的蓝白边框单独收敛为 [维修档案](./maintenance/float-window-blue-border-repair.md) 和 [本轮 Eval](./evals/2026-08-11-float-window-repair-session.md)。在用户完成真实鼠标拖动验收前，不以探针、脚本移动或截图宣称修复。
@@ -19,9 +23,15 @@
 > 更新：2026-08-10（Claude 已成为第二个真实 Provider；#79/#80 已实现，#81/#82 建立文档与每轮 Eval 更新约束）。新对话请先读本页，再按需查阅 next-phase / requirements / ADR、Eval 与生产事故台账。
 > 远程：github.com/Amazinnn/Halcyon（private，main）；本地 D:/Projects/Focus。
 
+> 2026-08-14 / Requirement #114: the pet resize regression is repaired in the
+> current OpenSpec change. The canvas now observes the stable pet stage and
+> recomputes its CSS and DPR backing dimensions after Vue commits the loaded
+> package DOM. Automated validation and release rebuild passed; all Windows
+> visual checks remain Pending until user acceptance.
+
 ## 项目一句话
 
-本地专注桌面 + Agent 桌宠系统（Windows 优先，MIT）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
+本地专注桌面 + Agent 桌宠系统（Windows 优先，AGPL-3.0-only）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
 
 ## 当前实现与待验收清单
 - v1.12.8（视图托盘稳定性与内嵌 Skill 输入，已验收发布，需求 #99）：视图托盘圆按钮和四个浮窗入口共用前端 in-flight 动作控制器；一次 `restore` 未返回时条目禁用，后续展开/收起/恢复动作被忽略，不再以 150ms 窗口猜测结束。后端以同一可见性操作门拒绝并发 `restore`/`collapse`，返回「窗口操作正在进行，请稍候」，不排队堆积；既有无空位不恢复、零重叠和无激活原生路径保持。聊天输入改为单行 `contenteditable`：Skill 是光标位置的不可拆分内嵌 Token，可连续叠加；相邻 Backspace/Delete 整块删除；发送严格按编辑器顺序直通 Provider，且不读取或注入 `SKILL.md`。自动化、完整构建、release 重建与用户发布验收均完成；发布证据见 [v1.12.8 Eval](./evals/2026-08-11-v1.12.8-release.md)。
@@ -153,3 +163,7 @@ used by drag preview, snap, and final placement. Caption handling, acrylic,
 corners, window sizing, view tray, and zero-overlap policy are unchanged. See
 [the v1.12.10 Eval](./evals/2026-08-11-v1.12.10-float-geometry.md) and INC-019.
 The user completed the real mouse-drag acceptance gate: glow center, caption/title, overlap, and tray behavior all passed.
+> 2026-08-13 当前实现候选：Agent-first pets and focus controls（需求 #103/#104，ADR-0031）。Agent 是主身份，桌宠是其唯一、可选且不可转移的外观；旧全局 pet-packs 启动时迁入 `Focus-Agents/<agent-id>/pet-pack/`，当前 Agent 无包时不显示桌宠或气泡。设置页提供创建、选择、Provider、工作区、宠物导入/删除与 Agent 删除；删除会级联清理引用该 Agent 的工作流，但保留工作区文件。监督应用改为已安装和可见程序的精确选择器，只有黑名单。标准工作阶段隐藏应用内退出，学霸额外隐藏暂停和跳过；后端拒绝语义保持。自动化与重建、真实 Provider、原生气泡和桌面锁人工项仍以本轮 [Eval](./evals/2026-08-13-agent-first-pets-and-focus-controls.md) 为准。
+
+> 2026-08-13 流程接入：需求 #105 已在仓库根目录启用 OpenSpec core。后续行为变更先写入逐字需求，再通过 OpenSpec `explore → propose → apply → archive`；进行中变更在 `openspec/changes/`，归档规格在 `openspec/specs/`。既有 ADR、Eval、事故台账和逐字需求继续保持各自权威职责。本次流程接入证据见 [OpenSpec Eval](./evals/2026-08-13-openspec-adoption.md)。
+> 2026-08-13 当前 OpenSpec 变更：`pet-state-pack-and-settings` 的阶段一拖动死锁已人工验证；阶段二/三实现已覆盖官方 Hatch Pet + `focus-hatch-pet`、稳定主体框、DPI-safe contain、包级校正、Focus 持续状态和独立气泡。当前只剩包/气泡的 Windows 人工门槛与最终文档关闭；顶端状态胶囊已登记为下一项独立 OpenSpec 候选，不在本变更中重设计。

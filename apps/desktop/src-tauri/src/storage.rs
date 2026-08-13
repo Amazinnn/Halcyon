@@ -324,6 +324,30 @@ impl Store {
                 [],
             )?;
         }
+
+        // 0011: an Agent owns editable mappings from the six Focus pet
+        // states to the animations declared by its current pet package.
+        let has0011: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = '0011_agent_pet_state_mapping')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has0011 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS character_pet_state_mappings (
+                    character_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    animation_id TEXT,
+                    PRIMARY KEY (character_id, state),
+                    FOREIGN KEY (character_id) REFERENCES characters(id)
+                );",
+            )?;
+            self.conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (name, applied_at)
+                 VALUES ('0011_agent_pet_state_mapping', datetime('now'))",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -854,6 +878,112 @@ impl Store {
         Ok(())
     }
 
+    pub fn create_agent(&self, name: &str, tool: &str) -> rusqlite::Result<CharacterRow> {
+        let id = format!("char-{}", crate::workflow::new_id());
+        let row = CharacterRow {
+            id,
+            name: name.trim().to_string(),
+            persona: format!("你是 Focus 桌宠 Agent「{}」。", name.trim()),
+            pet_pack_id: None,
+            tool: tool.to_string(),
+            workspace_dir: None,
+            current_session_hash: None,
+            session_date: None,
+        };
+        self.insert_character(&row)?;
+        Ok(row)
+    }
+
+    pub fn set_character_pet(&self, id: &str, pet_pack_id: Option<&str>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE characters SET pet_pack_id = ?2 WHERE id = ?1",
+            params![id, pet_pack_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_pet_state_mapping(&self, character_id: &str) -> rusqlite::Result<crate::pets::StateMapping> {
+        let mut statement = self.conn.prepare(
+            "SELECT state, animation_id FROM character_pet_state_mappings WHERE character_id = ?1",
+        )?;
+        let rows = statement.query_map(params![character_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.collect()
+    }
+
+    pub fn save_pet_state_mapping(
+        &self,
+        character_id: &str,
+        mapping: &crate::pets::StateMapping,
+    ) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM character_pet_state_mappings WHERE character_id = ?1",
+            params![character_id],
+        )?;
+        for state in crate::pets::FOCUS_PET_STATES {
+            tx.execute(
+                "INSERT INTO character_pet_state_mappings (character_id, state, animation_id)
+                 VALUES (?1, ?2, ?3)",
+                params![character_id, state, mapping.get(state).cloned().flatten()],
+            )?;
+        }
+        tx.commit()
+    }
+
+    pub fn replace_character_pet_and_state_mapping(
+        &self,
+        character_id: &str,
+        pet_pack_id: &str,
+        mapping: &crate::pets::StateMapping,
+    ) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE characters SET pet_pack_id = ?2 WHERE id = ?1",
+            params![character_id, pet_pack_id],
+        )?;
+        tx.execute(
+            "DELETE FROM character_pet_state_mappings WHERE character_id = ?1",
+            params![character_id],
+        )?;
+        for state in crate::pets::FOCUS_PET_STATES {
+            tx.execute(
+                "INSERT INTO character_pet_state_mappings (character_id, state, animation_id)
+                 VALUES (?1, ?2, ?3)",
+                params![character_id, state, mapping.get(state).cloned().flatten()],
+            )?;
+        }
+        tx.commit()
+    }
+
+    pub fn delete_agent_and_workflows(&self, id: &str) -> rusqlite::Result<usize> {
+        let count = self.count_agent_workflow_references(id)?;
+        let pattern = format!("%\"characterId\":\"{}\"%", id);
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM workflows WHERE character_id = ?1 OR nodes_json LIKE ?2",
+            params![id, pattern],
+        )?;
+        tx.execute("DELETE FROM character_provider_sessions WHERE character_id = ?1", params![id])?;
+        tx.execute("DELETE FROM characters WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(count)
+    }
+
+    pub fn count_agent_workflow_references(&self, id: &str) -> rusqlite::Result<usize> {
+        // `nodes_json` is serde JSON, so quotes are stored literally. The
+        // generated Agent IDs do not contain SQL LIKE wildcards, and the
+        // parameter remains bound instead of interpolated into SQL.
+        let pattern = format!("%\"characterId\":\"{}\"%", id);
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflows WHERE character_id = ?1 OR nodes_json LIKE ?2",
+            params![id, pattern],
+            |r| r.get(0),
+        )?;
+        Ok(count.max(0) as usize)
+    }
+
     /// Lazy-create a character for a pet pack; returns the existing id when
     /// the pack already has one (ADR-0012: one character per imported pet).
     pub fn ensure_character(&self, pet_pack_id: &str, name: &str) -> rusqlite::Result<String> {
@@ -1322,8 +1452,67 @@ mod tests {
     }
 
     #[test]
+    fn deleting_agent_cascades_workflow_owner_and_agent_node_targets() {
+        use crate::workflow_engine::model::{NodeDef, WorkflowDef};
+        let s = temp_store();
+        let removed = s.create_agent("Remove", "claude").unwrap();
+        let retained = s.create_agent("Keep", "codex").unwrap();
+
+        let workflow = |id: &str, character_id: &str, target: &str| WorkflowDef {
+            id: id.into(),
+            character_id: character_id.into(),
+            name: id.into(),
+            trigger: "manual".into(),
+            schedule_type: None,
+            interval_minutes: None,
+            daily_time: None,
+            weekly_day: None,
+            weekly_time: None,
+            guard: "none".into(),
+            nodes: vec![NodeDef {
+                id: "agent-node".into(),
+                kind: "agent".into(),
+                params: serde_json::json!({ "characterId": target, "prompt": "test" }),
+                x: 0.0,
+                y: 0.0,
+            }],
+            edges: vec![],
+            enabled: true,
+            next_run_at: None,
+        };
+        s.save_workflow(&workflow("owned", &removed.id, &retained.id)).unwrap();
+        s.save_workflow(&workflow("targeted", &retained.id, &removed.id)).unwrap();
+        s.save_workflow(&workflow("retained", &retained.id, &retained.id)).unwrap();
+
+        assert_eq!(s.delete_agent_and_workflows(&removed.id).unwrap(), 2);
+        assert!(s.get_character(&removed.id).unwrap().is_none());
+        assert_eq!(
+            s.list_workflows().unwrap().into_iter().map(|wf| wf.id).collect::<Vec<_>>(),
+            vec!["retained"],
+        );
+    }
+
+    #[test]
+    fn pet_state_mapping_is_scoped_to_one_agent_and_roundtrips() {
+        let store = temp_store();
+        let first = store.create_agent("First", "codex").unwrap();
+        let second = store.create_agent("Second", "claude").unwrap();
+        let mapping = crate::pets::StateMapping::from([
+            ("resting".into(), Some("idle".into())),
+            ("happy".into(), Some("jumping".into())),
+        ]);
+
+        store.save_pet_state_mapping(&first.id, &mapping).unwrap();
+        let restored = store.load_pet_state_mapping(&first.id).unwrap();
+        assert_eq!(restored.get("resting").cloned().flatten().as_deref(), Some("idle"));
+        assert_eq!(restored.get("happy").cloned().flatten().as_deref(), Some("jumping"));
+        assert_eq!(restored.len(), crate::pets::FOCUS_PET_STATES.len());
+        assert!(store.load_pet_state_mapping(&second.id).unwrap().is_empty());
+    }
+
+    #[test]
     fn recent_runs_ordered_and_clear() {
-        use crate::workflow_engine::model::{EdgeDef, NodeDef, WorkflowDef};
+        use crate::workflow_engine::model::{NodeDef, WorkflowDef};
         let s = temp_store();
         let cid = s.ensure_character("pet-r", "测试宠").unwrap();
         let wf = WorkflowDef {

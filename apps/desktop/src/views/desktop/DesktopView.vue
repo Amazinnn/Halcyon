@@ -11,6 +11,7 @@ import AppIcon from "../../components/AppIcon.vue";
 import SettingsPopover from "../../components/SettingsPopover.vue";
 import { restoreWindowError } from "../../lib/window-restore";
 import { ViewTrayActions } from "../../lib/view-tray-actions";
+import { focusControlPolicy } from "../../lib/focus-mode";
 
 const ui = useUiStore();
 const settings = useSettingsStore();
@@ -23,6 +24,7 @@ const menuMode = ref<"" | "url">("");
 const urlName = ref("");
 const urlValue = ref("");
 const settingsOpen = ref(false);
+const focusControls = computed(() => focusControlPolicy(ui.activeFocusMode ?? settings.focusMode, ui.focusState));
 
 // centered shortcut grid: up to 2 rows x 5 cols, centered (never touches the screen
 // edges); the + flows at the end of the last row (max 9 shortcuts).
@@ -130,7 +132,7 @@ function remove(id: string) {
 }
 
 function quit() {
-  void invoke("quit_app");
+  if (focusControls.value.quitVisible) void invoke("quit_app");
 }
 
 onMounted(async () => {
@@ -204,11 +206,11 @@ onBeforeUnmount(() => {
       <div class="task-line">{{ ui.focusSubtitle }}</div>
       <div v-if="ui.desktopLockError" class="lock-error">{{ ui.desktopLockError }}</div>
       <div v-if="ui.focusState !== 'idle' && !ui.phaseDone" class="timer-controls">
-        <button class="ctl glass" @click="ui.pause()">
+        <button v-if="focusControls.pauseVisible" class="ctl glass" @click="ui.pause()">
           <AppIcon :name="ui.timerPaused ? 'play' : 'pause'" />
           <span>{{ ui.timerPaused ? "继续" : "暂停" }}</span>
         </button>
-        <button class="ctl glass" @click="ui.skip()">
+        <button v-if="focusControls.skipVisible" class="ctl glass" @click="ui.skip()">
           <AppIcon name="next" />
           <span>跳过</span>
         </button>
@@ -290,7 +292,7 @@ onBeforeUnmount(() => {
       <button class="dock-btn" @click="settingsOpen = !settingsOpen">
         <AppIcon name="settings" /><span>设置</span>
       </button>
-      <button class="dock-btn" @click="quit">
+      <button v-if="focusControls.quitVisible" class="dock-btn" @click="quit">
         <AppIcon name="power" /><span>退出</span>
       </button>
     </footer>

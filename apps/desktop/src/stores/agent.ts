@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import type { AgentEventEnvelope, AgentState, PetReaction } from "@focus/event-schema";
+import { isAgentOwnedPetState, nextFocusPetState, type FocusPetState, type TimerPetBaseState } from "../lib/pet-state";
 
 export interface ChatMessage {
   role: "agent" | "user";
@@ -66,46 +67,25 @@ export interface AgentStatus {
 
 export type AgentPhase = "idle" | "connecting" | "streaming" | "completed" | "error";
 
-export function stateToAnimation(state: AgentState): string {
-  switch (state) {
-    case "thinking":
-    case "reading":
-    case "searching":
-      return "thinking";
-    case "editing":
-    case "running":
-    case "testing":
-      return "editing";
-    case "waiting_permission":
-    case "waiting_user":
-      return "waiting";
-    case "success":
-      return "success";
-    case "error":
-    case "warning":
-      return "error";
-    default:
-      return "idle";
-  }
-}
-
 export const useAgentStore = defineStore("agent", {
   state: () => ({
     // M5 (ADR-0022): one Agent per character; the current one is selected
     // from the dropdown. Messages/session state belong to the current Agent.
     characterId: "" as string,
-    characters: [] as { id: string; name: string; tool: "codex" | "claude" }[],
+    characters: [] as { id: string; name: string; tool: "codex" | "claude"; petPackId?: string | null }[],
     agentId: "focus-codex",
     sessionId: "",
     state: "idle" as AgentState,
-    animation: "idle",
+    petState: "resting" as FocusPetState,
+    timerPetBase: "resting" as TimerPetBaseState,
     messages: [] as ChatMessage[],
     // Workflow outcomes are not conversation history. Keep only results that
     // arrived while their target Agent was not selected, then consume them on
     // that Agent's next selection.
     pendingWorkflowResults: {} as Record<string, WorkflowAgentResult[]>,
     tools: [] as { tool: string; summary: string; status: "started" | "completed" }[],
-    bubble: null as { text: string; priority: string; expiresAt: number } | null,
+    bubble: null as { id: number; text: string; priority: string } | null,
+    _bubbleSequence: 0,
     reaction: null as PetReaction | null,
     lastEvent: null as AgentEventEnvelope | null,
     provider: "codex" as "codex" | "claude",
@@ -119,10 +99,11 @@ export const useAgentStore = defineStore("agent", {
     errorMessage: "",
     characterName: "对话",
     initialized: false,
+    _happyTimer: null as ReturnType<typeof setTimeout> | null,
   }),
   actions: {
     showBubble(text: string, priority = "high") {
-      this.bubble = { text, priority, expiresAt: Date.now() + 5000 };
+      this.bubble = { id: ++this._bubbleSequence, text, priority };
     },
     persistVisibleHistory() {
       if (!this.characterId) return;
@@ -158,12 +139,17 @@ export const useAgentStore = defineStore("agent", {
       // characterId empty and failing later with "角色不存在".
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const chars = await invoke<{ id: string; name: string; tool: "codex" | "claude" }[]>("characters_list");
+          const chars = await invoke<{ id: string; name: string; tool: "codex" | "claude"; petPackId?: string | null }[]>("characters_list");
           this.characters = chars;
           if (chars.length) {
-            // M5 (ADR-0022): restore the last-selected Agent, else pick first.
+            // The persisted desktop identity is authoritative. Browser storage
+            // is only a fallback for settings written before v1.13.
+            const bootstrap = await invoke<{ currentAgentId?: string | null }>("get_bootstrap");
             const saved = localStorage.getItem("focus-agent");
-            const target = saved && chars.some((c) => c.id === saved) ? saved : chars[0].id;
+            const persisted = bootstrap?.currentAgentId;
+            const target = persisted && chars.some((c) => c.id === persisted)
+              ? persisted
+              : saved && chars.some((c) => c.id === saved) ? saved : chars[0].id;
             if (target !== this.characterId) {
               await this.selectCharacter(target, false);
             } else {
@@ -182,6 +168,10 @@ export const useAgentStore = defineStore("agent", {
     /** M5 (ADR-0022): switch Agent = replace the dialog context immediately. */
     async selectCharacter(id: string, broadcast = true) {
       if (!id || id === this.characterId) return;
+      if (this._happyTimer) {
+        clearTimeout(this._happyTimer);
+        this._happyTimer = null;
+      }
       this.characterId = id;
       // M5: remember the choice across restarts.
       localStorage.setItem("focus-agent", id);
@@ -191,11 +181,17 @@ export const useAgentStore = defineStore("agent", {
       this.tools = [];
       this.phase = "idle";
       this.errorMessage = "";
+      this.bubble = null;
+      this.reaction = null;
+      this.lastEvent = null;
+      this.state = "idle";
+      this.petState = this.timerPetBase;
       const pendingForSelection = this.pendingWorkflowResults[id] ?? [];
-      const pendingLatest = pendingForSelection[pendingForSelection.length - 1];
-      if (pendingLatest) this.showBubble(pendingLatest.text, "normal");
       const c = this.characters.find((x) => x.id === id);
       this.characterName = c?.name ?? "对话";
+      // Agent selection is also the desktop identity selection.
+      void invoke("agent_set_current", { characterId: id }).catch(() => undefined);
+      void emit("pet:changed", {});
       await this.refreshStatus(id);
       await this.refreshSkills(id);
       this.restoreVisibleHistory();
@@ -205,8 +201,6 @@ export const useAgentStore = defineStore("agent", {
       delete this.pendingWorkflowResults[id];
       for (const result of pending) this.appendWorkflowResult(result);
       if (pending.length) this.persistVisibleHistory();
-      const latest = pending[pending.length - 1];
-      if (latest) this.showBubble(latest.text, "normal");
       if (broadcast) await emit("agent:selected", { characterId: id });
     },
     async init() {
@@ -222,14 +216,17 @@ export const useAgentStore = defineStore("agent", {
       await listen<{ text: string; priority: string; agentId?: string }>("bubble:requested", (e) => {
         if (e.payload.agentId && e.payload.agentId !== this.characterId) return;
         this.bubble = {
+          id: ++this._bubbleSequence,
           text: e.payload.text,
           priority: e.payload.priority,
-          expiresAt: Date.now() + 4000,
         };
       });
       await listen<{ state: AgentState; animation: string }>("pet:state_changed", (e) => {
         this.state = e.payload.state;
-        this.animation = e.payload.animation;
+      });
+      await listen<{ state: "idle" | "focus" | "rest" }>("focus:state_changed", (e) => {
+        this.timerPetBase = e.payload.state === "focus" ? "focusing" : "resting";
+        if (!isAgentOwnedPetState(this.petState)) this.petState = this.timerPetBase;
       });
       await listen<AgentStatus>("agent:status", (e) => {
         if (e.payload.characterId !== this.characterId) return;
@@ -375,6 +372,17 @@ export const useAgentStore = defineStore("agent", {
         this.restoreVisibleHistory();
       }
     },
+    async createCharacter(name: string, provider: "codex" | "claude") {
+      const row = await invoke<{ id: string }>("agent_create", { name, provider });
+      await this.refreshCharacters();
+      await this.selectCharacter(row.id);
+      return row.id;
+    },
+    async setCurrentCharacter(id: string) {
+      await invoke("agent_set_current", { characterId: id });
+      await this.selectCharacter(id);
+      await emit("pet:changed", {});
+    },
     newThread() {
       this.currentThreadId = null;
       this.sessionId = "";
@@ -415,8 +423,8 @@ export const useAgentStore = defineStore("agent", {
           break;
         case "status.changed":
           this.state = ev.state;
-          this.animation = stateToAnimation(ev.state);
-          this.reaction = { agentId: env.agentId, state: ev.state, animation: this.animation };
+          this.applyProviderPetState(ev.state);
+          this.reaction = { agentId: env.agentId, state: ev.state, animation: this.petState };
           if (["thinking", "reading", "searching", "editing", "running", "testing", "waiting_permission", "waiting_user"].includes(ev.state)) {
             this.phase = "streaming";
           } else if (ev.state === "success") {
@@ -449,6 +457,21 @@ export const useAgentStore = defineStore("agent", {
           this.errorMessage = `Agent 错误：${ev.message}`;
           this.pushSystem(`错误：${ev.message}`);
           break;
+      }
+    },
+    applyProviderPetState(state: AgentState) {
+      if (state === "idle" && this._happyTimer && this.petState === "happy") return;
+      if (this._happyTimer) {
+        clearTimeout(this._happyTimer);
+        this._happyTimer = null;
+      }
+      const next = nextFocusPetState(this.timerPetBase, state, this.petState);
+      this.petState = next;
+      if (state === "success") {
+        this._happyTimer = setTimeout(() => {
+          this.petState = "waiting";
+          this._happyTimer = null;
+        }, 5000);
       }
     },
     appendDelta(text: string) {

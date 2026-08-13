@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit as emitEvent } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -8,36 +8,39 @@ import { useAgentStore } from "../stores/agent";
 import { useMusicStore } from "../stores/music";
 import { useWorkflowStore } from "../stores/workflow";
 import AppIcon from "./AppIcon.vue";
+import SettingsHelp from "./SettingsHelp.vue";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const settings = useSettingsStore();
 const agent = useAgentStore();
 const music = useMusicStore();
 const workflow = useWorkflowStore();
-const agentWorkspace = ref("");
-const petInfo = ref<{ id: string; displayName: string; description: string } | null>(null);
-const pets = ref<{ id: string; displayName: string; description: string }[]>([]);
 const petImporting = ref(false);
 const petError = ref("");
+interface ActivePetInfo {
+  id: string;
+  horizontalCorrection: number;
+  qualityWarnings: string[];
+}
+const activePetInfo = ref<ActivePetInfo | null>(null);
+const correctionSaving = ref(false);
 const musicFolder = ref("");
 
 const version = "v1.12.10";
 const wallpaperUrl = ref("");
 const acrylicOn = ref(true);
 
-// local mirrors for editors
-const taskName = ref("");
-const taskMinutes = ref<number | null>(null);
-const blackText = ref("");
-const whiteText = ref("");
-const runningApps = ref<string[]>([]);
+const apps = ref<string[]>([]);
+const appQuery = ref("");
 const appsOpen = ref(false);
-
-const PRESETS = [
-  { label: "25/5", focus: 25, rest: 5 },
-  { label: "50/10", focus: 50, rest: 10 },
-  { label: "90/15", focus: 90, rest: 15 },
-];
+const newAgentName = ref("");
+const newAgentProvider = ref<"codex" | "claude">("codex");
+const stateMappingOpen = ref(false);
+const petAnimations = ref<string[]>([]);
+const petStateMapping = ref<Record<string, string | null>>({});
+const PET_STATES = ["resting", "focusing", "working", "waiting", "happy", "troubled"] as const;
+const selectedApps = computed(() => new Set(settings.distractionApps));
+const filteredApps = computed(() => apps.value.filter((name) => name.toLowerCase().includes(appQuery.value.trim().toLowerCase())));
 
 async function load() {
   await settings.load();
@@ -45,14 +48,8 @@ async function load() {
   acrylicOn.value = !!b.acrylicEnabled;
   const p = await invoke<string | null>("get_wallpaper");
   wallpaperUrl.value = p ? convertFileSrc(p) : "";
-  taskName.value = settings.currentTask?.name ?? "";
-  taskMinutes.value = settings.currentTask?.estimatedMinutes ?? null;
-  blackText.value = settings.distractionApps.join("\n");
-  whiteText.value = settings.allowedApps.join("\n");
   await agent.refreshStatus();
-  agentWorkspace.value = agent.workspaceDir;
   await refreshAgents();
-  await refreshPets();
   musicFolder.value = music.folder ?? (await invoke<string | null>("music_get_folder")) ?? "";
   await workflow.init();
   await workflow.refreshRecentRuns(20);
@@ -88,73 +85,21 @@ async function toggleAcrylic() {
   }
 }
 
-function applyPreset(p: { focus: number; rest: number }) {
-  void settings.setFocusDurations(p.focus, p.rest);
-}
-
-async function saveTask() {
-  const name = taskName.value.trim();
-  if (!name) return;
-  const id = settings.currentTask?.id ?? `task-${Date.now()}`;
-  const saved = await settings.saveTask({
-    id,
-    name,
-    estimatedMinutes: taskMinutes.value ? Math.max(1, taskMinutes.value) : null,
-  });
-  await settings.setCurrentTask(saved.id);
-  taskName.value = saved.name;
-}
-
 async function toggleApps() {
   appsOpen.value = !appsOpen.value;
-  if (appsOpen.value && runningApps.value.length === 0) {
+  if (appsOpen.value && apps.value.length === 0) {
     try {
-      runningApps.value = await invoke<string[]>("list_running_apps");
+      apps.value = await invoke<string[]>("list_apps_catalog");
     } catch (e) {
       console.error("[settings] list_running_apps failed", e);
     }
   }
 }
 
-async function addToList(list: "black" | "white", name: string) {
-  const current = list === "black" ? blackText.value : whiteText.value;
-  const lines = current
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (lines.includes(name)) return;
-  lines.push(name);
-  if (list === "black") blackText.value = lines.join("\n");
-  else whiteText.value = lines.join("\n");
-  await saveLists();
-}
-
-async function saveLists() {
-  const black = blackText.value
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const white = whiteText.value
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  await settings.setDistractionLists(black, white);
-}
-
-function onPauseSupervision() {
-  void settings.pauseSupervision(30);
-}
-
-
-async function applyAgentWorkspace() {
-  try {
-    await agent.setWorkspaceDir(agentWorkspace.value.trim());
-  } catch (e) {
-    console.error("[settings] set workspace failed", e);
-  }
-}
-function onResumeSupervision() {
-  void settings.resumeSupervision();
+async function setAppList(name: string, selected: boolean) {
+  const black = settings.distractionApps.filter((x) => x !== name);
+  if (selected) black.push(name);
+  await settings.setDistractionLists(black);
 }
 
 async function chooseMusicFolder() {
@@ -162,23 +107,14 @@ async function chooseMusicFolder() {
   musicFolder.value = music.folder ?? "";
 }
 
-async function refreshPets() {
-  try {
-    petInfo.value = await invoke<{ id: string; displayName: string; description: string } | null>("pet_active");
-    pets.value = await invoke<{ id: string; displayName: string; description: string }[]>("pet_list_packs");
-  } catch (e) {
-    console.error("[settings] pet list failed", e);
-  }
-}
-
-async function importPetPack() {
+async function importPetPack(characterId: string) {
   petError.value = "";
   const sel = await open({ directory: true });
   if (!sel) return;
   petImporting.value = true;
   try {
-    await invoke("pet_import_pack", { dir: sel });
-    await refreshPets();
+    await invoke("pet_import_pack", { dir: sel, characterId });
+    await refreshAgents();
     void emitEvent("pet:changed", {});
   } catch (e) {
     petError.value = String(e);
@@ -187,22 +123,11 @@ async function importPetPack() {
   }
 }
 
-async function activatePet(id: string) {
+async function removePet(characterId: string) {
   petError.value = "";
   try {
-    await invoke("pet_activate", { id });
-    await refreshPets();
-    void emitEvent("pet:changed", {});
-  } catch (e) {
-    petError.value = String(e);
-  }
-}
-
-async function removePet(id: string) {
-  petError.value = "";
-  try {
-    await invoke("pet_remove_pack", { id });
-    await refreshPets();
+    await invoke("pet_remove_pack", { characterId });
+    await refreshAgents();
     void emitEvent("pet:changed", {});
   } catch (e) {
     petError.value = String(e);
@@ -210,12 +135,78 @@ async function removePet(id: string) {
 }
 
 // M5 (ADR-0022): Agent management — list/delete/open workspace.
-const agentList = ref<{ id: string; name: string; tool: "codex" | "claude" }[]>([]);
+const agentList = ref<{ id: string; name: string; tool: "codex" | "claude"; petPackId?: string | null }[]>([]);
 const agentError = ref("");
 
 async function refreshAgents() {
   await agent.refreshCharacters();
-  agentList.value = agent.characters.map((c) => ({ id: c.id, name: c.name, tool: c.tool }));
+  agentList.value = agent.characters.map((c) => ({ id: c.id, name: c.name, tool: c.tool, petPackId: c.petPackId }));
+  await refreshStateMapping();
+}
+
+async function refreshStateMapping() {
+  const current = agent.characters.find((entry) => entry.id === agent.characterId);
+  if (!current?.petPackId) {
+    stateMappingOpen.value = false;
+    petAnimations.value = [];
+    petStateMapping.value = {};
+    activePetInfo.value = null;
+    return;
+  }
+  try {
+    const info = await invoke<(ActivePetInfo & { animations: Array<{ id: string }> }) | null>("pet_active");
+    activePetInfo.value = info;
+    petAnimations.value = info?.animations.map((animation) => animation.id) ?? [];
+    petStateMapping.value = await invoke<Record<string, string | null>>("pet_get_state_mapping", {
+      characterId: current.id,
+    });
+  } catch (error) {
+    petError.value = String(error);
+  }
+}
+
+async function setPetCorrection(value: number) {
+  if (!agent.characterId || correctionSaving.value) return;
+  correctionSaving.value = true;
+  petError.value = "";
+  try {
+    activePetInfo.value = await invoke<ActivePetInfo>("pet_set_horizontal_correction", {
+      characterId: agent.characterId,
+      horizontalCorrection: value,
+    });
+  } catch (error) {
+    petError.value = String(error);
+    await refreshStateMapping();
+  } finally {
+    correctionSaving.value = false;
+  }
+}
+
+async function setPetStateMapping(state: string, value: string) {
+  if (!agent.characterId) return;
+  const next = { ...petStateMapping.value, [state]: value || null };
+  petStateMapping.value = next;
+  try {
+    await invoke("pet_save_state_mapping", { characterId: agent.characterId, mapping: next });
+    void emitEvent("pet:changed", {});
+  } catch (error) {
+    petError.value = String(error);
+    await refreshStateMapping();
+  }
+}
+
+async function createAgent() {
+  agentError.value = "";
+  try {
+    await agent.createCharacter(newAgentName.value, newAgentProvider.value);
+    newAgentName.value = "";
+    await refreshAgents();
+  } catch (e) { agentError.value = String(e); }
+}
+
+async function setCurrentAgent(id: string) {
+  try { await agent.setCurrentCharacter(id); await settings.load(); await refreshAgents(); }
+  catch (e) { agentError.value = String(e); }
 }
 
 async function setAgentProvider(id: string, provider: "codex" | "claude") {
@@ -238,7 +229,10 @@ function onAgentProviderChange(id: string, event: Event) {
 
 async function deleteAgent(id: string) {
   agentError.value = "";
-  if (!window.confirm("删除该 Agent？将连带删除其工作区目录（含 AGENTS.md 与会话记录）。")) return;
+  let workflows = 0;
+  try { workflows = await invoke<number>("agent_workflow_reference_count", { characterId: id }); }
+  catch (e) { agentError.value = String(e); return; }
+  if (!window.confirm(`删除该 Agent？将删除其桌宠和 ${workflows} 个关联工作流，但保留工作区文件。`)) return;
   try {
     await invoke("agent_delete", { characterId: id });
     if (id === agent.characterId) {
@@ -282,7 +276,7 @@ onMounted(load);
 
     <section class="group">
       <h4>专注锁定模式</h4>
-      <p class="group-note">只影响本轮专注的锁定强度；开始后固定，暂停会完全解锁。</p>
+      <SettingsHelp summary="只影响本轮锁定强度；开始后固定，暂停会完全解锁。" detail="轻度不锁定；标准拦截系统切换快捷键；学霸还会隐藏桌面与任务栏。休息和自然结束会恢复桌面。" />
       <div class="mode-help">
         <p><strong>轻度：</strong>不锁定桌面，任务栏、桌面与快捷键均可使用。</p>
         <p><strong>标准：</strong>拦截 Win、Alt+Tab、Alt+F4 与 Ctrl+Esc，保留任务栏和桌面。</p>
@@ -292,7 +286,7 @@ onMounted(load);
 
     <section class="group">
       <h4>壁纸</h4>
-      <p class="group-note">导入后作为主界面背景；支持 PNG、JPG、JPEG、WebP。</p>
+      <SettingsHelp summary="导入后作为主界面背景；支持 PNG、JPG、JPEG、WebP。" detail="Focus 会复制所选图片到本机数据目录；重置只恢复默认背景，不影响其他设置。" />
       <div class="row">
         <div class="btns">
           <button @click="pickWallpaper">导入</button>
@@ -304,7 +298,7 @@ onMounted(load);
 
     <section class="group">
       <h4>外观</h4>
-      <p class="group-note">控制毛玻璃、提示音与顶条显示，不改变专注计时或锁定规则。</p>
+      <SettingsHelp summary="控制毛玻璃、提示音与顶条显示，不改变计时或锁定规则。" detail="顶条只展示当前计时和 Agent 状态。毛玻璃仅影响内部浮窗的视觉效果。" />
       <div class="row">
         <span class="label">毛玻璃</span>
         <button class="switch" :class="{ on: acrylicOn }" @click="toggleAcrylic">
@@ -329,10 +323,7 @@ onMounted(load);
 
     <section class="group">
       <h4>计时（下一轮生效）</h4>
-      <p class="group-note">设置下一轮的专注与休息时长，不会中断正在进行的计时。</p>
-      <div class="row presets">
-        <button v-for="p in PRESETS" :key="p.label" @click="applyPreset(p)">{{ p.label }}</button>
-      </div>
+      <SettingsHelp summary="手动设置下一轮专注与休息时长，不会中断当前计时。" detail="专注可设为 1-240 分钟，休息可设为 1-120 分钟；没有内置预设。" />
       <div class="row">
         <span class="label">专注</span>
         <input v-model.number="settings.focusMinutes" type="number" min="1" max="240" class="num-input" />
@@ -349,105 +340,46 @@ onMounted(load);
     </section>
 
     <section class="group">
-      <h4>任务</h4>
-      <p class="group-note">为当前专注标记任务名称和可选预计时长，便于回看。</p>
-      <div class="row">
-        <span class="label">名称</span>
-        <input v-model="taskName" type="text" class="text-input" placeholder="当前任务" />
-      </div>
-      <div class="row">
-        <span class="label">预计</span>
-        <input v-model.number="taskMinutes" type="number" min="1" max="600" class="num-input" placeholder="分钟" />
-      </div>
-      <div class="row">
-        <button class="btn" @click="saveTask">保存任务</button>
-      </div>
-    </section>
-
-    <section class="group">
-      <h4>监督</h4>
-      <p class="group-note">发现分心应用时只提醒，不会强制关闭应用；清单每行一个名称。</p>
-      <div class="row">
-        <span class="label">启用</span>
-        <button class="switch" :class="{ on: settings.supervisionEnabled }" @click="settings.setSupervisionEnabled(!settings.supervisionEnabled)">
-          {{ settings.supervisionEnabled ? "开" : "关" }}
-        </button>
-      </div>
-      <div class="row">
-        <span class="label">暂停</span>
-        <button v-if="!settings.supervisionPaused" class="btn" @click="onPauseSupervision">暂停 30 分钟</button>
-        <button v-else class="btn" @click="onResumeSupervision">恢复监督</button>
-      </div>
-      <div class="row col">
-        <span class="label">分心应用（每行一个，支持 *通配*）</span>
-        <textarea v-model="blackText" rows="3" class="ta"></textarea>
-      </div>
-      <div class="row col">
-        <span class="label">豁免应用（每行一个）</span>
-        <textarea v-model="whiteText" rows="2" class="ta"></textarea>
-      </div>
+      <h4>应用提醒</h4>
+      <SettingsHelp summary="黑名单应用在专注时只提醒，不会强制关闭；未选择时不监测。" detail="列表合并已安装程序和当前可见窗口。匹配使用精确 exe 名称，不支持正则或通配符。" />
       <div class="row col">
         <button class="btn" @click="toggleApps">
-          {{ appsOpen ? "收起运行中的应用" : "从运行中的应用选择（点此展开）" }}
+          {{ appsOpen ? "收起应用列表" : `管理应用（已选 ${selectedApps.size}）` }}
         </button>
         <div v-if="appsOpen" class="app-list">
-          <div v-for="name in runningApps" :key="name" class="app-row">
+          <input v-model="appQuery" class="text-input" placeholder="搜索应用或 exe 名" />
+          <div v-for="name in filteredApps" :key="name" class="app-row">
             <span class="app-name" :title="name">{{ name }}</span>
             <span class="app-actions">
-              <button class="mini" title="加入分心（黑名单）" @click="addToList('black', name)">黑</button>
-              <button class="mini" title="加入豁免（白名单）" @click="addToList('white', name)">白</button>
+              <button class="mini" :class="{ on: settings.distractionApps.includes(name) }" title="黑名单应用" @click="setAppList(name, !settings.distractionApps.includes(name))">黑名单</button>
             </span>
           </div>
         </div>
       </div>
-      <div class="row">
-        <button class="btn" @click="saveLists">保存清单</button>
-      </div>
     </section>
 
-
-     <section class="group">
-      <h4>宠物</h4>
-      <p class="group-note">手动导入含 pet.json + spritesheet.webp/png 的文件夹（1536×1872）；生成与质量标准见 README。</p>
-      <div class="row">
-        <span class="label">当前</span>
-        <span class="ok">{{ petInfo?.displayName ?? "内置占位" }}</span>
-      </div>
-      <div class="row">
-        <button class="btn" :disabled="petImporting" @click="importPetPack">
-          {{ petImporting ? "导入中…" : "导入宠物包" }}
-        </button>
-      </div>
-      <div v-if="petError" class="err">{{ petError }}</div>
-      <div v-if="pets.length" class="pack-list">
-        <div v-for="p in pets" :key="p.id" class="pack-row">
-          <button class="pack-name" :class="{ active: petInfo?.id === p.id }" @click="activatePet(p.id)">
-            {{ p.displayName }}
-          </button>
-          <button class="mini" title="删除" @click="removePet(p.id)">删除</button>
-        </div>
-      </div>
-      <div class="row">
-        <span class="label">背景淡化</span>
-        <button class="switch" :class="{ on: settings.petBgFade }" @click="settings.setPetBgFade(!settings.petBgFade)">
-          {{ settings.petBgFade ? "开" : "关" }}
-        </button>
-      </div>
-    </section>
 
     <section class="group">
       <h4>Agent</h4>
-      <p class="group-note">每只宠物固定使用 Codex 或 Claude；登录由对应 CLI 自行管理。</p>
+      <SettingsHelp summary="每个 Agent 只能有一个桌宠；无桌宠时桌面不显示宠物。" detail="导入官方 Hatch Pet 原样 pet.json，或 format 为 focus-hatch-pet 的 Focus 包。图集路径、网格与单元尺寸都由 JSON 声明；包复制到 Agent 工作区。Provider 登录由 Codex 或 Claude CLI 自行管理。" />
       <div v-if="agentError" class="err">{{ agentError }}</div>
+      <div v-if="petError" class="err">{{ petError }}</div>
+      <div class="row">
+        <input v-model="newAgentName" class="text-input" placeholder="Agent 名称" @keydown.enter="createAgent" />
+        <select v-model="newAgentProvider" class="provider-select"><option value="codex">Codex</option><option value="claude">Claude</option></select>
+        <button class="mini" @click="createAgent">添加</button>
+      </div>
       <div v-if="agentList.length" class="pack-list">
         <div v-for="a in agentList" :key="a.id" class="pack-row">
-          <span class="pack-name" :class="{ active: a.id === agent.characterId }">{{ a.name }}</span>
+          <button class="pack-name" :class="{ active: a.id === settings.currentAgentId }" @click="setCurrentAgent(a.id)">{{ a.name }}</button>
           <select :value="a.tool" class="provider-select" @change="onAgentProviderChange(a.id, $event)">
             <option value="codex">Codex</option>
             <option value="claude">Claude</option>
           </select>
-          <button class="mini" title="打开工作区（编辑 AGENTS.md）" @click="openWorkspace(a.id)">打开工作区</button>
-          <button class="mini" title="删除（连带删工作区）" @click="deleteAgent(a.id)">删除</button>
+          <button class="mini" title="打开工作区（编辑 AGENTS.md）" @click="openWorkspace(a.id)">工作区</button>
+          <button class="mini" :disabled="petImporting" @click="importPetPack(a.id)">{{ a.petPackId ? "替换宠物" : "导入宠物" }}</button>
+          <button v-if="a.petPackId" class="mini" @click="removePet(a.id)">删除宠物</button>
+          <button class="mini" title="删除 Agent 与关联工作流" @click="deleteAgent(a.id)">删除</button>
         </div>
       </div>
       <div v-else class="row"><span class="label">无 Agent</span></div>
@@ -455,18 +387,43 @@ onMounted(load);
         <span class="label">状态</span>
         <span :class="agent.ready ? 'ok' : 'err'">{{ agent.ready ? `${agent.provider} ready` : `${agent.provider} unavailable` }}</span>
       </div>
-      <div class="row">
-        <span class="label">工作区</span>
-        <input v-model="agentWorkspace" type="text" class="text-input" placeholder="默认用户主目录" />
+      <div class="row"><span class="label">桌宠背景淡化</span><button class="switch" :class="{ on: settings.petBgFade }" @click="settings.setPetBgFade(!settings.petBgFade)">{{ settings.petBgFade ? "开" : "关" }}</button></div>
+      <div v-if="activePetInfo" class="pet-correction">
+        <div class="row">
+          <span class="label">宽高校正 {{ activePetInfo.horizontalCorrection.toFixed(2) }}</span>
+          <input
+            class="correction-range"
+            type="range"
+            min="0.75"
+            max="1.33"
+            step="0.01"
+            :disabled="correctionSaving"
+            :value="activePetInfo.horizontalCorrection"
+            @change="setPetCorrection(Number(($event.target as HTMLInputElement).value))"
+          />
+          <button class="mini" :disabled="correctionSaving || activePetInfo.horizontalCorrection === 1" @click="setPetCorrection(1)">恢复</button>
+        </div>
+        <p v-for="warning in activePetInfo.qualityWarnings" :key="warning" class="pet-warning">{{ warning }}</p>
       </div>
-      <div class="row">
-        <button class="btn" @click="applyAgentWorkspace">应用工作区</button>
+      <div v-if="petAnimations.length" class="state-mapping">
+        <button class="mapping-toggle" @click="stateMappingOpen = !stateMappingOpen">
+          宠物状态映射 <span>{{ stateMappingOpen ? "收起" : "展开" }}</span>
+        </button>
+        <div v-if="stateMappingOpen" class="mapping-list">
+          <label v-for="state in PET_STATES" :key="state" class="mapping-row">
+            <span>{{ state }}</span>
+            <select :value="petStateMapping[state] ?? ''" @change="setPetStateMapping(state, ($event.target as HTMLSelectElement).value)">
+              <option value="">未指定</option>
+              <option v-for="animation in petAnimations" :key="animation" :value="animation">{{ animation }}</option>
+            </select>
+          </label>
+        </div>
       </div>
     </section>
 
     <section class="group">
       <h4>音乐</h4>
-      <p class="group-note">选择本地音乐文件夹后扫描播放；支持 MP3、FLAC、M4A。</p>
+      <SettingsHelp summary="选择本地音乐文件夹后扫描播放；支持 MP3、FLAC、M4A。" detail="Focus 仅读取该文件夹中的可播放曲目；更换文件夹不会删除原始音乐文件。" />
       <div class="row">
         <span class="label">文件夹</span>
         <span class="text-input folder-path">{{ musicFolder || "未选择" }}</span>
@@ -478,7 +435,7 @@ onMounted(load);
 
     <section class="group">
       <h4>运行记录</h4>
-      <p class="group-note">保留最近的工作流执行结果；清空只删除这些记录，不删除工作流。</p>
+      <SettingsHelp summary="保留最近的工作流执行结果；清空不会删除工作流。" detail="运行记录用于确认日程的成功、失败或取消状态，不包含完整聊天内容。" />
       <div v-if="!workflow.recentRuns.length" class="row">
         <span class="label">暂无工作流运行记录</span>
       </div>
@@ -648,5 +605,14 @@ onMounted(load);
   flex: 1; border: 1px solid var(--glass-border); background: #101a15;
   color: var(--text-hi); border-radius: var(--r-sm); padding: 4px 8px; font-size: 12px;
 }
+.state-mapping { display: flex; flex-direction: column; gap: 5px; }
+.mapping-toggle { display: flex; justify-content: space-between; border: 0; background: transparent; padding: 4px 0; color: var(--text-mid); font: inherit; font-size: 12px; cursor: pointer; }
+.mapping-toggle span { color: var(--accent-bright); }
+.mapping-list { display: flex; flex-direction: column; gap: 4px; padding: 6px; background: var(--glass-strong); border: 1px solid var(--glass-border); border-radius: var(--r-sm); }
+.mapping-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-mid); font-size: 11px; }
+.mapping-row select { min-width: 122px; border: 1px solid var(--glass-border); border-radius: var(--r-sm); background: #101a15; color: var(--text-hi); padding: 2px 5px; font: inherit; }
+.pet-correction { display: flex; flex-direction: column; gap: 4px; }
+.correction-range { flex: 1; min-width: 72px; accent-color: var(--accent); }
+.pet-warning { margin: 0; color: var(--text-low); font-size: 10px; line-height: 1.4; }
 
 </style>

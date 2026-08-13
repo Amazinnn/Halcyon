@@ -16,3 +16,13 @@ export function desktopLockForFocus(mode: FocusMode): DesktopLockMode {
     case "scholar": return "strict";
   }
 }
+
+/** Controls that must stay unavailable during an active work phase. */
+export function focusControlPolicy(mode: FocusMode, state: string) {
+  const active = state === "focus";
+  return {
+    quitVisible: !(active && mode !== "light"),
+    pauseVisible: !(active && mode === "scholar"),
+    skipVisible: !(active && mode === "scholar"),
+  };
+}

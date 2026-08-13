@@ -24,6 +24,22 @@ Focus Desktop: a local focus desktop + agent pet system for Windows (Tauri 2 + V
 5. Don't modify, move, or renumber `local-focus-desktop-agent-design-v0.2.md`; it stays in place with its section numbering (append new sections at the end only if ever needed).
 6. Don't add or allow a window to change size without accounting for the size-dependent effects (grid snap, drag/resize glow, layout, typography) - window size affects all of them.
 
+## OpenSpec Workflow
+
+For every new product behavior, defect fix, or important refactor, use OpenSpec
+after appending the verbatim request: explore, propose, apply, then archive.
+Codex invokes `$openspec-explore`, `$openspec-propose`, `$openspec-apply-change`,
+and `$openspec-archive-change`; Claude Code invokes `/opsx:explore`,
+`/opsx:propose`, `/opsx:apply`, and `/opsx:archive`.
+
+- `openspec/changes/` is the in-flight proposal, delta-spec, design, and task
+  record; `openspec/specs/` contains archived behavior specs.
+- Existing `docs/requirements-verbatim.md`, `docs/decisions/`,
+  `docs/evals/`, and `docs/production-incidents.md` remain the authority for
+  user wording, architecture decisions, acceptance evidence, and incidents.
+- Do not backfill the existing product into OpenSpec. Start with the next new
+  change, and archive only after its Eval and required manual acceptance pass.
+
 ## Environment pitfalls (Don't ...)
 
 - Don't pipe Chinese text through PowerShell to native processes (the us-ascii pipe turns it into `?`); write Chinese files with .NET `WriteAllText` (UTF-8, no BOM).

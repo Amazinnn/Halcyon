@@ -14,17 +14,45 @@
 
 状态只能为 `Open`、`Fixed pending verification`、`Verified` 或 `Accepted limitation`。`Fixed pending verification` 不等于用户验收通过。
 
-## 统计（2026-08-11 当前）
+## 统计（2026-08-13 当前）
 
 | 维度 | 统计 |
 | --- | --- |
-| 总事故数 | 19 |
-| 状态 | Open 0；Fixed pending verification 12；Verified 6；Accepted limitation 1 |
-| 严重性 | S1 2；S2 12；S3 4 |
-| 类别 | Window 7；Automation 2；Data 1；Launch 1；Pet 1；Desktop lock 2；Agent/workflow 5 |
+| 总事故数 | 21 |
+| 状态 | Open 0；Fixed pending verification 13；Verified 7；Accepted limitation 1 |
+| 严重性 | S1 2；S2 14；S3 4 |
+| 类别 | Window 7；Automation 2；Data 1；Launch 1；Pet 3；Desktop lock 2；Agent/workflow 5 |
 | 缺少自动回归覆盖 | 1（INC-005）；其余为自动或部分自动覆盖，仍可能要求 Windows 手工验收。 |
 
+2026-08-13 quality update: the pet drag freeze reported after importing a
+package is tracked as INC-020. A real release reproduction after the previous
+automated ownership change reopened it. The diagnostic reproduction confirmed
+a settings-mutex self-deadlock in pet post-placement work; the minimal lock-scope
+repair was later accepted by the user and is now Verified. Package calibration,
+mapping, and companion visual work remain a separate Pending acceptance scope.
+
 ## 记录
+
+### INC-021 Pet spritesheet does not resize with its grid host
+| 字段 | 内容 |
+| --- | --- |
+| 类别 / 严重性 / 状态 | Pet / S2 / Fixed pending verification |
+| 首次报告 | 2026-08-14, requirement #114. |
+| 影响与复现 | A loaded pet kept its previous canvas dimensions when the host switched among 1x1, 1x2, 2x1, and 2x2 grid sizes. |
+| 根因证据 | The observer was bound after asynchronous package loading and targeted the parent of a `v-if` canvas, which could be absent at binding time. Consequently host resize never invoked `fitCanvas()`. |
+| 修复 | Bind one observer to the stable `pet-stage`; after mount and package DOM commit, reconnect it and recompute CSS plus DPR backing dimensions from the same proportional metrics path. Native window, drag, tray, and brightness geometry are unchanged. |
+| 验证证据 / 回归覆盖 | A red-first `PetView.test.ts` became green. Full frontend, Rust, schema, OpenSpec, diff, and release rebuild gates passed. Windows visual verification across the four host sizes remains pending. See `docs/evals/2026-08-13-agent-first-pets-and-focus-controls.md`. |
+
+### INC-020 桌宠拖动后 Focus 无响应
+
+| 字段 | 内容 |
+| --- | --- |
+| 类别 / 严重性 / 状态 | Pet / S2 / Verified |
+| 首次报告 | 2026-08-13，需求 #107；2026-08-13 需求 #108 真实复发后重开。 |
+| 影响与复现 | 当前 Agent 导入宠物包后，拖动桌宠并松开鼠标表现正常；之后点击任何 Focus 区域会卡死。无包 Agent 还会留下空方框或透明宿主。 |
+| 根因证据 | 真实诊断依次完成 `pointerup`、poller 停止、release 领取、overlay 隐藏和 geometry 读取，最后停在 `finalize:snap:start`，未出现 `finalize:snap:complete`。该边界内 `place_window_inner()` 持有 `state.settings` 后调用气泡定位，而气泡定位再次获取同一把非重入 `std::sync::Mutex`，使 Tauri 主线程确定性自锁。 |
+| 修复 | 将吸附拆为两段：锁内只计算最终格位并在成功时持久化；锁释放后才定位原生窗口、跟随宠物气泡并置顶 topbar。占用格仍回到原格，不改变移动、overlay、样式、亮度中心、托盘或桌面锁。 |
+| 验证与回归 | 红灯测试先因缺少 `resolve_window_placement` 失败；实现后 `successful_placement_releases_settings_before_post_placement_work` 与 `occupied_placement_releases_settings_before_snap_back_work` 均通过。用户在 release 中完成“拖动、松手、点击其他 Focus 区域、再次拖动”后报告正常；完整证据见 `docs/evals/2026-08-13-pet-drag-post-release-freeze-diagnostics.md`，OpenSpec 归档为 `2026-08-13-pet-drag-post-release-freeze`。 |
 
 ### INC-001 浮窗非客户区、白边与淡蓝标题条复发
 

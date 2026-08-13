@@ -822,6 +822,11 @@ fn finish_success(
             turn,
             json!({ "type": "message.completed", "text": result }),
         );
+        let _ = tx.send(CoreEvent::BubbleRequested {
+            text: result.to_string(),
+            priority: "normal".to_string(),
+            agent_id: Some(turn.character_id.clone()),
+        });
     }
     emit_status(tx, turn, "success");
     emit_envelope(
@@ -880,13 +885,6 @@ fn finish_error(
         turn,
         json!({ "type": "session.completed", "outcome": "error" }),
     );
-    if events_visible(turn) {
-        let _ = tx.send(CoreEvent::BubbleRequested {
-            text: "Agent 出错了，已停止。".to_string(),
-            priority: "critical".to_string(),
-            agent_id: None,
-        });
-    }
     emit_status(tx, turn, "idle");
     let result = turn.last_message.lock().unwrap().clone();
     let _ = turn_done.send(TurnDone {
@@ -1419,12 +1417,17 @@ mod tests {
     fn claude_direct_stream_emits_schema_valid_events_and_final_result() {
         let (events, done) = dispatch_recorded(full_display(), recorded_success_stream());
         let mut event_types = Vec::new();
+        let mut bubbles = Vec::new();
         for event in events {
-            if let CoreEvent::AgentEvent(envelope) = event {
-                validate_envelope(&envelope).unwrap();
-                assert_eq!(envelope["agentId"], "char-claude");
-                assert_eq!(envelope["sessionId"], "claude-session-1");
-                event_types.push(envelope["event"]["type"].as_str().unwrap().to_string());
+            match event {
+                CoreEvent::AgentEvent(envelope) => {
+                    validate_envelope(&envelope).unwrap();
+                    assert_eq!(envelope["agentId"], "char-claude");
+                    assert_eq!(envelope["sessionId"], "claude-session-1");
+                    event_types.push(envelope["event"]["type"].as_str().unwrap().to_string());
+                }
+                CoreEvent::BubbleRequested { text, agent_id, .. } => bubbles.push((text, agent_id)),
+                _ => {}
             }
         }
         for expected in [
@@ -1443,6 +1446,7 @@ mod tests {
         assert_eq!(done.thread_id.as_deref(), Some("claude-session-1"));
         assert_eq!(done.status, "completed");
         assert_eq!(done.result.as_deref(), Some("处理完成。"));
+        assert_eq!(bubbles, vec![("处理完成。".into(), Some("char-claude".into()))]);
     }
 
     #[test]
@@ -1480,6 +1484,7 @@ mod tests {
             event,
             CoreEvent::AgentEvent(value) if value["event"]["type"] == "session.error"
         )));
+        assert!(events.iter().all(|event| !matches!(event, CoreEvent::BubbleRequested { .. })));
 
         let (tx, mut events) = tokio::sync::broadcast::channel::<CoreEvent>(16);
         let (done_tx, mut done_rx) = tokio::sync::broadcast::channel(8);

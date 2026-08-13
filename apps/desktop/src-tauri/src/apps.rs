@@ -4,6 +4,7 @@
 //! helper pattern as `activity::probe_foreground`; no new dependencies.
 
 use std::collections::BTreeSet;
+use std::os::windows::process::CommandExt;
 
 use windows::core::PWSTR;
 use windows::core::BOOL;
@@ -87,6 +88,31 @@ pub fn list_running_apps() -> Vec<String> {
         let _ = EnumWindows(Some(collect_window_proc), LPARAM(&mut names as *mut _ as isize));
     }
     normalize_app_list(names.into_iter().collect())
+}
+
+/// Installed desktop programs plus currently visible applications. The
+/// registry normally records DisplayIcon, whose executable basename is the
+/// stable thing the supervision engine compares against.
+pub fn list_apps_catalog() -> Vec<String> {
+    let script = r#"$roots=@('HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'); Get-ItemProperty $roots -ErrorAction SilentlyContinue | ForEach-Object { if ($_.DisplayIcon) { [IO.Path]::GetFileName(($_.DisplayIcon -replace '^"|"$','').Split(',')[0]) } } | Where-Object { $_ -and $_.ToLower().EndsWith('.exe') } | Sort-Object -Unique"#;
+    let installed = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(0x0800_0000)
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).lines().map(str::trim)
+            .filter(|line| !line.is_empty()).map(str::to_string).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let running = list_running_apps();
+    let mut all = running.clone();
+    all.extend(installed);
+    let normalized = normalize_app_list(all);
+    let mut ordered = running;
+    ordered.retain(|name| normalized.iter().any(|item| item.eq_ignore_ascii_case(name)));
+    for name in normalized {
+        if !ordered.iter().any(|item| item.eq_ignore_ascii_case(&name)) { ordered.push(name); }
+    }
+    ordered
 }
 
 #[cfg(test)]

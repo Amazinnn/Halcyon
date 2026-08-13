@@ -91,34 +91,14 @@ impl WorkflowManager {
 
     // ---- characters ----
 
-    /// One character per imported pet pack (lazy creation, ADR-0012); falls
-    /// back to a default "Focus 助手" character when no packs exist.
+    /// Ensure a usable default Agent. Agents are primary identities; pets are
+    /// optional workspace assets and never create an Agent implicitly.
     pub fn ensure_characters(&self) -> Vec<CharacterRow> {
-        let data_dir = self.app.state::<AppState>().data_dir.clone();
-        let packs = crate::pets::list(&data_dir).unwrap_or_default();
-        let mut out = Vec::new();
-        {
+        let out = {
             // v1.10.5.1 (#66): never silently return an empty character
             // list on a poisoned lock — recover the guard so defaults are ensured.
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-            for p in &packs {
-                let existed = store
-                    .list_characters()
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|character| character.pet_pack_id.as_deref() == Some(p.id.as_str()));
-                if let Ok(id) = store.ensure_character(&p.id, &p.display_name) {
-                    if !existed {
-                        let _ = store.update_character_tool(
-                            &id,
-                            initial_provider_for_pet(&p.id, &p.display_name),
-                        );
-                    }
-                    if let Ok(Some(c)) = store.get_character(&id) {
-                        out.push(c);
-                    }
-                }
-            }
+            let mut out = store.list_characters().unwrap_or_default();
             if out.is_empty() {
                 if let Ok(Some(c)) = store.get_character("char-default") {
                     out.push(c);
@@ -138,7 +118,8 @@ impl WorkflowManager {
                     out.push(row);
                 }
             }
-        }
+            out
+        };
         out
     }
 

@@ -8,17 +8,6 @@ use std::path::Path;
 
 pub const SETTINGS_FILE: &str = "settings.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Task {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub estimated_minutes: Option<u32>,
-    #[serde(default)]
-    pub bound_app: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ShortcutType {
@@ -87,22 +76,12 @@ pub struct Settings {
     pub acrylic_enabled: bool,
     #[serde(default = "default_subtitle")]
     pub focus_subtitle: String,
-    #[serde(default)]
-    pub tasks: Vec<Task>,
-    #[serde(default)]
-    pub current_task_id: Option<String>,
     #[serde(default = "default_25")]
     pub focus_minutes: u32,
     #[serde(default = "default_5")]
     pub rest_minutes: u32,
     #[serde(default)]
     pub distraction_apps: Vec<String>,
-    #[serde(default)]
-    pub allowed_apps: Vec<String>,
-    #[serde(default = "default_true")]
-    pub supervision_enabled: bool,
-    #[serde(default)]
-    pub supervision_pause_until: Option<i64>,
     #[serde(default = "default_true")]
     pub sound_enabled: bool,
     #[serde(default = "default_show_topbar")]
@@ -115,6 +94,9 @@ pub struct Settings {
     pub agent_workspace_dir: Option<String>,
     #[serde(default)]
     pub pet_pack_id: Option<String>,
+    /// v1.13: Agent owns the optional pet package; this selects the desktop identity.
+    #[serde(default)]
+    pub current_agent_id: Option<String>,
     #[serde(default = "default_true")]
     pub pet_bg_fade: bool,
     #[serde(default)]
@@ -172,20 +154,16 @@ impl Default for Settings {
             shortcuts: Vec::new(),
             acrylic_enabled: true,
             focus_subtitle: "保持节奏，阳光会照到每一片叶子".into(),
-            tasks: Vec::new(),
-            current_task_id: None,
             focus_minutes: 25,
             rest_minutes: 5,
             distraction_apps: Vec::new(),
-            allowed_apps: Vec::new(),
-            supervision_enabled: true,
-            supervision_pause_until: None,
             sound_enabled: true,
             show_topbar: "auto".into(),
             focus_mode: "standard".into(),
             agent_provider: "codex".into(),
             agent_workspace_dir: None,
         pet_pack_id: None,
+        current_agent_id: None,
         pet_bg_fade: true,
         music_folder: None,
         layout_version: None,
@@ -247,6 +225,13 @@ impl Settings {
             self.layout_version = Some(2);
             changed = true;
         }
+        // v1.13: retired task tracking, allow-listing and supervision
+        // toggles are intentionally absent from the serialized model. Saving
+        // the migrated struct removes those legacy keys from settings.json.
+        if v < 3 {
+            self.layout_version = Some(3);
+            changed = true;
+        }
         changed
     }
 
@@ -287,7 +272,7 @@ mod tests {
         assert_eq!(s.grid["music"].rows, 3);
         assert_eq!(s.grid["stats"].cols, 5);
         assert_eq!(s.grid["stats"].rows, 4);
-        assert_eq!(s.layout_version, Some(2));
+        assert_eq!(s.layout_version, Some(3));
     }
 
     #[test]
@@ -298,7 +283,7 @@ mod tests {
         s.grid.insert("workflow".into(), GridRect { col: 1, row: 5, cols: 2, rows: 2 });
         s.migrate_layout();
         assert_eq!(s.grid["workflow"].cols, 2);
-        assert_eq!(s.layout_version, Some(2));
+        assert_eq!(s.layout_version, Some(3));
     }
 
     #[test]
@@ -312,7 +297,7 @@ mod tests {
         assert_eq!(s.grid["workflow"].cols, 3);
         assert_eq!(s.grid["music"].rows, 4);
         assert_eq!(s.grid["stats"].cols, 5);
-        assert_eq!(s.layout_version, Some(2));
+        assert_eq!(s.layout_version, Some(3));
     }
 
     #[test]
@@ -320,6 +305,27 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.grid["stats"].cols, 5);
         assert_eq!(s.grid["stats"].rows, 4);
+    }
+
+    #[test]
+    fn upgrade_drops_retired_task_and_supervision_configuration() {
+        let mut legacy = serde_json::to_value(Settings::default()).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.insert("tasks".into(), serde_json::json!([{ "id": "t1", "name": "Old task" }]));
+        object.insert("currentTaskId".into(), serde_json::json!("t1"));
+        object.insert("allowedApps".into(), serde_json::json!(["code.exe"]));
+        object.insert("supervisionEnabled".into(), serde_json::json!(false));
+        object.insert("supervisionPauseUntil".into(), serde_json::json!(123));
+        object.insert("distractionApps".into(), serde_json::json!(["game.exe"]));
+        let mut settings: Settings = serde_json::from_value(legacy).unwrap();
+        assert!(settings.migrate_layout());
+        let saved = serde_json::to_value(settings).unwrap();
+        assert_eq!(saved["distractionApps"], serde_json::json!(["game.exe"]));
+        assert!(saved.get("tasks").is_none());
+        assert!(saved.get("currentTaskId").is_none());
+        assert!(saved.get("allowedApps").is_none());
+        assert!(saved.get("supervisionEnabled").is_none());
+        assert!(saved.get("supervisionPauseUntil").is_none());
     }
 
 }

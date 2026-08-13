@@ -13,7 +13,7 @@ const desktopLockQueue = createFocusLockQueue(async (mode) => {
 const focusTransitionQueue = createSerialActionQueue();
 
 export type FocusState = "idle" | "focus" | "rest";
-export type SupervisionStatus = "ok" | "drift" | "paused";
+export type SupervisionStatus = "ok" | "drift";
 
 /**
  * UI coordinator + pomodoro timer (v1.4 / v1.4.1): focus/rest both count down;
@@ -84,7 +84,7 @@ export const useUiStore = defineStore("ui", {
       });
       await listen("supervision:status", (e) => {
         const st = (e.payload as { status?: string })?.status;
-        if (st === "drift" || st === "paused" || st === "ok") this.supervisionStatus = st;
+        if (st === "drift" || st === "ok") this.supervisionStatus = st;
       });
       // Workflow node system actions (v1.10.4 #51): focus/idle/ring nodes of a
       // workflow drive the timer/sound from the Rust engine via the event bus.
@@ -172,7 +172,7 @@ export const useUiStore = defineStore("ui", {
       this.timerPaused = false;
       this.phaseDone = false;
       this.focusRemainingSec = seconds;
-      void emit("focus:state_changed", { state: "focus" });
+      void emit("focus:state_changed", { state: "focus", mode });
       this.emitTick();
       this._ticker = window.setInterval(() => this.tick(), 1000);
     },
@@ -263,6 +263,7 @@ export const useUiStore = defineStore("ui", {
     },
     async runPauseTransition() {
       if (this.focusState === "idle" || this.phaseDone) return;
+      if (this.focusState === "focus" && this.activeFocusMode === "scholar") return;
       if (this.focusState === "focus" && !this.timerPaused) {
         // Freeze the countdown before awaiting the native unlock. Otherwise a
         // final tick can race this pause and attempt to enter rest while the
@@ -286,13 +287,18 @@ export const useUiStore = defineStore("ui", {
       } else {
         this.timerPaused = !this.timerPaused;
       }
-      void emit("focus:state_changed", { state: this.focusState, paused: this.timerPaused });
+      void emit("focus:state_changed", {
+        state: this.focusState,
+        paused: this.timerPaused,
+        mode: this.focusState === "focus" ? this.activeFocusMode : null,
+      });
       this.emitTick();
     },
     async skip() {
       return focusTransitionQueue.request(() => this.runSkip());
     },
     async runSkip() {
+      if (this.focusState === "focus" && this.activeFocusMode === "scholar") return;
       if (this.focusState === "focus") {
         await this.runStartRest(true); // v1.8.2: skipped focus still records elapsed focus time
       } else {

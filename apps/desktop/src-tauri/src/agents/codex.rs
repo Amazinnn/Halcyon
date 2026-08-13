@@ -791,6 +791,13 @@ fn handle_turn_completed(
         .unwrap_or("completed");
     match status {
         "completed" => {
+            if process_events_visible(shared) && !result.trim().is_empty() {
+                let _ = tx.send(CoreEvent::BubbleRequested {
+                    text: result.clone(),
+                    priority: "normal".to_string(),
+                    agent_id: Some(shared.character_id.clone()),
+                });
+            }
             emit_status(tx, shared, "success");
             emit_envelope(
                 tx,
@@ -836,13 +843,6 @@ fn handle_turn_completed(
                 shared,
                 json!({ "type": "session.completed", "outcome": "error" }),
             );
-            if process_events_visible(shared) {
-                let _ = tx.send(CoreEvent::BubbleRequested {
-                    text: "Agent 出错了，已停止。".to_string(),
-                    priority: "critical".to_string(),
-                    agent_id: None,
-                });
-            }
             emit_status(tx, shared, "idle");
             let _ = turn_done.send(TurnDone {
                 thread_id,
@@ -1052,15 +1052,51 @@ mod tests {
         );
         assert!(shared.current_turn.lock().unwrap().is_none());
         let mut saw_error = false;
+        let mut saw_bubble = false;
         while let Ok(env) = rx.try_recv() {
-            if let CoreEvent::AgentEvent(v) = env {
-                if v["event"]["type"] == "session.error" {
+            match env {
+                CoreEvent::AgentEvent(v) if v["event"]["type"] == "session.error" => {
                     saw_error = true;
                     validate_envelope(&v).unwrap();
                 }
+                CoreEvent::BubbleRequested { .. } => saw_bubble = true,
+                _ => {}
             }
         }
         assert!(saw_error, "failed turn must emit session.error");
+        assert!(!saw_bubble, "failed direct turns stay in chat and must not open a pet bubble");
+    }
+
+    #[test]
+    fn completed_direct_turn_emits_one_targeted_final_reply_bubble() {
+        let (tx, _) = tokio::sync::broadcast::channel::<CoreEvent>(32);
+        let shared = Arc::new(Shared {
+            character_id: "char-test".into(),
+            session_id: "s1".into(),
+            current_thread: Mutex::new(Some("thread-1".into())),
+            current_turn: Mutex::new(Some("turn-1".into())),
+            turn_in_flight: Mutex::new(true),
+            last_message: Mutex::new("最终回复".into()),
+            display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
+            first_delta_sent: Mutex::new(false),
+        });
+        let (done_tx, _) = tokio::sync::broadcast::channel::<TurnDone>(8);
+        let mut events = tx.subscribe();
+
+        handle_turn_completed(
+            &tx,
+            &shared,
+            &Arc::new(done_tx),
+            &json!({ "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } }),
+        );
+
+        let bubbles = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event {
+                CoreEvent::BubbleRequested { text, agent_id, .. } => Some((text, agent_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bubbles, vec![("最终回复".into(), Some("char-test".into()))]);
     }
 
     #[test]
