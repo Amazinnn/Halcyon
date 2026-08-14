@@ -264,21 +264,6 @@ describe("direct chat stream convergence", () => {
     expect(listen).toHaveBeenCalledTimes(7);
   });
 
-  it("claims a pending bubble only after the current Agent is initialized", async () => {
-    invoke.mockImplementation(async (command: string) => {
-      if (command === "characters_list") return [{ id: "char-a", name: "小专", tool: "codex" }];
-      if (command === "get_bootstrap") return { currentAgentId: "char-a" };
-      if (command === "agent_status") return { characterId: "char-a", provider: "codex", ready: true, exePath: null, workspaceDir: "D:\\Agent" };
-      if (command === "agent_list_skills") return [];
-      if (command === "pet_bubble_claim_pending") return { deliveryId: "delivery-late", text: "晚到的回复", priority: "normal", agentId: "char-a" };
-      return undefined;
-    });
-    const agent = useAgentStore();
-    await agent.init();
-    await agent.claimPendingBubble();
-    expect(agent.bubble).toMatchObject({ text: "晚到的回复", deliveryId: "delivery-late" });
-  });
-
   it("keeps same-day visible history isolated by character and provider", async () => {
     installEventHarness();
     storage.clear();

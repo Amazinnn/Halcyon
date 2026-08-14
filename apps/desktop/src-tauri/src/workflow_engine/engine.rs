@@ -26,6 +26,15 @@ pub struct AgentDisplay {
     pub show_result: bool,
 }
 
+impl AgentDisplay {
+    /// Direct-chat adapters emit only Provider-explicit public text through
+    /// this boundary. The legacy fields stay for serialized workflow plans,
+    /// but are never interpreted as first text versus later "thinking".
+    pub const fn shows_public_text_deltas(&self) -> bool {
+        self.show_initial && self.show_thinking
+    }
+}
+
 impl Default for AgentDisplay {
     fn default() -> Self {
         Self {

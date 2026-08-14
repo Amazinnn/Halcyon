@@ -65,6 +65,13 @@ deduplication. It continues to use the accepted hidden float-host setup and
 no-activate positioning path. The user has not yet verified this rework, so
 INC-022 remains `Fixed pending verification`.
 
+2026-08-14 Requirement #120 rework: the claim-on-receipt protocol is replaced
+by a native Bubble Controller. It retains the direct-reply envelope through
+host reload until the matching ready generation confirms rendering and native
+placement/show succeeds. Read-only diagnostics now identify queue, ready, ack,
+placement, and show state. This is not Windows visual acceptance; INC-022 stays
+pending user verification.
+
 ### INC-021 Pet spritesheet does not resize with its grid host
 | 字段 | 内容 |
 | --- | --- |

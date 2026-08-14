@@ -69,7 +69,7 @@ pub struct AppState {
     /// v1.12.3: desktop-lock Drop guard kept alive for the process lifetime
     /// (a local in setup() would drop when setup returns, never restoring).
     pub _desktop_lock_guard: Mutex<Option<desktop_lock::DesktopLock>>,
-    pending_bubble: Mutex<Option<PendingBubble>>,
+    bubble_controller: Mutex<BubbleController>,
     bubble_next_id: AtomicU64,
 }
 
@@ -82,19 +82,59 @@ struct PendingBubble {
     created_at_ms: u64,
 }
 
+#[derive(Debug, Default)]
+struct BubbleController {
+    pending: Option<PendingBubble>,
+    ready_agent_id: Option<String>,
+    ready_generation: u64,
+    last_stage: &'static str,
+    last_delivery_id: Option<String>,
+}
+
+impl BubbleController {
+    fn expire(&mut self, now_ms: u64) {
+        if self.pending.as_ref().is_some_and(|bubble| now_ms.saturating_sub(bubble.created_at_ms) > PENDING_BUBBLE_TTL_MS) {
+            self.pending = None;
+            self.last_stage = "expired";
+        }
+    }
+
+    fn ready(&mut self, agent_id: &str, generation: u64, now_ms: u64) -> Option<PendingBubble> {
+        self.expire(now_ms);
+        self.ready_agent_id = Some(agent_id.to_string());
+        self.ready_generation = generation;
+        self.last_stage = "host_ready";
+        let pending = self.pending.as_ref().filter(|bubble| bubble.agent_id == agent_id).cloned();
+        if let Some(bubble) = &pending { self.last_delivery_id = Some(bubble.delivery_id.clone()); }
+        pending
+    }
+
+    fn rendered(&mut self, agent_id: &str, generation: u64, delivery_id: &str, shown: bool, now_ms: u64) -> bool {
+        self.expire(now_ms);
+        if self.ready_agent_id.as_deref() != Some(agent_id) || self.ready_generation != generation {
+            self.last_stage = "stale_render_ack";
+            return false;
+        }
+        let matches = self.pending.as_ref().is_some_and(|bubble| bubble.agent_id == agent_id && bubble.delivery_id == delivery_id);
+        if !matches {
+            self.last_stage = "unknown_render_ack";
+            return false;
+        }
+        self.last_delivery_id = Some(delivery_id.to_string());
+        self.last_stage = if shown { "shown" } else { "placement_unavailable" };
+        if shown { self.pending = None; }
+        true
+    }
+
+    fn clear_for_agent_change(&mut self) {
+        self.pending = None;
+        self.ready_agent_id = None;
+        self.last_stage = "cleared_agent_change";
+    }
+}
+
 const PENDING_BUBBLE_TTL_MS: u64 = 30_000;
 
-fn claim_pending_bubble(
-    pending: &mut Option<PendingBubble>,
-    agent_id: &str,
-    now_ms: u64,
-) -> Option<PendingBubble> {
-    let expired = pending.as_ref().map(|bubble| now_ms.saturating_sub(bubble.created_at_ms) > PENDING_BUBBLE_TTL_MS).unwrap_or(false);
-    if expired { *pending = None; }
-    if pending.as_ref().map(|bubble| bubble.agent_id == agent_id).unwrap_or(false) {
-        pending.take()
-    } else { None }
-}
 
 #[derive(Default)]
 struct FloatVisibilityGate {
@@ -308,7 +348,7 @@ pub(crate) fn occupied_rects(settings: &Settings, except: Option<&str>) -> Vec<G
 // commands
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Bootstrap {
     grid: HashMap<String, GridRect>,
@@ -898,7 +938,7 @@ fn agent_delete(app: tauri::AppHandle, character_id: String) -> Result<usize, St
         is_current
     };
     if removed_current {
-        state.pending_bubble.lock().unwrap().take();
+        state.bubble_controller.lock().unwrap().clear_for_agent_change();
         sync_pet_host_visibility(&app);
     }
     Ok(removed)
@@ -936,14 +976,14 @@ fn agent_set_current(app: tauri::AppHandle, character_id: String) -> Result<(), 
         changed
     };
     if changed {
-        state.pending_bubble.lock().unwrap().take();
+        state.bubble_controller.lock().unwrap().clear_for_agent_change();
     }
     sync_pet_host_visibility(&app);
     apply_current_pet_acrylic(&app);
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PendingBubbleView {
     delivery_id: String,
@@ -956,13 +996,16 @@ pub(crate) fn queue_bubble_for_agent(app: &tauri::AppHandle, agent_id: &str, tex
     let state = app.state::<AppState>();
     let id = format!("bubble-{}", state.bubble_next_id.fetch_add(1, Ordering::Relaxed) + 1);
     if state.settings.lock().unwrap().current_agent_id.as_deref() == Some(agent_id) {
-        *state.pending_bubble.lock().unwrap() = Some(PendingBubble {
+        let mut controller = state.bubble_controller.lock().unwrap();
+        controller.pending = Some(PendingBubble {
             delivery_id: id.clone(),
             agent_id: agent_id.to_string(),
             text,
             priority,
             created_at_ms: now_millis(),
         });
+        controller.last_stage = "queued";
+        controller.last_delivery_id = Some(id.clone());
     }
     id
 }
@@ -971,16 +1014,64 @@ fn now_millis() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
-#[tauri::command]
-fn pet_bubble_claim_pending(app: tauri::AppHandle, character_id: String) -> Option<PendingBubbleView> {
-    let state = app.state::<AppState>();
-    let claimed = claim_pending_bubble(&mut state.pending_bubble.lock().unwrap(), &character_id, now_millis());
-    claimed.map(|bubble| PendingBubbleView {
+fn bubble_view(bubble: PendingBubble) -> PendingBubbleView {
+    PendingBubbleView {
         delivery_id: bubble.delivery_id,
         text: bubble.text,
         priority: bubble.priority,
         agent_id: bubble.agent_id,
-    })
+    }
+}
+
+fn dispatch_bubble_to_ready_host(app: &tauri::AppHandle) {
+    let pending = {
+        let state = app.state::<AppState>();
+        let mut controller = state.bubble_controller.lock().unwrap();
+        let Some(agent_id) = controller.ready_agent_id.clone() else { return };
+        let generation = controller.ready_generation;
+        controller.ready(&agent_id, generation, now_millis())
+    };
+    if let Some(bubble) = pending {
+        let _ = app.emit_to("pet-bubble", "bubble:deliver", bubble_view(bubble));
+    }
+}
+
+#[tauri::command]
+fn pet_bubble_ready(app: tauri::AppHandle, character_id: String, generation: u64) -> Option<PendingBubbleView> {
+    let state = app.state::<AppState>();
+    let pending = state.bubble_controller.lock().unwrap().ready(&character_id, generation, now_millis());
+    pending.map(bubble_view)
+}
+
+#[tauri::command]
+fn pet_bubble_rendered(app: tauri::AppHandle, character_id: String, generation: u64, delivery_id: String) -> bool {
+    let placement = pet_bubble_placement(app.state::<AppState>()).ok().flatten();
+    let shown = placement.is_some() && pet_bubble_show(app.clone(), None, None).is_some();
+    app.state::<AppState>().bubble_controller.lock().unwrap().rendered(
+        &character_id, generation, &delivery_id, shown, now_millis(),
+    )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BubbleDiagnosticsView {
+    stage: String,
+    delivery_id: Option<String>,
+    pending: bool,
+    ready_agent_id: Option<String>,
+    ready_generation: u64,
+}
+
+#[tauri::command]
+fn pet_bubble_diagnostics(state: tauri::State<'_, AppState>) -> BubbleDiagnosticsView {
+    let controller = state.bubble_controller.lock().unwrap();
+    BubbleDiagnosticsView {
+        stage: controller.last_stage.to_string(),
+        delivery_id: controller.last_delivery_id.clone(),
+        pending: controller.pending.is_some(),
+        ready_agent_id: controller.ready_agent_id.clone(),
+        ready_generation: controller.ready_generation,
+    }
 }
 
 /// M5 (ADR-0022): open the Agent's workspace folder in explorer so the user
@@ -1891,11 +1982,12 @@ fn set_acrylic(
         s.acrylic_enabled = enabled;
         let _ = s.save(&state.data_dir);
     }
-    for label in ["chat", "stats", "music", "workflow", "topbar"] {
+    for label in ["chat", "stats", "music", "workflow"] {
         if let Some(w) = app.get_webview_window(label) {
             apply_acrylic_opt(&w, enabled);
         }
     }
+    let _ = app.emit("settings:acrylic-changed", serde_json::json!({ "enabled": enabled }));
     apply_current_pet_acrylic(&app);
     Ok(())
 }
@@ -2119,46 +2211,9 @@ pub(crate) const fn float_corner_preference_value() -> i32 {
     2 // DWMWCP_ROUND
 }
 
-/// The topbar shares the proven, creation-only native host configuration used
-/// by the visible float windows. It deliberately remains outside
-/// `FLOAT_LABELS`, so grid/tray lifecycle ownership does not change.
-pub(crate) const fn topbar_uses_float_host_creation_config() -> bool {
-    true
-}
-
-pub(crate) const fn topbar_uses_exact_pill_region() -> bool {
-    true
-}
-
-pub(crate) const fn topbar_capsule_region(client_width: i32, client_height: i32) -> (i32, i32, i32) {
-    (client_width, client_height, client_height / 2)
-}
-
-/// The topbar first receives the same hidden float-host configuration as the
-/// accepted floating windows. Its remaining topbar-specific step is an exact
-/// pill region, because DWM's generic ROUND preference is not a half-height
-/// capsule at 44 px.
-fn configure_topbar_capsule_region(w: &tauri::WebviewWindow) {
-    #[cfg(target_os = "windows")]
-    if let Ok(hwnd) = w.hwnd() {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
-        let hwnd = HWND(hwnd.0 as *mut core::ffi::c_void);
-        unsafe {
-            // Tauri reports the physical client size before a hidden window
-            // is shown. GetClientRect may still be zero at that lifecycle
-            // point, which was the reason the prior region never appeared.
-            let client = w.inner_size().unwrap_or_default();
-            let (width, height, radius) = topbar_capsule_region(client.width as i32, client.height as i32);
-            if width <= 0 || height <= 0 || radius <= 0 { return; }
-            let region = CreateRoundRectRgn(0, 0, width, height, radius * 2, radius * 2);
-            if region.0.is_null() { return; }
-            if SetWindowRgn(hwnd, Some(region), true) == 0 {
-                let _ = DeleteObject(region.into());
-            }
-        }
-    }
-}
+/// The topbar is a transparent host: its exact visible pill is wholly owned by
+/// the WebView, so it never asks Windows for rectangular acrylic composition.
+pub(crate) const fn topbar_uses_native_composition() -> bool { false }
 
 static FLOAT_HOST_ORIGINAL_WNDPROCS:
     std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<isize, isize>>> =
@@ -2886,12 +2941,6 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .skip_taskbar(true)
         .visible(false)
         .build()?;
-    if topbar_uses_float_host_creation_config() {
-        configure_float_host(&topbar);
-    }
-    if topbar_uses_exact_pill_region() {
-        configure_topbar_capsule_region(&topbar);
-    }
     // informational only: never intercept mouse clicks on apps underneath
     topbar.set_ignore_cursor_events(true)?;
     if let Ok(hwnd) = topbar.hwnd() {
@@ -3198,7 +3247,7 @@ pub fn run() {
                 store: store_arc,
                 // v1.12.3: guard lives with AppState → dropped only at process exit.
                 _desktop_lock_guard: Mutex::new(Some(desktop_lock::DesktopLock)),
-                pending_bubble: Mutex::new(None),
+                bubble_controller: Mutex::new(BubbleController::default()),
                 bubble_next_id: AtomicU64::new(0),
             };
             app.manage(state);
@@ -3241,7 +3290,7 @@ pub fn run() {
                 .lock()
                 .unwrap()
                 .acrylic_enabled;
-            for label in ["chat", "stats", "music", "workflow", "topbar"] {
+            for label in ["chat", "stats", "music", "workflow"] {
                 if let Some(w) = app.get_webview_window(label) {
                     apply_acrylic_opt(&w, acrylic_enabled);
                 }
@@ -3536,7 +3585,9 @@ pub fn run() {
             pet_bubble_placement,
             pet_bubble_show,
             pet_bubble_hide,
-            pet_bubble_claim_pending,
+            pet_bubble_ready,
+            pet_bubble_rendered,
+            pet_bubble_diagnostics,
             pet_get_state_mapping,
             pet_save_state_mapping,
             resize_preview,
@@ -3571,33 +3622,38 @@ mod tests {
         resolve_window_placement, ClientFrame, ClientGeometry, ScreenRect,
         FloatVisibilityGate,
         resume_with_initial_message, saved_session_for_today, select_status_character,
-        set_agent_provider_serialized_with, topbar_capsule_region, topbar_uses_exact_pill_region, topbar_uses_float_host_creation_config, topbar_visible, with_agent_runtime_serialized,
-        claim_pending_bubble, PendingBubble, PENDING_BUBBLE_TTL_MS,
+        set_agent_provider_serialized_with, topbar_uses_native_composition, topbar_visible, with_agent_runtime_serialized,
+        BubbleController, PendingBubble, PENDING_BUBBLE_TTL_MS,
     };
 
     #[test]
-    fn pending_bubble_is_claimed_once_for_matching_agent_and_expires() {
-        let mut pending = Some(PendingBubble {
+    fn bubble_controller_keeps_delivery_until_matching_render_ack_and_expiry() {
+        let mut controller = BubbleController::default();
+        controller.pending = Some(PendingBubble {
             delivery_id: "bubble-1".into(),
             agent_id: "char-a".into(),
             text: "hello".into(),
             priority: "normal".into(),
             created_at_ms: 1_000,
         });
-        assert_eq!(claim_pending_bubble(&mut pending, "char-b", 1_001), None);
-        assert!(pending.is_some());
-        assert_eq!(claim_pending_bubble(&mut pending, "char-a", 1_001).unwrap().delivery_id, "bubble-1");
-        assert!(pending.is_none());
+        assert_eq!(controller.ready("char-b", 1, 1_001), None);
+        assert!(controller.pending.is_some());
+        assert_eq!(controller.ready("char-a", 1, 1_001).unwrap().delivery_id, "bubble-1");
+        assert!(controller.pending.is_some(), "ready must not consume before render acknowledgement");
+        assert!(!controller.rendered("char-a", 0, "bubble-1", true, 1_001));
+        assert!(controller.pending.is_some(), "stale generation must not consume");
+        assert!(controller.rendered("char-a", 1, "bubble-1", true, 1_001));
+        assert!(controller.pending.is_none());
 
-        pending = Some(PendingBubble {
+        controller.pending = Some(PendingBubble {
             delivery_id: "bubble-2".into(),
             agent_id: "char-a".into(),
             text: "expired".into(),
             priority: "normal".into(),
             created_at_ms: 1_000,
         });
-        assert_eq!(claim_pending_bubble(&mut pending, "char-a", 1_000 + PENDING_BUBBLE_TTL_MS + 1), None);
-        assert!(pending.is_none());
+        assert_eq!(controller.ready("char-a", 2, 1_000 + PENDING_BUBBLE_TTL_MS + 1), None);
+        assert!(controller.pending.is_none());
     }
 
     #[test]
@@ -4510,21 +4566,9 @@ mod tests {
     }
 
     #[test]
-    fn topbar_capsule_region_uses_client_height_as_its_diameter_once() {
-        assert_eq!(topbar_capsule_region(500, 44), (500, 44, 22));
-        assert_eq!(topbar_capsule_region(137, 43), (137, 43, 21));
-    }
-
-    #[test]
-    fn topbar_reuses_the_accepted_float_host_creation_configuration() {
-        assert!(topbar_uses_float_host_creation_config());
+    fn topbar_has_no_native_composition_or_float_lifecycle() {
+        assert!(!topbar_uses_native_composition());
         assert!(!is_float_label("topbar"), "topbar remains outside grid/tray lifecycle");
-    }
-
-    #[test]
-    fn topbar_adds_an_exact_pill_region_after_the_shared_host_setup() {
-        assert!(topbar_uses_exact_pill_region());
-        assert_eq!(topbar_capsule_region(500, 44), (500, 44, 22));
     }
 
     #[test]

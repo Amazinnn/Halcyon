@@ -741,17 +741,8 @@ fn handle_agent_delta(tx: &Sender<CoreEvent>, shared: &Shared, params: &Value) {
         if delta.is_empty() {
             return;
         }
-        // M5 (ADR-0022): first delta = the initial short sentence (showInitial),
-        // later deltas = the thinking stream (showThinking).
         let display = *shared.display.lock().unwrap();
-        let mut first = shared.first_delta_sent.lock().unwrap();
-        let allow = if !*first {
-            display.show_initial
-        } else {
-            display.show_thinking
-        };
-        *first = true;
-        if allow {
+        if display.shows_public_text_deltas() {
             emit_envelope(
                 tx,
                 shared,
@@ -932,7 +923,7 @@ mod tests {
             current_turn: Mutex::new(None),
             turn_in_flight: Mutex::new(false),
             last_message: Mutex::new(String::new()),
-            display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
+            display: Mutex::new(crate::agents::agent_display_full(true)),
             first_delta_sent: Mutex::new(false),
         });
         let mut rx = tx.subscribe();
@@ -1079,7 +1070,7 @@ mod tests {
             current_turn: Mutex::new(Some("turn-1".into())),
             turn_in_flight: Mutex::new(true),
             last_message: Mutex::new("最终回复".into()),
-            display: Mutex::new(crate::workflow_engine::engine::AgentDisplay::default()),
+            display: Mutex::new(crate::agents::agent_display_full(true)),
             first_delta_sent: Mutex::new(false),
         });
         let (done_tx, _) = tokio::sync::broadcast::channel::<TurnDone>(8);

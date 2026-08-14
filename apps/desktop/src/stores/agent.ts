@@ -95,6 +95,7 @@ export const useAgentStore = defineStore("agent", {
     threads: [] as AgentThread[],
     currentThreadId: null as string | null,
     phase: "idle" as AgentPhase,
+    publicTextDeltaSeen: false,
     historyKey: "",
     skills: [] as string[],
     errorMessage: "",
@@ -182,6 +183,7 @@ export const useAgentStore = defineStore("agent", {
       this.messages = [];
       this.tools = [];
       this.phase = "idle";
+      this.publicTextDeltaSeen = false;
       this.errorMessage = "";
       this.bubble = null;
       this.reaction = null;
@@ -262,21 +264,6 @@ export const useAgentStore = defineStore("agent", {
       await this.refreshCharacters();
       if (!this.characterId) await this.refreshStatus();
     },
-    async claimPendingBubble() {
-      if (!this.characterId) return;
-      const pending = await invoke<{ deliveryId: string; text: string; priority: string; agentId: string } | null>(
-        "pet_bubble_claim_pending",
-        { characterId: this.characterId },
-      );
-      if (!pending || pending.agentId !== this.characterId || this._seenBubbleDeliveryIds.includes(pending.deliveryId)) return;
-      this._seenBubbleDeliveryIds.push(pending.deliveryId);
-      this.bubble = {
-        id: ++this._bubbleSequence,
-        text: pending.text,
-        priority: pending.priority,
-        deliveryId: pending.deliveryId,
-      };
-    },
     async refreshStatus(characterId?: string) {
       try {
         const targetCharacterId = characterId ?? this.characterId;
@@ -311,6 +298,7 @@ export const useAgentStore = defineStore("agent", {
     },
     async startThread(initialMessage: string) {
       this.phase = "connecting";
+      this.publicTextDeltaSeen = false;
       this.errorMessage = "";
       try {
         const info = await invoke<AgentThread>("agent_start_thread", {
@@ -354,6 +342,7 @@ export const useAgentStore = defineStore("agent", {
         return;
       }
       this.phase = "connecting";
+      this.publicTextDeltaSeen = false;
       this.errorMessage = "";
       try {
         await invoke("agent_send", {
@@ -504,6 +493,7 @@ export const useAgentStore = defineStore("agent", {
       }
     },
     appendDelta(text: string) {
+      this.publicTextDeltaSeen = true;
       this.syncVisibleHistoryDay();
       const last = this.messages[this.messages.length - 1];
       if (last && last.role === "agent" && last.kind === "delta") {

@@ -49,6 +49,13 @@
 > global stream switch in chat. These are automated changes only; require a
 > fresh Windows report before any closeout.
 
+> 2026-08-14 / Requirement #120: the previous topbar native-composition and
+> bubble claim designs are superseded. Topbar is now composition-free with one
+> WebView pill; direct bubbles use native ready/render-ack delivery; public
+> Codex/Claude text streaming has a no-delta activity state. Automated work is
+> in progress and Windows mouse acceptance remains the only authority for
+> visible behavior.
+
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，AGPL-3.0-only）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。

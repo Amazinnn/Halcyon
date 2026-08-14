@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -26,21 +26,14 @@ let transitionTimer: ReturnType<typeof setTimeout> | null = null;
 let expiryTimer: ReturnType<typeof setTimeout> | null = null;
 let unlistenDragStart: (() => void) | null = null;
 let unlistenDragEnd: (() => void) | null = null;
-let unlistenBubbleRequested: (() => void) | null = null;
+let unlistenBubbleDelivery: (() => void) | null = null;
 let unlistenPetChanged: (() => void) | null = null;
 const now = ref(Date.now());
 const expiresAt = ref(0);
 const dragging = ref(false);
-const accent = ref("#8aa68d");
-const anchor = ref({ x: 0.5, y: 0.05 });
 const direction = ref("above");
 const visibilityRequests = new BubbleVisibilityRequest();
-
-interface BubblePlacement {
-  anchorX: number;
-  anchorY: number;
-  accent: string;
-}
+let hostGeneration = 0;
 
 function measureBubbleText(text: string): number {
   const context = document.createElement("canvas").getContext("2d");
@@ -59,32 +52,10 @@ const visible = computed(() => bubbleShouldBeVisible({
 const currentLines = computed(() => pages.value[page.value] ?? []);
 
 async function syncVisibility() {
-  const generation = visibilityRequests.issue();
-  const bubbleId = bubble.value?.id ?? null;
-  const characterId = currentAgentId.value;
+  visibilityRequests.issue();
   if (!visible.value) {
     await invoke("pet_bubble_hide");
-    return;
   }
-  const placement = await invoke<BubblePlacement | null>("pet_bubble_placement");
-  if (!visibilityRequests.isCurrent(generation) || !visible.value || bubble.value?.id !== bubbleId || currentAgentId.value !== characterId) return;
-  if (!placement) {
-    await invoke("pet_bubble_hide");
-    return;
-  }
-  accent.value = placement.accent;
-  anchor.value = { x: placement.anchorX, y: placement.anchorY };
-  const nextDirection = await invoke<string | null>("pet_bubble_show", { anchorX: anchor.value.x, anchorY: anchor.value.y });
-  if (!visibilityRequests.isCurrent(generation) || !visible.value || bubble.value?.id !== bubbleId || currentAgentId.value !== characterId) {
-    if (!visible.value) {
-      await invoke("pet_bubble_hide");
-    }
-    return;
-  }
-  if (!nextDirection) return;
-  direction.value = nextDirection;
-  appearing.value = true;
-  requestAnimationFrame(() => { appearing.value = false; });
 }
 
 function restartRotation() {
@@ -113,19 +84,31 @@ function restartExpiry() {
   }, Math.max(0, expiresAt.value - Date.now()) + 1);
 }
 
-function receiveDelivery(delivery: BubbleDelivery) {
+async function receiveDelivery(delivery: BubbleDelivery) {
   const accepted = acceptBubbleDelivery(currentAgentId.value, seenDeliveryIds.value, delivery);
   if (!accepted.message) return;
   seenDeliveryIds.value = accepted.seenDeliveryIds;
   bubble.value = { ...accepted.message, id: ++bubbleSequence };
+  await nextTick();
+  if (!currentAgentId.value || delivery.agentId !== currentAgentId.value) return;
+  const shown = await invoke<boolean>("pet_bubble_rendered", {
+    characterId: currentAgentId.value,
+    generation: hostGeneration,
+    deliveryId: delivery.deliveryId,
+  });
+  if (shown) {
+    appearing.value = true;
+    requestAnimationFrame(() => { appearing.value = false; });
+  }
 }
 
-async function claimPendingBubble() {
+async function registerBubbleHost() {
   if (!currentAgentId.value) return;
-  const pending = await invoke<BubbleDelivery | null>("pet_bubble_claim_pending", {
+  const pending = await invoke<BubbleDelivery | null>("pet_bubble_ready", {
     characterId: currentAgentId.value,
+    generation: hostGeneration,
   });
-  if (pending) receiveDelivery(pending);
+  if (pending) await receiveDelivery(pending);
 }
 
 async function refreshCurrentAgent() {
@@ -136,7 +119,8 @@ async function refreshCurrentAgent() {
     bubble.value = null;
     seenDeliveryIds.value = [];
   }
-  await claimPendingBubble();
+  hostGeneration += 1;
+  await registerBubbleHost();
 }
 
 watch(() => bubble.value?.id, () => {
@@ -154,16 +138,15 @@ onBeforeUnmount(() => {
   if (expiryTimer) clearTimeout(expiryTimer);
   unlistenDragStart?.();
   unlistenDragEnd?.();
-  unlistenBubbleRequested?.();
+  unlistenBubbleDelivery?.();
   unlistenPetChanged?.();
 });
 
 onMounted(async () => {
-  // This window is a delivery endpoint, not another chat client. Register its
-  // dedicated listener before reading identity so a first direct reply is
-  // either received immediately or recovered by the single pending claim.
-  unlistenBubbleRequested = await listen<BubbleDelivery>("bubble:requested", (event) => {
-    receiveDelivery(event.payload);
+  // Register before host readiness; the native controller retains the envelope
+  // until this window confirms it rendered the matching delivery.
+  unlistenBubbleDelivery = await listen<BubbleDelivery>("bubble:deliver", (event) => {
+    void receiveDelivery(event.payload);
   });
   unlistenPetChanged = await listen("pet:changed", () => {
     void refreshCurrentAgent();
@@ -185,7 +168,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="pet-bubble" :class="[direction, { fading, appearing }]" :style="{ '--pet-accent': accent }">
+  <main class="pet-bubble" :class="[direction, { fading, appearing }]">
     <p v-for="line in currentLines" :key="line">{{ line }}</p>
   </main>
 </template>

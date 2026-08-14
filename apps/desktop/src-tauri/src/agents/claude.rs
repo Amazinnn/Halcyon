@@ -690,14 +690,7 @@ fn handle_stream_event(tx: &Sender<CoreEvent>, turn: &TurnState, event: &Value) 
             if text.is_empty() {
                 return;
             }
-            let mut first = turn.first_delta_sent.lock().unwrap();
-            let allowed = if !*first {
-                turn.display.show_initial
-            } else {
-                turn.display.show_thinking
-            };
-            *first = true;
-            if allowed {
+            if turn.display.shows_public_text_deltas() {
                 emit_envelope(tx, turn, json!({ "type": "message.delta", "text": text }));
             }
         }

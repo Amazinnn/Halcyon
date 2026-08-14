@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../../stores/agent";
 import type { FocusState } from "../../stores/ui";
 
@@ -19,6 +20,7 @@ const restRemaining = ref(0);
 const paused = ref(false);
 const phaseDone = ref(false);
 const supStatus = ref<"ok" | "drift">("ok");
+const acrylicEnabled = ref(true);
 
 function fmt(totalSec: number) {
   const s = Math.max(0, Math.floor(totalSec));
@@ -46,6 +48,11 @@ const supText = computed(() =>
 
 onMounted(async () => {
   void agent.init();
+  const bootstrap = await invoke<{ acrylicEnabled?: boolean }>("get_bootstrap");
+  acrylicEnabled.value = bootstrap.acrylicEnabled ?? true;
+  await listen<{ enabled: boolean }>("settings:acrylic-changed", (e) => {
+    acrylicEnabled.value = e.payload.enabled;
+  });
   await listen<{
     state: FocusState;
     focusRemainingSec: number;
@@ -67,7 +74,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="capsule">
+  <div class="capsule" :class="{ 'glass-disabled': !acrylicEnabled }">
     <span class="agent-status">
       Agent
       <span class="dot" :class="`st-${agent.state}`"></span>
@@ -86,13 +93,16 @@ onMounted(async () => {
   gap: 12px;
   padding: 0 18px;
   border-radius: var(--r-pill);
-  background: var(--glass);
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.13), rgba(255,255,255,0.035)),
+    rgba(12, 24, 17, 0.84);
   border: 1px solid var(--glass-border);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 6px 18px rgba(0, 0, 0, 0.3);
   font-size: 12px;
   color: var(--text-hi);
   overflow: hidden;
 }
+.capsule.glass-disabled { background: rgba(12, 24, 17, 0.96); box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 4px 12px rgba(0,0,0,.24); }
 .agent-status { display: flex; align-items: center; gap: 6px; color: var(--text-mid); white-space: nowrap; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-low); flex-shrink: 0; }
 .dot.st-thinking, .dot.st-reading, .dot.st-searching { background: var(--accent); }

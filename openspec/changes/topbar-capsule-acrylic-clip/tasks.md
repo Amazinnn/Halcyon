@@ -22,3 +22,6 @@
 - [x] 2.4 After Requirement #118 invalidated the region-only visible result,
   add a red-first shared-host-plus-exact-pill regression; use Tauri physical
   inner size instead of hidden `GetClientRect`, and keep the manual gate open.
+- [ ] 2.5 After Requirement #120, add red-first coverage that topbar never
+  enters native acrylic/region/shadow setup and that one WebView pill owns all
+  glass layers under the global preference.

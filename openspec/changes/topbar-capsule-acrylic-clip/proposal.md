@@ -7,14 +7,16 @@ composition surface owns the rectangle.
 
 ## What Changes
 
-- Reuse the accepted hidden float-host creation configuration for topbar, then
-  add its topbar-only exact native pill region using Tauri's physical client
-  dimensions and a radius equal to half its client height.
+- Remove topbar from every native acrylic, native region, and system-shadow
+  path. Its transparent host keeps only no-activate, mouse-through, topmost,
+  and show/move responsibilities.
+- Render background, edge, and shadow inside one WebView pill layer, so the
+  glass boundary cannot diverge from its capsule border.
 - Keep the existing no-activate, mouse-through, topmost, and show/move paths;
   topbar still does not enter float-label, grid, tray, or drag lifecycle.
-- Make the existing global acrylic setting update topbar as well as the other
-  acrylic-backed hosts.
-- Record the intentional topbar-only exception to ADR-0029 in a new ADR and
+- Make the existing global acrylic setting control only this WebView glass
+  treatment for topbar; it no longer requests native composition.
+- Supersede the region approach in an ADR and
   require user mouse-driven Windows acceptance before this change is archived.
 
 ## Capabilities

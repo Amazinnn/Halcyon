@@ -328,3 +328,15 @@ Fresh completion gates on 2026-08-14:
 
 None of these gates proves native Windows composition or the live direct-reply
 flow. Visual behavior still requires the user's mouse.
+
+## 2026-08-14 Requirement #120 rework (in progress)
+
+The prior checkpoint is invalidated by the user's Windows report. The topbar no
+longer requests native acrylic, native region, or system shadow; its WebView
+owns one pill background/border/shadow surface. Direct-reply bubbles now use a
+native Controller: queue, ready generation, render acknowledgement, placement,
+and no-activate show are separately recorded, and a delivery is retained until
+the acknowledged native show succeeds. Codex and Claude now use one public-text
+delta gate instead of first-versus-later output heuristics; a Claude turn with
+no public delta shows an activity state. Focused Rust red tests passed; full
+gates and Windows mouse acceptance remain pending.

@@ -150,6 +150,7 @@ pub async fn relay_task(
                         delivery_id: Some(delivery_id),
                         reliable_delivery: true,
                     };
+                    crate::dispatch_bubble_to_ready_host(&app);
                 }
                 let _ = app.emit(event.event_name(), event.payload());
             }

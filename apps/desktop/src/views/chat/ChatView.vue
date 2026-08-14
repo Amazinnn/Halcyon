@@ -22,7 +22,9 @@ const isBusy = computed(() => agent.phase === "connecting" || agent.phase === "s
 
 const phaseText = computed(() => {
   if (agent.phase === "connecting" || agent.phase === "streaming") {
-    return agent.phase === "connecting" ? "连接中…" : "生成中…";
+    if (agent.phase === "connecting") return "连接中…";
+    if (agent.provider === "claude" && settings.chatStreamingEnabled && !agent.publicTextDeltaSeen) return "等待 Claude 公开输出…";
+    return "生成中…";
   }
   switch (agent.phase) {
     case "com" + "pleted":

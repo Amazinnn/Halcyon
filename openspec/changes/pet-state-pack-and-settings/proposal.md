@@ -39,6 +39,21 @@ the next direct conversation. It never exposes hidden reasoning, workflow
 steps, or tool summaries. The pet WebView surface uses the existing
 package-derived host tint at 50% opacity so its native acrylic remains visible.
 
+### Controller and public-stream revision (2026-08-14, Requirement #120)
+
+The prior bubble claim and cross-window event path is replaced. A native Bubble
+Controller owns one current-Agent, 30-second pending envelope and dispatches it
+only to a ready `pet-bubble` host. The host must confirm that it rendered the
+payload before native placement and no-activate display consume the envelope.
+Reloads, delayed readiness, failed acknowledgement, and failed placement retain
+the envelope until deterministic expiry or a real Agent switch/deletion.
+
+The streaming setting is a display policy, not a request-mode flag: Codex and
+Claude share one adapter boundary that accepts only Provider-explicit public
+text deltas. A turn without such a Claude delta displays an activity indicator
+until its final reply. Hidden reasoning, tools, and workflow events remain out
+of chat.
+
 ## Capabilities
 
 ### New Capabilities
