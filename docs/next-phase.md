@@ -124,6 +124,11 @@ input and atomic adjacent-token deletion are implemented and tested.
 - Requirement #114 has an automated repair in the same change: resize a loaded pet through every supported grid size during the existing manual package/rendering gate. Do not treat the green source-level regression test as Windows visual acceptance.
 - Create a separate future OpenSpec change before redesigning the top status capsule; its unclear state meaning and dated visual style are recorded but intentionally out of this change.
 
+
+> 2026-08-14 冻结基线：功能面冻结，先备份后重构。备份 =
+> `v1.12.10-restructure-freeze` tag（已推送远程）+ `D:\Projects\Focus-backup-20260814.tar.gz`。
+> 重构每个阶段可随时回到该基线。
+
 ## 2026-08-14 重构候选（用户提出的代码优化方向）
 
 > 用户评估：功能已基本收敛，但可扩展性与可维护性不足（"木房子上建混凝土大厦"）。
