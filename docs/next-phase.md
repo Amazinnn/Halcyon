@@ -123,3 +123,23 @@ input and atomic adjacent-token deletion are implemented and tested.
 - `pet-drag-post-release-freeze` was accepted by the user and is archived after its diagnostic spec is synced. Do not reopen its native lifecycle without new evidence.
 - Requirement #114 has an automated repair in the same change: resize a loaded pet through every supported grid size during the existing manual package/rendering gate. Do not treat the green source-level regression test as Windows visual acceptance.
 - Create a separate future OpenSpec change before redesigning the top status capsule; its unclear state meaning and dated visual style are recorded but intentionally out of this change.
+
+## 2026-08-14 重构候选（用户提出的代码优化方向）
+
+> 用户评估：功能已基本收敛，但可扩展性与可维护性不足（"木房子上建混凝土大厦"）。
+> 已确认优先梯队 1；每项重构都作为独立 OpenSpec 变更推进，行为保持不变的纯整理
+> 轮仍须跑全部门禁 + 人工回归验收。当前无进行中 OpenSpec 变更。
+
+### 梯队 1：结构性整理（纯移动、行为不变，优先）
+- `apps/desktop/src-tauri/src/lib.rs`（约 4600+ 行）按职责拆模块：命令注册、窗口创建/生命周期、气泡控制器、玻璃（acrylic/opacity）、bootstrap、启动流程；现有 218 个 Rust 测试 + 一次完整人工回归兜底。
+- 前端 store 按领域收拢；清理死代码（如 chat agent store 残留的 `bubble` 字段）。
+
+### 梯队 2：工程基建（质量护栏自动化）
+- Rust：`clippy -D warnings` + `rustfmt --check` 进门禁；前端 ESLint；pre-push hook 跑 `git diff --check`。
+- 一键门禁脚本：frontend tests/build + `cargo test --lib` + event-schema + openspec validate（当前全手动，易漏）。
+- 将"源码字符串断言"类测试逐步替换为行为测试。
+
+### 梯队 3：架构级（逐个单独论证）
+- 薄窗口模式：pet-bubble/topbar 只订阅最小事件集，不初始化完整 agent store（topbar 目前白初始化整个 store）。
+- bundle 分包：按窗口 label 动态 import 视图，9 个 WebView 不再各加载整套 569KB 包。
+- 明确的非目标：不推倒重写、不换框架、不做一次性大爆炸重构。
