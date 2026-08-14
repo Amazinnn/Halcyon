@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- comctl32 v6: TaskDialogIndirect etc. (debug test binaries have no
+       tauri-provided manifest; without this the loader binds comctl32 v5
+       and fails with STATUS_ENTRYPOINT_NOT_FOUND). -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>

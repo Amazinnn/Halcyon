@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn float_set_matches_the_historical_lifecycle() {
         let labels: Vec<&str> = float_labels().collect();
-        assert_eq!(labels, ["chat", "stats", "music", "pet", "workflow"]);
+        assert_eq!(labels, ["chat", "stats", "music", "pet", "workflow", "overview"]);
         for label in ["desktop", "pet-bubble", "grid-overlay", "topbar"] {
             assert!(!is_float_label(label), "{label} must not be a float");
         }

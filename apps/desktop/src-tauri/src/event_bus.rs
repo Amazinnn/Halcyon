@@ -55,6 +55,40 @@ pub enum CoreEvent {
 }
 
 /// Event domain grouping (extensibility plan C3): every core event maps to
+/// one domain; the subscription matrix in docs/architecture/event-streams-v1.md
+/// documents emitters and listeners per domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Domain {
+    Focus,
+    Stats,
+    Agent,
+    Workflow,
+    Supervision,
+    Pet,
+    Music,
+    Probe,
+    Panel,
+}
+
+impl CoreEvent {
+    pub fn domain(&self) -> Domain {
+        match self {
+            CoreEvent::FocusStateChanged { .. } => Domain::Focus,
+            CoreEvent::MusicTick { .. } => Domain::Music,
+            CoreEvent::ProbeRecorded { .. } => Domain::Probe,
+            CoreEvent::SupervisionAlert { .. } => Domain::Supervision,
+            CoreEvent::WorkflowSystemAction { .. }
+            | CoreEvent::WorkflowRunChanged { .. }
+            | CoreEvent::WorkflowChanged { .. }
+            | CoreEvent::WorkflowAgentResult { .. } => Domain::Workflow,
+            CoreEvent::AgentEvent(_) => Domain::Agent,
+            CoreEvent::PetStateChanged { .. } => Domain::Pet,
+            CoreEvent::BubbleRequested { .. } => Domain::Agent,
+            CoreEvent::PanelModeChanged { .. } => Domain::Panel,
+        }
+    }
+
+    pub fn event_name(&self) -> &'static str {
         match self {
             CoreEvent::AgentEvent(_) => "agent:event",
             CoreEvent::PetStateChanged { .. } => "pet:state_changed",
