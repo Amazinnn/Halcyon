@@ -143,3 +143,24 @@ input and atomic adjacent-token deletion are implemented and tested.
 - 薄窗口模式：pet-bubble/topbar 只订阅最小事件集，不初始化完整 agent store（topbar 目前白初始化整个 store）。
 - bundle 分包：按窗口 label 动态 import 视图，9 个 WebView 不再各加载整套 569KB 包。
 - 明确的非目标：不推倒重写、不换框架、不做一次性大爆炸重构。
+
+### 扩展方向（2026-08-14 讨论细化）：为"新窗口 + 自定义面板"铺路
+
+用户愿景：后续可能新增若干自定义窗口（如"某应用使用情况看板"——复用窗口样式、
+提供按钮/文本框等可复用控件、数据与事件流高度模块化），插件机制暂不做（"不一定"）。
+目标是把架构打磨到"新增窗口 = 声明 + 拼积木"，而不是修改既有逻辑。
+
+1. **窗口注册表（声明式窗口系统）**：Rust 端 `WindowSpec` 表（label/类型/默认尺寸/
+   浮窗/网格/置顶/穿透/玻璃/初始位置）驱动 `create_windows`；前端 `ViewRegistry`
+   自动映射 label → 组件。新窗口只动声明与组件，不碰窗口创建逻辑。现缺口：
+   新窗口需改 create_windows、FLOAT_LABELS、折叠/网格、App.vue switch、capabilities 五处。
+2. **Focus UI Kit（可复用控件库）**：统一 `FocusButton/FocusInput/FocusSlider/
+   FocusSelect/FocusToggle/FocusCard/FocusWindowFrame`，全部消费同一套 design tokens
+   （现有 styles.css 变量为雏形）。替换 SettingsPopover/ChatView 等处的重复手写样式；
+   新窗口视觉自动一致。现缺口：switch/滑条/数字框/ghost 按钮样式散落重复。
+3. **数据层按领域分层**：storage.rs 单例拆为领域 repositories（focus/stats/apps/agents）；
+   面板类数据固化"只读查询命令 + 事件推送"模式（stats dashboard 雏形）。
+4. **事件流分组 + 薄窗口订阅**：CoreEvent 按领域分组；topbar/pet-bubble 只订阅最小
+   事件集（topbar 目前仍初始化完整 agent store）。保留编译期类型安全。
+5. **插件边界**：不建插件 API；每个领域 = 独立 Rust module + 前端 lib + 事件命名空间，
+   未来若要插件化则开放既有模块边界。
