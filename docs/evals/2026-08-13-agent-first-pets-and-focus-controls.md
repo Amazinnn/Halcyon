@@ -391,3 +391,37 @@ Manual Windows acceptance required after rebuild:
    release without overlapping.
 6. Regressions: no caption/blue strip, no overlap/freeze, pet resize through
    all four host sizes, and no prior-Agent bubble residue after switching.
+
+## 2026-08-14 Glass opacity slider and sentence-complete bubble pages (#123/#124)
+
+Status: **automated verification passed; Windows visual acceptance Pending**.
+
+Two new OpenSpec changes were opened: `glass-opacity-slider` and
+`pet-bubble-sentence-pages`. Decisions confirmed with the user: opacity is a
+5-100 slider (22 reproduces the current look; factor opacity/22 maps every
+layer's base alpha, clamped 8-255), applied to every glass layer at once via
+`settings:acrylic-changed` carrying `{enabled, opacity}`; content cards stay
+opaque. The bubble now paginates on sentence blocks (whole short paragraphs,
+one sentence per page for long ones, max 4 lines per page, rotation only for
+multi-page content) and sizes its host to content (width clamp 180-340px,
+height by line count) through the native no-activate `pet_bubble_resize`
+command.
+
+Fresh gates on 2026-08-14: frontend tests (109), `npm run build`, event-schema
+(12 valid), `cargo test --lib` (218 passed, 1 ignored), strict validation for
+all four active changes plus global specs, `git diff --check`, and
+`launch-focus.cmd rebuild`.
+
+Manual Windows acceptance required after rebuild:
+
+1. Settings > 外观: drag 玻璃透明度; floats, pet, topbar pill, and bubble
+   glass change together; restart keeps the value.
+2. Send a short reply; the bubble shows the whole paragraph, no rotation, and
+   fits the content width.
+3. Send a long multi-paragraph reply; short paragraphs show whole, long
+   paragraphs rotate one complete sentence per page, no sentence is ever cut,
+   and the bubble height follows the lines.
+4. Drag the pet while the bubble is visible; it hides and returns without
+   overlapping the pet or the visible chat window after resize.
+5. Regressions: bubble appears with chat open/closed, capsule shadow, streaming
+   thinking, no caption/freeze.

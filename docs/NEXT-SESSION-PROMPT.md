@@ -110,3 +110,14 @@ showing the Provider-visible thinking process while the streaming switch is on
 assistant-message streaming source with the additive `message.thinking`
 event, and topbar shadow margins. Do not archive or tag either OpenSpec change
 until the user completes the latest Eval's Windows mouse-driven checklist.
+
+## Current checkpoint (2026-08-14, glass opacity + sentence bubbles)
+
+Read `docs/STATUS.md`, the latest Eval, and the four active OpenSpec changes
+(`pet-state-pack-and-settings`, `topbar-capsule-acrylic-clip`,
+`glass-opacity-slider`, `pet-bubble-sentence-pages`). This round adds the
+global glass-opacity slider (5-100, 22 = current look, all windows at once,
+content cards opaque) and sentence-complete bubble pagination with a
+content-sized host (180-340px wide, height by lines, native no-activate
+resize). Do not archive or tag anything until the user completes the latest
+Eval's Windows mouse-driven checklist.

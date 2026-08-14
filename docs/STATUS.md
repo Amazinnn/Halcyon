@@ -71,6 +71,16 @@
 > changes.
 
 
+> 2026-08-14 / Requirements #123/#124: two new OpenSpec changes opened —
+> `glass-opacity-slider` (global 5-100 glass opacity, 22 = current look, all
+> windows at once, content cards stay opaque) and `pet-bubble-sentence-pages`
+> (sentence-complete pages: whole short paragraphs, one sentence per page for
+> long ones, max 4 lines/page, rotation only for multi-page; content-sized host
+> 180-340px wide by lines via native no-activate resize). Automated gates and
+> release rebuild pass; Windows mouse acceptance is the only remaining gate and
+> both changes stay open.
+
+
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，AGPL-3.0-only）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
