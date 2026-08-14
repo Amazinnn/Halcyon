@@ -86,7 +86,14 @@ onMounted(async () => {
 
 <style scoped>
 .capsule {
-  height: 100%;
+  /* Requirement #121: the transparent host is larger than the pill so the
+     WebView-owned shadow renders fully; these insets keep the pill at the
+     same visible geometry (500x44) inside the 540x84 window. */
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  top: 14px;
+  bottom: 26px;
   box-sizing: border-box;
   display: flex;
   align-items: center;

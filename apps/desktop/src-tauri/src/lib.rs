@@ -2216,6 +2216,20 @@ pub(crate) const fn float_corner_preference_value() -> i32 {
 /// the WebView, so it never asks Windows for rectangular acrylic composition.
 pub(crate) const fn topbar_uses_native_composition() -> bool { false }
 
+/// Topbar pill geometry (requirement #121): the 500x44 pill keeps its size and
+/// position, while the transparent host reserves shadow margins so the
+/// WebView-owned box-shadow (`0 6px 18px`) renders fully inside the window
+/// and follows the pill curve exactly instead of being clipped by the
+/// rectangular window bounds.
+pub const TOPBAR_PILL_WIDTH: f64 = 500.0;
+pub const TOPBAR_PILL_HEIGHT: f64 = 44.0;
+pub const TOPBAR_SHADOW_LEFT: f64 = 20.0;
+pub const TOPBAR_SHADOW_RIGHT: f64 = 20.0;
+pub const TOPBAR_SHADOW_TOP: f64 = 14.0;
+pub const TOPBAR_SHADOW_BOTTOM: f64 = 26.0;
+pub const TOPBAR_WINDOW_WIDTH: f64 = TOPBAR_PILL_WIDTH + TOPBAR_SHADOW_LEFT + TOPBAR_SHADOW_RIGHT;
+pub const TOPBAR_WINDOW_HEIGHT: f64 = TOPBAR_PILL_HEIGHT + TOPBAR_SHADOW_TOP + TOPBAR_SHADOW_BOTTOM;
+
 static FLOAT_HOST_ORIGINAL_WNDPROCS:
     std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<isize, isize>>> =
     std::sync::OnceLock::new();
@@ -2935,7 +2949,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
 
     let topbar = tauri::WebviewWindowBuilder::new(app, "topbar", url.clone())
         .title("状态")
-        .inner_size(500.0, 44.0)
+        .inner_size(TOPBAR_WINDOW_WIDTH, TOPBAR_WINDOW_HEIGHT)
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
@@ -3303,7 +3317,10 @@ pub fn run() {
 
             // always-on-top status capsule: top-center of the primary screen
             if let Some(tb) = app.get_webview_window("topbar") {
-                let _ = tb.set_position(LogicalPosition::new(((sw - 500.0) / 2.0).max(0.0), 8.0));
+                let _ = tb.set_position(LogicalPosition::new(
+                    ((sw - TOPBAR_WINDOW_WIDTH) / 2.0).max(0.0),
+                    (8.0 - TOPBAR_SHADOW_TOP).max(0.0),
+                ));
             }
             apply_topbar_visibility(&app.handle());
             // defensive re-apply shortly after the event loop starts: the
@@ -4564,6 +4581,19 @@ mod tests {
     fn float_hosts_prefer_dwm_rounded_corners_for_native_acrylic() {
         assert_eq!(float_corner_preference_attribute(), 33);
         assert_eq!(float_corner_preference_value(), 2);
+    }
+
+    #[test]
+    fn topbar_host_reserves_shadow_margins_around_the_pill() {
+        assert_eq!(crate::TOPBAR_WINDOW_WIDTH, crate::TOPBAR_PILL_WIDTH + crate::TOPBAR_SHADOW_LEFT + crate::TOPBAR_SHADOW_RIGHT);
+        assert_eq!(crate::TOPBAR_WINDOW_HEIGHT, crate::TOPBAR_PILL_HEIGHT + crate::TOPBAR_SHADOW_TOP + crate::TOPBAR_SHADOW_BOTTOM);
+        assert_eq!(crate::TOPBAR_PILL_WIDTH, 500.0);
+        assert_eq!(crate::TOPBAR_PILL_HEIGHT, 44.0);
+        // Every side's margin must cover the shadow extent so the WebView
+        // pill shadow is never clipped by the host bounds (#121): blur 18px,
+        // vertical offset 6px down.
+        assert!(crate::TOPBAR_SHADOW_LEFT >= 18.0 && crate::TOPBAR_SHADOW_RIGHT >= 18.0);
+        assert!(crate::TOPBAR_SHADOW_TOP >= 12.0 && crate::TOPBAR_SHADOW_BOTTOM >= 24.0);
     }
 
     #[test]
