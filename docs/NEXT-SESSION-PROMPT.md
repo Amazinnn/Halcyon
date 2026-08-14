@@ -4,9 +4,30 @@
 
 ## 当前提示词
 
-我是 Focus Desktop 项目的维护者。请先阅读 `docs/STATUS.md`，再按需查阅 `docs/next-phase.md`、`docs/requirements-verbatim.md`（只追加，当前 #1–#99）、`docs/decisions/`（至 ADR-0029）、`docs/evals/README.md`、最新日期快照和 `docs/production-incidents.md`。每轮任务结束前必须更新受影响范围的 Eval；不得将 Mock 结果写成真实 Provider 验收。
+我是 Focus Desktop 项目的维护者。请先阅读 `docs/STATUS.md`，再按需查阅 `docs/next-phase.md`、`docs/requirements-verbatim.md`（只追加，当前 #1–#124）、`docs/decisions/`（ADR-0001~0036）、`docs/evals/README.md`、最新日期 Eval 快照和 `docs/production-incidents.md`。每轮任务结束前必须更新受影响范围的 Eval；不得将 Mock 结果写成真实 Provider 验收。
 
-当前正式版本：v1.12.8 已把托盘圆按钮和四个浮窗恢复入口串成同一未完成动作控制器；后端拒绝并发可见性操作，防止高频混合点击积压。聊天为真正的单行 `contenteditable`，Skill Token 按光标内嵌、可叠加、相邻 Backspace/Delete 整块删除，并按可见顺序直通 Provider。自动化、完整构建、release 重建和用户发布验收均已记录于最新 Eval。下一轮从该基线继续，不要修改权威设计稿 `local-focus-desktop-agent-design-v0.2.md`。
+**当前状态（2026-08-14）**：
+- 功能面已冻结并全部验收：需求 #121–#124 已验收，INC-022 Verified；四个 OpenSpec 变更已归档（`openspec/changes/archive/2026-08-14-*`，主规格已同步到 `openspec/specs/`）；当前无进行中变更。
+- 冻结基线：tag `v1.12.10-restructure-freeze`（已推送远程）+ 备份 `D:\Projects\Focus-backup-20260814.tar.gz`。
+- 版本 v1.12.10，未打新 release tag；`SettingsPopover.vue` 内版本号仍为 v1.12.10，发布时一并更新。
+
+**本轮方向：代码重构与可扩展性**（用户已批准，从结构性整理开始）：
+- `docs/next-phase.md`「重构候选」：梯队 1 结构性整理（lib.rs 4600+ 行按领域拆模块、前端 store 收拢、死代码清理）；梯队 2 工程基建（clippy/rustfmt/eslint、一键门禁、pre-push hook、替换"源码字符串断言"类测试）；梯队 3 架构级（薄窗口模式、bundle 分包）。
+- `docs/next-phase.md`「扩展方向」：窗口注册表（声明式 WindowSpec + 前端 ViewRegistry）、Focus UI Kit（可复用控件 + design tokens）、数据层领域分层、事件流分组 + 薄窗口订阅、插件边界（不建插件 API，做模块边界；focus-cli 已有白名单 + 审计基础）。
+- 建议第一个变更：**窗口注册表**（拆 lib.rs 的自然抓手，同时为"以后加新窗口只动声明"铺路）。
+
+**流程铁律**：
+1. 新需求/新行为先逐字追加 `docs/requirements-verbatim.md`，再走 OpenSpec（explore→propose→apply→archive）；重构类变更也开 OpenSpec。
+2. 不得修改/移动/重编 `local-focus-desktop-agent-design-v0.2.md`；不改历史需求条目（仅状态列可更新）。
+3. 每次交付必跑：`cd apps/desktop && npm test -- --run && npm run build`；`cd apps/desktop/src-tauri && cargo test --lib`（target/debug 已清理，首次重新编译较慢属正常）；`cd packages/event-schema && npm test`；`openspec validate --specs --strict`；`git diff --check`。UI/Rust 交付前必须 rebuild（`launch-focus.cmd rebuild` 在 cmd 重定向下易失败，直接手动跑 `npm run tauri build -- --no-bundle` 更可靠；build 前先停 desktop.exe/watchdog 进程）。
+4. 提交风格 `feat(...)/fix(...)/docs(...)/chore(...)`，分阶段提交，工作树保持干净并 push 到 Amazinnn/Halcyon（Clash 开走代理，否则 `git -c http.proxy= -c https.proxy= push`）。
+5. 不打 release tag、不归档 OpenSpec，直到用户完成真实 Windows 鼠标验收；每轮给编号手测清单。
+
+**环境注意**：
+- PowerShell 管道传中文会变 `?`，写中文文件用 .NET `WriteAllText`（UTF-8 无 BOM）。
+- cargo 拉新依赖需清 HTTP(S)_PROXY/ALL_PROXY 并设 `NO_PROXY=crates.io,index.crates.io,static.crates.io,github.com,*.crates.io`。
+- 本机单显示器（多显示器 N/A）；Claude 模型提供商由用户自管（曾遇官方配额 429，已换 provider 解决）。
+- 实机调试可用 CDP（启动前设 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`），配合 `pet_bubble_diagnostics` 等只读诊断命令。
 
 ## 2026-08-08 历史归档（不作为当前指令）
 
