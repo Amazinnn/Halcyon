@@ -168,6 +168,12 @@ struct TurnState {
     first_delta_sent: Mutex<bool>,
     last_message: Mutex<String>,
     active_tools: Mutex<HashMap<String, String>>,
+    /// Resident-mode cumulative text length per assistant message id
+    /// (ADR-0036): partial assistant messages repeat accumulated content, so
+    /// only the appended suffix is streamed as a delta.
+    assistant_text_len: Mutex<HashMap<String, usize>>,
+    /// Same cumulative tracking for thinking blocks.
+    assistant_thinking_len: Mutex<HashMap<String, usize>>,
     terminal_sent: AtomicBool,
     interrupted: AtomicBool,
 }
@@ -182,6 +188,8 @@ impl TurnState {
             first_delta_sent: Mutex::new(false),
             last_message: Mutex::new(String::new()),
             active_tools: Mutex::new(HashMap::new()),
+            assistant_text_len: Mutex::new(HashMap::new()),
+            assistant_thinking_len: Mutex::new(HashMap::new()),
             terminal_sent: AtomicBool::new(false),
             interrupted: AtomicBool::new(false),
         }
@@ -648,6 +656,13 @@ fn dispatch_stream_message(
             handle_stream_event(tx, turn, message.get("event").unwrap_or(&Value::Null));
             None
         }
+        // ADR-0036: in resident mode (stdin held open) Claude Code emits
+        // partial assistant messages as the only per-turn increments. Their
+        // content blocks carry cumulative thinking/text plus tool_use.
+        "assistant" => {
+            handle_assistant_message(tx, turn, message.get("message").unwrap_or(&Value::Null));
+            None
+        }
         "user" => {
             handle_user_message(tx, turn, message.get("message").unwrap_or(&Value::Null));
             None
@@ -670,6 +685,87 @@ fn dispatch_stream_message(
             None
         }
         _ => None,
+    }
+}
+
+/// Emit only the appended suffix of a cumulative block text for one
+/// assistant message id (ADR-0036). Partial assistant messages repeat the
+/// accumulated content, so a plain emit would replay the whole prefix.
+fn assistant_suffix(cumulative: &Mutex<HashMap<String, usize>>, message_id: &str, text: &str) -> Option<String> {
+    let mut seen = cumulative.lock().unwrap();
+    let prev = seen.get(message_id).copied().unwrap_or(0);
+    if text.len() <= prev {
+        return None;
+    }
+    seen.insert(message_id.to_string(), text.len());
+    Some(text[prev..].to_string())
+}
+
+fn handle_assistant_message(tx: &Sender<CoreEvent>, turn: &TurnState, message: &Value) {
+    let Some(content) = message.get("content").and_then(Value::as_array) else {
+        return;
+    };
+    let message_id = message
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("assistant");
+    let stream = turn.display.shows_public_text_deltas();
+    for block in content {
+        match block.get("type").and_then(Value::as_str).unwrap_or("") {
+            "thinking" => {
+                let Some(text) = block.get("thinking").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !stream || text.is_empty() {
+                    continue;
+                }
+                if let Some(suffix) = assistant_suffix(&turn.assistant_thinking_len, message_id, text) {
+                    if !suffix.is_empty() {
+                        emit_envelope(tx, turn, json!({ "type": "message.thinking", "text": suffix }));
+                    }
+                }
+            }
+            "text" => {
+                let Some(text) = block.get("text").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !stream || text.is_empty() {
+                    continue;
+                }
+                if let Some(suffix) = assistant_suffix(&turn.assistant_text_len, message_id, text) {
+                    if !suffix.is_empty() {
+                        emit_envelope(tx, turn, json!({ "type": "message.delta", "text": suffix }));
+                    }
+                }
+            }
+            "tool_use" => {
+                let name = block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool")
+                    .to_string();
+                let tool_id = block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool")
+                    .to_string();
+                turn.active_tools
+                    .lock()
+                    .unwrap()
+                    .insert(tool_id.clone(), name.clone());
+                let summary = block
+                    .get("input")
+                    .and_then(|input| input.get("command"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("执行中");
+                emit_envelope(
+                    tx,
+                    turn,
+                    json!({ "type": "tool.started", "tool": name, "inputSummary": summary }),
+                );
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1031,6 +1127,185 @@ mod tests {
         }
         let done = done_rx.try_recv().expect("terminal TurnDone");
         (emitted, done)
+    }
+    /// ADR-0036: resident-mode partial assistant messages are the streaming
+    /// source when stdin stays open. Thinking and text blocks stream as
+    /// cumulative-length suffixes; tool_use blocks restore tool.started.
+    #[test]
+    fn claude_resident_assistant_messages_stream_thinking_text_and_tools() {
+        let (events, done) = dispatch_recorded(
+            full_display(),
+            vec![
+                json!({
+                    "type": "system",
+                    "subtype": "init",
+                    "session_id": "claude-resident-1"
+                }),
+                json!({
+                    "type": "assistant",
+                    "session_id": "claude-resident-1",
+                    "message": {
+                        "id": "msg_r1",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "thinking",
+                            "thinking": "第一步思考\n第二行思考"
+                        }]
+                    }
+                }),
+                json!({
+                    "type": "assistant",
+                    "session_id": "claude-resident-1",
+                    "message": {
+                        "id": "msg_r1",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": "toolu_resident",
+                            "name": "Bash",
+                            "input": { "command": "focus-cli ping" }
+                        }]
+                    }
+                }),
+                json!({
+                    "type": "assistant",
+                    "session_id": "claude-resident-1",
+                    "message": {
+                        "id": "msg_r1",
+                        "role": "assistant",
+                        "content": [{ "type": "text", "text": "处理完成。" }]
+                    }
+                }),
+                json!({
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": false,
+                    "session_id": "claude-resident-1",
+                    "result": "处理完成。"
+                }),
+            ],
+        );
+
+        let mut types = Vec::new();
+        let mut thinking = Vec::new();
+        let mut deltas = Vec::new();
+        for event in &events {
+            if let CoreEvent::AgentEvent(envelope) = event {
+                validate_envelope(envelope).unwrap();
+                let ev = &envelope["event"];
+                let kind = ev["type"].as_str().unwrap();
+                types.push(kind.to_string());
+                if kind == "message.thinking" {
+                    thinking.push(ev["text"].as_str().unwrap().to_string());
+                }
+                if kind == "message.delta" {
+                    deltas.push(ev["text"].as_str().unwrap().to_string());
+                }
+            }
+        }
+        assert_eq!(thinking, vec!["第一步思考\n第二行思考"]);
+        assert_eq!(deltas, vec!["处理完成。"]);
+        for expected in ["session.started", "message.thinking", "tool.started", "message.delta", "message.completed", "session.completed"] {
+            assert!(types.iter().any(|actual| actual == expected), "missing {expected} in {types:?}");
+        }
+        assert_eq!(done.status, "completed");
+        assert_eq!(done.result.as_deref(), Some("处理完成。"));
+    }
+
+    /// ADR-0036: partial assistant messages repeat accumulated content; only
+    /// the appended suffix may stream, for both text and thinking.
+    #[test]
+    fn claude_resident_partials_emit_only_cumulative_suffixes() {
+        let (events, done) = dispatch_recorded(
+            full_display(),
+            vec![
+                json!({
+                    "type": "assistant",
+                    "session_id": "claude-resident-2",
+                    "message": {
+                        "id": "msg_r2",
+                        "role": "assistant",
+                        "content": [{ "type": "text", "text": "你好" }]
+                    }
+                }),
+                json!({
+                    "type": "assistant",
+                    "session_id": "claude-resident-2",
+                    "message": {
+                        "id": "msg_r2",
+                        "role": "assistant",
+                        "content": [
+                            { "type": "thinking", "thinking": "想" },
+                            { "type": "text", "text": "你好世界" }
+                        ]
+                    }
+                }),
+                json!({
+                    "type": "assistant",
+                    "session_id": "claude-resident-2",
+                    "message": {
+                        "id": "msg_r2",
+                        "role": "assistant",
+                        "content": [{ "type": "thinking", "thinking": "想想想" }]
+                    }
+                }),
+                json!({
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": false,
+                    "session_id": "claude-resident-2",
+                    "result": "你好世界"
+                }),
+            ],
+        );
+        let mut thinking = Vec::new();
+        let mut deltas = Vec::new();
+        for event in events {
+            if let CoreEvent::AgentEvent(envelope) = event {
+                let ev = envelope["event"].clone();
+                if ev["type"] == "message.thinking" {
+                    thinking.push(ev["text"].as_str().unwrap().to_string());
+                }
+                if ev["type"] == "message.delta" {
+                    deltas.push(ev["text"].as_str().unwrap().to_string());
+                }
+            }
+        }
+        assert_eq!(thinking, vec!["想", "想想"]);
+        assert_eq!(deltas, vec!["你好", "世界"]);
+        assert_eq!(done.status, "completed");
+    }
+
+    /// ADR-0036: the streaming switch is the single gate; hidden turns emit
+    /// no thinking or text increments from assistant messages.
+    #[test]
+    fn claude_resident_assistant_increments_follow_the_display_gate() {
+        let (events, done) = dispatch_recorded(
+            hidden_display(),
+            vec![
+                json!({
+                    "type": "assistant",
+                    "session_id": "claude-resident-3",
+                    "message": {
+                        "id": "msg_r3",
+                        "role": "assistant",
+                        "content": [
+                            { "type": "thinking", "thinking": "隐藏思考" },
+                            { "type": "text", "text": "隐藏文本" }
+                        ]
+                    }
+                }),
+                json!({
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": false,
+                    "session_id": "claude-resident-3",
+                    "result": "隐藏文本"
+                }),
+            ],
+        );
+        assert!(events.iter().all(|event| !matches!(event, CoreEvent::AgentEvent(_))));
+        assert_eq!(done.status, "completed");
     }
 
     #[cfg(windows)]

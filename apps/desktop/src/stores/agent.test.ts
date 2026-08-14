@@ -214,6 +214,78 @@ describe("direct chat stream convergence", () => {
     expect(agent.bubble).toBeNull();
   });
 
+  it("accumulates Claude thinking on the live message and keeps it after finalize", () => {
+    const agent = useAgentStore();
+    agent.messages = [{ role: "agent", text: "", thinking: "", kind: "delta" }];
+
+    agent.handleEvent({
+      schemaVersion: 1,
+      agentId: "char-a",
+      sessionId: "thread-1",
+      timestamp: "2026-08-14T00:00:00.000Z",
+      event: { type: "message.thinking", text: "先想想" },
+    });
+    agent.handleEvent({
+      schemaVersion: 1,
+      agentId: "char-a",
+      sessionId: "thread-1",
+      timestamp: "2026-08-14T00:00:00.001Z",
+      event: { type: "message.thinking", text: "再想想" },
+    });
+    expect(agent.messages[0].thinking).toBe("先想想再想想");
+    expect(agent.publicTextDeltaSeen).toBe(true);
+
+    agent.handleEvent({
+      schemaVersion: 1,
+      agentId: "char-a",
+      sessionId: "thread-1",
+      timestamp: "2026-08-14T00:00:00.002Z",
+      event: { type: "message.completed", text: "最终回答" },
+    });
+    expect(agent.messages).toEqual([
+      { role: "agent", text: "最终回答", thinking: "先想想再想想", kind: "completed" },
+    ]);
+  });
+
+  it("creates a live message when thinking arrives before any text delta", () => {
+    const agent = useAgentStore();
+    agent.handleEvent({
+      schemaVersion: 1,
+      agentId: "char-a",
+      sessionId: "thread-1",
+      timestamp: "2026-08-14T00:00:00.000Z",
+      event: { type: "message.thinking", text: "思考中" },
+    });
+    agent.handleEvent({
+      schemaVersion: 1,
+      agentId: "char-a",
+      sessionId: "thread-1",
+      timestamp: "2026-08-14T00:00:00.001Z",
+      event: { type: "message.delta", text: "回答" },
+    });
+    expect(agent.messages[0]).toMatchObject({
+      role: "agent",
+      kind: "delta",
+      text: "回答",
+      thinking: "思考中",
+    });
+  });
+
+  it("round-trips thinking with completed history", () => {
+    const agent = useAgentStore();
+    agent.characterId = "char-a";
+    agent.provider = "claude";
+    agent.messages = [
+      { role: "agent", text: "最终回答", thinking: "过程思考", kind: "completed" },
+    ];
+    agent.persistVisibleHistory();
+    agent.messages = [];
+    agent.restoreVisibleHistory();
+    expect(agent.messages).toEqual([
+      { role: "agent", text: "最终回答", thinking: "过程思考", kind: "completed" },
+    ]);
+  });
+
   it("uses only the authoritative bubble event after a completed direct reply", async () => {
     const agent = useAgentStore();
     agent.characterId = "char-a";

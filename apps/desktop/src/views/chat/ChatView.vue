@@ -242,6 +242,7 @@ function selectSkill(event: Event) {
           {{ m.role === "agent" ? (m.kind === "system" ? "系统" : agent.characterName) : "我" }}
           <span v-if="m.source" class="source">{{ m.source }}</span>
         </span>
+        <span v-if="m.thinking" class="thinking" aria-label="思考过程">{{ m.thinking }}</span>
         <span class="text">{{ m.text }}</span>
         <span v-if="m.kind === 'delta'" class="cursor">▍</span>
       </div>
@@ -354,6 +355,19 @@ function selectSkill(event: Event) {
   font-size: 12px;
   text-align: center;
   margin-top: 40px;
+}
+.thinking {
+  display: block;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-left: 2px solid rgba(163, 230, 53, 0.28);
+  background: rgba(163, 230, 53, 0.05);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-low);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .msg {
   max-width: 85%;

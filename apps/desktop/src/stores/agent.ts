@@ -9,6 +9,8 @@ export interface ChatMessage {
   text: string;
   kind: "delta" | "completed" | "system";
   source?: string;
+  /** Provider-visible thinking stream (Claude, streaming switch on; ADR-0036). */
+  thinking?: string;
 }
 
 const CHAT_HISTORY_PREFIX = "focus.chat.history.v1";
@@ -430,6 +432,9 @@ export const useAgentStore = defineStore("agent", {
         case "message.delta":
           this.appendDelta(ev.text);
           break;
+        case "message.thinking":
+          this.appendThinking(ev.text);
+          break;
         case "message.completed":
           this.finalizeDelta(ev.text);
           break;
@@ -500,6 +505,19 @@ export const useAgentStore = defineStore("agent", {
         last.text += text;
       } else {
         this.messages.push({ role: "agent", text, kind: "delta" });
+      }
+    },
+    /** ADR-0036: Claude thinking increments accumulate on the live agent
+     * message; they stay with the completed message and never enter the pet
+     * bubble or workflow results. */
+    appendThinking(text: string) {
+      this.publicTextDeltaSeen = true;
+      this.syncVisibleHistoryDay();
+      const last = this.messages[this.messages.length - 1];
+      if (last && last.role === "agent" && last.kind === "delta") {
+        last.thinking = (last.thinking ?? "") + text;
+      } else {
+        this.messages.push({ role: "agent", text: "", thinking: text, kind: "delta" });
       }
     },
     finalizeDelta(text: string) {
