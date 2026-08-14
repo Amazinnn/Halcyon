@@ -87,6 +87,13 @@
 > `2026-08-14-topbar-capsule-acrylic-clip`、`2026-08-14-glass-opacity-slider`、
 > `2026-08-14-pet-bubble-sentence-pages`。INC-022 已 Verified。当前无进行中变更。
 
+> 2026-08-14 重构轮（需求 #125，ADR-0037）：第一个变更「窗口注册表」已实现并通过
+> 自动化门禁（前端 115 测试、Rust 221 测试、schema、OpenSpec 严格校验、release 重建）。
+> Rust `WINDOW_SPECS` 声明表驱动窗口创建（`FLOAT_LABELS` 废除），前端 `ViewRegistry`
+> 驱动视图与托盘，capabilities 与注册表一致性由测试守护；行为零变化。OpenSpec 变更
+> `2026-08-14-window-registry-declarative` 保持开放，Windows 鼠标验收为唯一剩余门槛。
+> 见 [本轮 Eval](./evals/2026-08-14-window-registry-refactor-checkpoint.md)。
+
 
 ## 项目一句话
 

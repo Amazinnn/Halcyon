@@ -139,6 +139,13 @@ input and atomic adjacent-token deletion are implemented and tested.
 - `apps/desktop/src-tauri/src/lib.rs`（约 4600+ 行）按职责拆模块：命令注册、窗口创建/生命周期、气泡控制器、玻璃（acrylic/opacity）、bootstrap、启动流程；现有 218 个 Rust 测试 + 一次完整人工回归兜底。
 - 前端 store 按领域收拢；清理死代码（如 chat agent store 残留的 `bubble` 字段）。
 
+> 2026-08-14 进度：第一项「窗口注册表」已实现（需求 #125，ADR-0037，OpenSpec
+> `2026-08-14-window-registry-declarative`）：Rust `WINDOW_SPECS` 声明表 + 前端
+> `ViewRegistry`，新窗口只需声明三处（WindowSpec / ViewRegistry / capabilities，
+> 一致性由测试守护）；自动化门禁与 release 重建通过，Windows 鼠标验收 Pending。
+> 下一候选：Focus UI Kit（可复用控件 + design tokens），或继续拆 lib.rs（气泡
+> 控制器 / 玻璃模块独立）。
+
 ### 梯队 2：工程基建（质量护栏自动化）
 - Rust：`clippy -D warnings` + `rustfmt --check` 进门禁；前端 ESLint；pre-push hook 跑 `git diff --check`。
 - 一键门禁脚本：frontend tests/build + `cargo test --lib` + event-schema + openspec validate（当前全手动，易漏）。
