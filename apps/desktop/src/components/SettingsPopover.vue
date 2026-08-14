@@ -29,6 +29,7 @@ const musicFolder = ref("");
 const version = "v1.12.10";
 const wallpaperUrl = ref("");
 const acrylicOn = ref(true);
+const streamingOn = ref(false);
 
 const apps = ref<string[]>([]);
 const appQuery = ref("");
@@ -44,8 +45,9 @@ const filteredApps = computed(() => apps.value.filter((name) => name.toLowerCase
 
 async function load() {
   await settings.load();
-  const b = await invoke<{ acrylicEnabled?: boolean }>("get_bootstrap");
+  const b = await invoke<{ acrylicEnabled?: boolean; chatStreamingEnabled?: boolean }>("get_bootstrap");
   acrylicOn.value = !!b.acrylicEnabled;
+  streamingOn.value = !!b.chatStreamingEnabled;
   const p = await invoke<string | null>("get_wallpaper");
   wallpaperUrl.value = p ? convertFileSrc(p) : "";
   await agent.refreshStatus();
@@ -82,6 +84,16 @@ async function toggleAcrylic() {
   } catch (e) {
     console.error("[settings] set_acrylic failed", e);
     acrylicOn.value = !acrylicOn.value;
+  }
+}
+
+async function toggleStreaming() {
+  streamingOn.value = !streamingOn.value;
+  try {
+    await invoke("set_chat_streaming_enabled", { enabled: streamingOn.value });
+  } catch (e) {
+    console.error("[settings] set_chat_streaming_enabled failed", e);
+    streamingOn.value = !streamingOn.value;
   }
 }
 
@@ -303,6 +315,12 @@ onMounted(load);
         <span class="label">毛玻璃</span>
         <button class="switch" :class="{ on: acrylicOn }" @click="toggleAcrylic">
           {{ acrylicOn ? "开" : "关" }}
+        </button>
+      </div>
+      <div class="row">
+        <span class="label">显示流式输出</span>
+        <button class="switch" :class="{ on: streamingOn }" @click="toggleStreaming">
+          {{ streamingOn ? "开" : "关" }}
         </button>
       </div>
       <div class="row">

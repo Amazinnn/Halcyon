@@ -481,7 +481,7 @@ onBeforeUnmount(() => {
   cursor: grab;
   border-radius: var(--window-host-radius);
   overflow: hidden;
-  background: color-mix(in srgb, var(--pet-host-tint, #122018) 72%, transparent);
+  background: color-mix(in srgb, var(--pet-host-tint, #122018) 50%, transparent);
 }
 .pet-stage {
   width: 100%;

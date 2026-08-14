@@ -29,6 +29,16 @@ keeps only the newest current-Agent envelope in memory for 30 seconds; a bubble
 window claims it once after initialization. This does not persist through a
 Focus restart, and chat visibility does not affect delivery.
 
+### Follow-up revision (2026-08-14)
+
+The reported first-reply failure is a same-Agent initialization path, not an
+Agent switch: persisting an already-current Agent MUST NOT discard the pending
+delivery before the bubble can claim it. The global settings surface also gains
+a persisted, default-off control for displaying Provider-public text deltas on
+the next direct conversation. It never exposes hidden reasoning, workflow
+steps, or tool summaries. The pet WebView surface uses the existing
+package-derived host tint at 50% opacity so its native acrylic remains visible.
+
 ## Capabilities
 
 ### New Capabilities
@@ -43,8 +53,10 @@ Focus restart, and chat visibility does not affect delivery.
 ## Impact
 
 The later pet phases affect only package analysis, pet rendering, pet-specific
-acrylic color, state mapping, and the companion window. They do not alter the
-accepted float chrome, desktop locking, grid geometry, or tray behavior.
+acrylic color, direct-chat display preference, state mapping, and the companion
+window. They do not alter the accepted float chrome, desktop locking, grid
+geometry, tray behavior, Provider hidden reasoning, workflow behavior, or the
+separate top status capsule.
 
 ## Acceptance Boundary
 

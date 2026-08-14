@@ -327,6 +327,7 @@ struct Bootstrap {
     agent_workspace_dir: Option<String>,
     pet_bg_fade: bool,
     current_agent_id: Option<String>,
+    chat_streaming_enabled: bool,
 }
 
 #[tauri::command]
@@ -356,6 +357,7 @@ fn get_bootstrap(
         agent_workspace_dir: s.agent_workspace_dir.clone(),
         pet_bg_fade: s.pet_bg_fade,
         current_agent_id: s.current_agent_id.clone(),
+        chat_streaming_enabled: s.chat_streaming_enabled,
     }
 }
 
@@ -676,8 +678,7 @@ fn agent_start_thread(
     let state = app.state::<AppState>();
     let today = today_local();
     let prompt = direct_user_message(&initial_message);
-    // M5 (ADR-0022): conversation = full display (stream + result both shown).
-    let display = agents::agent_display_full();
+    let display = agents::agent_display_full(state.settings.lock().unwrap().chat_streaming_enabled);
     let (info, persistence) = with_agent_for(&app, &character_id, |runtime| {
         let provider = runtime.kind();
         let (saved_session, ws) = {
@@ -803,8 +804,9 @@ fn agent_send(
     thread_id: String,
     text: String,
 ) -> Result<(), String> {
-    // M5 (ADR-0022): conversation = full display.
-    let display = agents::agent_display_full();
+    let display = agents::agent_display_full(
+        app.state::<AppState>().settings.lock().unwrap().chat_streaming_enabled,
+    );
     let prompt = direct_user_message(&text);
     with_agent_for(&app, &character_id, |rt| {
         rt.send(&thread_id, &prompt, display)
@@ -926,12 +928,16 @@ fn agent_set_current(app: tauri::AppHandle, character_id: String) -> Result<(), 
     if state.store.lock().unwrap().get_character(&character_id).map_err(|e| e.to_string())?.is_none() {
         return Err("Agent 不存在".into());
     }
-    {
+    let changed = {
         let mut settings = state.settings.lock().unwrap();
+        let changed = settings.current_agent_id.as_deref() != Some(character_id.as_str());
         settings.current_agent_id = Some(character_id);
         settings.save(&state.data_dir)?;
+        changed
+    };
+    if changed {
+        state.pending_bubble.lock().unwrap().take();
     }
-    state.pending_bubble.lock().unwrap().take();
     sync_pet_host_visibility(&app);
     apply_current_pet_acrylic(&app);
     Ok(())
@@ -1885,13 +1891,23 @@ fn set_acrylic(
         s.acrylic_enabled = enabled;
         let _ = s.save(&state.data_dir);
     }
-    for label in ["chat", "stats", "music", "workflow"] {
+    for label in ["chat", "stats", "music", "workflow", "topbar"] {
         if let Some(w) = app.get_webview_window(label) {
             apply_acrylic_opt(&w, enabled);
         }
     }
     apply_current_pet_acrylic(&app);
     Ok(())
+}
+
+#[tauri::command]
+fn set_chat_streaming_enabled(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut s = state.settings.lock().unwrap();
+    s.chat_streaming_enabled = enabled;
+    s.save(&state.data_dir)
 }
 
 #[tauri::command]
@@ -2101,6 +2117,37 @@ pub(crate) const fn float_corner_preference_attribute() -> u32 {
 
 pub(crate) const fn float_corner_preference_value() -> i32 {
     2 // DWMWCP_ROUND
+}
+
+pub(crate) const fn topbar_capsule_region(client_width: i32, client_height: i32) -> (i32, i32, i32) {
+    (client_width, client_height, client_height / 2)
+}
+
+/// Topbar is intentionally not a float host (ADR-0029). Its native acrylic
+/// nevertheless needs one creation-only region because CSS cannot clip HWND
+/// composition. This must run while the window remains hidden.
+fn configure_topbar_capsule_region(w: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = w.hwnd() {
+        use windows::Win32::Foundation::{HWND, RECT};
+        use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+        let hwnd = HWND(hwnd.0 as *mut core::ffi::c_void);
+        unsafe {
+            let mut client = RECT::default();
+            if !GetClientRect(hwnd, &mut client).is_ok() { return; }
+            let (width, height, radius) = topbar_capsule_region(
+                client.right - client.left,
+                client.bottom - client.top,
+            );
+            if width <= 0 || height <= 0 || radius <= 0 { return; }
+            let region = CreateRoundRectRgn(0, 0, width, height, radius * 2, radius * 2);
+            if region.0.is_null() { return; }
+            if SetWindowRgn(hwnd, Some(region), true) == 0 {
+                let _ = DeleteObject(region.into());
+            }
+        }
+    }
 }
 
 static FLOAT_HOST_ORIGINAL_WNDPROCS:
@@ -2810,6 +2857,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .build()?;
     // informational only: never intercept mouse clicks on apps underneath
     topbar.set_ignore_cursor_events(true)?;
+    configure_topbar_capsule_region(&topbar);
     if let Ok(hwnd) = topbar.hwnd() {
         acrylic::noactivate(hwnd.0);
     }
@@ -3405,6 +3453,7 @@ pub fn run() {
             set_shortcut_fit,
             launch_shortcut,
             set_acrylic,
+            set_chat_streaming_enabled,
             set_focus_durations,
             set_focus_mode,
             set_distraction_lists,
@@ -3486,7 +3535,7 @@ mod tests {
         resolve_window_placement, ClientFrame, ClientGeometry,
         FloatVisibilityGate,
         resume_with_initial_message, saved_session_for_today, select_status_character,
-        set_agent_provider_serialized_with, topbar_visible, with_agent_runtime_serialized,
+        set_agent_provider_serialized_with, topbar_capsule_region, topbar_visible, with_agent_runtime_serialized,
         claim_pending_bubble, PendingBubble, PENDING_BUBBLE_TTL_MS,
     };
 
@@ -3767,7 +3816,7 @@ mod tests {
                     let info = actual_runtime.start_thread(
                         &claim_workspace.to_string_lossy(),
                         "claim before switch",
-                        agents::agent_display_full(),
+                        agents::agent_display_full(false),
                     )?;
                     claim_store
                         .lock()
@@ -3882,7 +3931,7 @@ mod tests {
                 let info = actual_runtime.start_thread(
                     &workspace.to_string_lossy(),
                     "workflow guarded start",
-                    agents::agent_display_full(),
+                    agents::agent_display_full(false),
                 )?;
                 Ok((actual_runtime.kind(), info))
             },
@@ -4047,7 +4096,7 @@ mod tests {
             .start_thread(
                 &workspace.to_string_lossy(),
                 "stay active",
-                agents::agent_display_full(),
+                agents::agent_display_full(false),
             )
             .unwrap();
         assert!(runtime.has_active_turn());
@@ -4317,7 +4366,7 @@ mod tests {
             &runtime,
             "today-thread",
             "resume this message",
-            agents::agent_display_full(),
+            agents::agent_display_full(false),
         )
         .expect("same-day resume should accept its initial message");
         assert_eq!(info.id, "today-thread");
@@ -4422,6 +4471,12 @@ mod tests {
     fn float_hosts_prefer_dwm_rounded_corners_for_native_acrylic() {
         assert_eq!(float_corner_preference_attribute(), 33);
         assert_eq!(float_corner_preference_value(), 2);
+    }
+
+    #[test]
+    fn topbar_capsule_region_uses_client_height_as_its_diameter_once() {
+        assert_eq!(topbar_capsule_region(500, 44), (500, 44, 22));
+        assert_eq!(topbar_capsule_region(137, 43), (137, 43, 21));
     }
 
     #[test]

@@ -43,6 +43,15 @@
   one-time bubble-window claim; keep workflow semantics unchanged.
 - [x] 3.7 Configure `pet-bubble` once while hidden using the accepted float
   host path, run automated gates and rebuild; push the Pending checkpoint.
+- [ ] 3.8 Add a red-first same-current-Agent initialization regression and
+  preserve pending delivery unless the persisted Agent actually changes or is
+  deleted; update the Eval and INC-022 evidence.
+- [ ] 3.9 Add the global default-off persisted "显示流式输出" preference, limit
+  it to Provider-public direct-chat text deltas, and cover bootstrap,
+  restart, Codex, and Claude behavior.
+- [ ] 3.10 Make the package-derived pet WebView tint 50% transparent while
+  retaining the existing global acrylic authority; add focused coverage and
+  the Windows visual gate.
 
 ## 4. Restricted controls and closeout
 

@@ -97,6 +97,8 @@ pub struct Settings {
     /// v1.13: Agent owns the optional pet package; this selects the desktop identity.
     #[serde(default)]
     pub current_agent_id: Option<String>,
+    #[serde(default)]
+    pub chat_streaming_enabled: bool,
     #[serde(default = "default_true")]
     pub pet_bg_fade: bool,
     #[serde(default)]
@@ -164,6 +166,7 @@ impl Default for Settings {
             agent_workspace_dir: None,
         pet_pack_id: None,
         current_agent_id: None,
+        chat_streaming_enabled: false,
         pet_bg_fade: true,
         music_folder: None,
         layout_version: None,

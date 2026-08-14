@@ -43,6 +43,18 @@ mapping, and companion visual work remain a separate Pending acceptance scope.
 | 修复 | 当前 Agent 的 30 秒单条内存投递、一次领取和 `deliveryId` 去重；气泡窗口完成初始化后补领，并在隐藏创建时一次性配置浮窗宿主。工作流与监督提醒不进入此补领缓存。 |
 | 验证证据 / 回归覆盖 | 红灯前端去重测试、单次领取/过期 Rust 测试已转绿；90 个前端测试、211 个 Rust 测试、schema、构建、OpenSpec 严格校验和 release rebuild 通过。Windows 人工验收仍 Pending。关联 OpenSpec `pet-state-pack-and-settings` 与本轮 Eval。 |
 
+2026-08-14 follow-up: the user still observed no bubble for a direct reply.
+Source tracing found a further lifecycle condition: `pet-bubble` restores the
+same current Agent through `agent_set_current`, whose unconditional pending
+delivery clear consumes the envelope before its claim. The active fix is scoped
+to preserve the envelope for an identical current-Agent write while retaining
+real switch/deletion clearing; automated and Windows evidence are pending.
+
+2026-08-14 automated checkpoint: the identical-current-Agent write now retains
+the pending delivery, while a real switch/deletion continues to clear it. The
+full frontend/Rust/schema/build/OpenSpec/diff/rebuild gate passed; Windows
+delivery acceptance remains Pending.
+
 ### INC-021 Pet spritesheet does not resize with its grid host
 | 字段 | 内容 |
 | --- | --- |

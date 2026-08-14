@@ -227,3 +227,51 @@ Manual acceptance required after rebuild:
 4. Switch to another Agent and test again; no prior Agent message may appear.
 5. Check an Agent without a pet package; no visible pet/bubble host, no float
    caption, blue strip, overlap, freeze, or brightness-center regression.
+
+## 2026-08-14 Requirements #116/#117 follow-up planning
+
+Status: **implementation pending; no Windows acceptance claim**.
+
+The user reported that the first direct reply still produced no bubble. Source
+tracing reproduced the missing handoff: the independent bubble WebView restores
+the same Agent through `agent_set_current`, and that command currently clears
+the pending delivery even when the persisted Agent ID did not change. The
+active pet OpenSpec now requires a red-first same-current-Agent regression,
+preserving the 30-second, single-entry, one-claim delivery only until a real
+Agent switch or deletion.
+
+Requirement #116 also records the approved default-off global
+"显示流式输出" preference. Its contract is intentionally limited to
+Provider-public direct-chat text deltas for the next Codex or Claude turn; it
+does not expose hidden reasoning, workflow progress, or tool detail. The pet
+surface will retain its package-derived tint at 50% opacity so existing native
+acrylic can show through.
+
+Requirement #117 has a separate active OpenSpec
+`topbar-capsule-acrylic-clip`: native acrylic must be clipped once while the
+topbar is hidden to the actual client-pixel pill, and the global acrylic toggle
+must update topbar. Automated tests and rebuild have not been run for either
+follow-up; the mouse-driven Windows checks remain pending.
+
+## 2026-08-14 Automated delivery checkpoint
+
+Status: **automated verification passed; Windows visual acceptance Pending**.
+
+The same-current-Agent initialization path now preserves a pending bubble; a
+real Agent change still clears it. `chatStreamingEnabled` is globally persisted,
+defaults to false, is supplied by bootstrap, and snapshots direct Codex/Claude
+display behavior for the next turn. The pet WebView blends its derived tint at
+50%. Topbar receives a creation-only native client-pixel round region (radius
+is half height); its runtime acrylic toggle is synchronized without joining the
+float-host lifecycle. ADR-0033 records that boundary.
+
+Fresh gates passed: frontend tests (90), `npm run build`, event-schema tests,
+`cargo test --lib` (212 passed, 1 ignored), strict validation for both active
+changes and global specs, `git diff --check`, and `launch-focus.cmd rebuild`.
+The first rebuild retry found two exact-path old release processes holding
+`desktop.exe`; after stopping only those processes, rebuild exited 0.
+
+The remaining work is exclusively the required Windows mouse-driven acceptance:
+bubble delivery with chat closed/open, public-text streaming switch behavior,
+pet translucency, and topbar pill glass during show/hide/focus without input
+interception or float/grid/tray regressions.

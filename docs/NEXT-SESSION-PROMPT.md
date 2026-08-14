@@ -81,3 +81,19 @@ pet-bubble WebView during initialization. The implementation uses one latest
 current-Agent pending envelope in memory for 30 seconds, an idempotent
 delivery ID, and a one-time post-init claim. Do not archive or tag before the
 user completes the Windows manual acceptance list in the latest Eval.
+
+Requirements #116 and #117 are now recorded. Before code, read the updated
+pet OpenSpec and the new `openspec/changes/topbar-capsule-acrylic-clip/`.
+Repair the identical-current-Agent pending-bubble clear red-first; add the
+default-off persisted public-text streaming switch and 50% pet tint without
+revealing hidden reasoning. The topbar change must use a topbar-only once-only
+native pill clip and sync the global acrylic toggle, while preserving ADR-0029
+float-host exclusions. Keep both changes open and update the Eval, incident,
+STATUS, and this handoff with each round; no tag/archive before user mouse
+acceptance.
+
+Automated gates and `launch-focus.cmd rebuild` now pass for #116/#117. Do not
+start unrelated features: wait for the user to perform the latest Eval's Windows
+mouse-driven checklist, then record results in the Eval, incident ledger,
+STATUS, and the still-open OpenSpec changes. Do not archive or tag either
+change before that report.

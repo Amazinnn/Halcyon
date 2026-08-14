@@ -97,6 +97,21 @@ Current-Agent persistence is awaited before dependent pet refresh events are
 emitted. The pet-bubble host receives the accepted float-host configuration only
 once while hidden; later movement and visibility remain no-activate operations.
 
+Writing the same current Agent ID during bubble-WebView initialization is not a
+switch and MUST preserve a matching pending delivery. Only a changed persisted
+current-Agent ID, or deletion of that Agent, clears the record.
+
+The global persisted setting `chat_streaming_enabled` defaults to false. A
+direct Codex or Claude turn snapshots it at turn creation: when enabled, chat
+renders only Provider-public text deltas as they arrive and still renders the
+final result; when disabled, deltas remain hidden until the final result. It
+does not alter Provider requests, expose hidden reasoning, surface workflow
+events, or create tool summaries.
+
+The existing package-derived `hostTint` remains the single pet-surface color
+source. The pet WebView mixes that tint at 50% opacity, leaving the native
+acrylic installed by the global glass setting visible beneath it.
+
 Placement evaluates, in order, centered-above, above-left, above-right, right,
 left, and below candidates with a 10px gap. Candidates remain in the work area
 and never intersect the pet; if clamping leaves none pet-safe, Focus hides the

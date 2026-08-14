@@ -96,3 +96,12 @@ companion SHALL use a lighter accent from the same source.
 - **WHEN** its package analysis succeeds
 - **THEN** the pet host uses a restrained blue-derived tint instead of the global
   dark-green float tint, while other float hosts remain unchanged
+
+### Requirement: Pet WebView preserves the native acrylic through its derived tint
+The pet WebView SHALL apply the package-derived host tint at 50% opacity. The
+existing global acrylic setting SHALL remain its native-acrylic authority.
+
+#### Scenario: Global acrylic is enabled for a package-backed pet
+- **WHEN** the current package supplies a derived host tint
+- **THEN** the tinted pet WebView remains semi-transparent and the native
+  acrylic is visible through it

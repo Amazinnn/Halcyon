@@ -54,3 +54,21 @@ actions. Changing the saved mode only affects the next round.
 #### Scenario: Settings change during a scholar round
 - **WHEN** a scholar work round is active and the saved next-round mode changes
 - **THEN** exit, pause, and skip remain unavailable for the active round
+
+### Requirement: Global direct-chat streaming display preference
+The settings surface SHALL provide one global persisted "显示流式输出" preference
+that defaults to disabled. It SHALL apply to the next direct Codex or Claude
+conversation, regardless of the selected Agent, and survive Focus restart.
+
+#### Scenario: Streaming preference is disabled
+- **WHEN** a direct Provider response produces public text deltas
+- **THEN** chat hides the deltas and displays the final reply only
+
+#### Scenario: Streaming preference is enabled
+- **WHEN** the next direct Codex or Claude response produces public text deltas
+- **THEN** chat displays those public deltas before the final reply
+
+#### Scenario: Provider reasoning or tool activity occurs
+- **WHEN** a direct conversation produces hidden reasoning, a workflow event,
+  or tool activity
+- **THEN** the preference MUST NOT expose it as streaming text

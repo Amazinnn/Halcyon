@@ -84,3 +84,13 @@ MUST clear it; a Focus restart MUST NOT restore it.
 #### Scenario: unrelated or expired delivery
 - **WHEN** a delivery targets another Agent or is older than 30 seconds
 - **THEN** the bubble window MUST NOT display it
+
+#### Scenario: bubble WebView restores the same current Agent
+- **WHEN** the bubble WebView persists the Agent ID already current in Focus
+  before claiming a matching pending delivery
+- **THEN** the delivery remains claimable and displays exactly once
+
+#### Scenario: current Agent actually changes
+- **WHEN** the persisted current Agent ID changes to another Agent or the
+  current Agent is deleted
+- **THEN** any pending delivery for the previous Agent is cleared

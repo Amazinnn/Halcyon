@@ -421,7 +421,7 @@ impl AgentProvider for CodexProvider {
     }
 
     fn resume_thread(&mut self, thread_id: &str) -> Result<AgentThreadInfo, String> {
-        self.resume_thread_with_display(thread_id, super::agent_display_full())
+        self.resume_thread_with_display(thread_id, super::agent_display_full(false))
     }
 
     fn resume_and_send(

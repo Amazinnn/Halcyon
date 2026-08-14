@@ -35,6 +35,14 @@
 > 30-second, current-Agent-only memory handoff and one-time claim path; Windows
 > visual acceptance remains Pending. See `INC-022` and the latest Eval.
 
+> 2026-08-14 / Requirements #116/#117: Windows repro shows the bubble handoff
+> still clears on an identical current-Agent initialization; the active pet
+> change now has a red-first correction plus a default-off public-text streaming
+> preference and 50%-tinted pet surface. `topbar-capsule-acrylic-clip` is a
+> separate active OpenSpec for once-only native pill clipping and global acrylic
+> synchronization. Automated gates and release rebuild now pass; Windows visual
+> acceptance is the only remaining gate.
+
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，AGPL-3.0-only）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。
