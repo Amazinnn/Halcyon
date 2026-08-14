@@ -23,6 +23,7 @@ mod shortcuts;
 mod storage;
 mod supervision;
 mod wallpaper;
+mod window_spec;
 mod workflow;
 mod workflow_engine;
 
@@ -39,6 +40,7 @@ use tauri::LogicalPosition;
 use event_bus::CoreEvent;
 use grid::GridManager;
 use settings::{GridRect, Settings, ShortcutType};
+use window_spec::{float_labels, is_float_label, WindowKind, WINDOW_SPECS};
 
 pub struct AppState {
     pub settings: Mutex<Settings>,
@@ -160,11 +162,6 @@ impl Drop for FloatVisibilityOperation<'_> {
     }
 }
 
-const FLOAT_LABELS: [&str; 5] = ["chat", "stats", "music", "pet", "workflow"];
-
-fn is_float_label(label: &str) -> bool {
-    FLOAT_LABELS.contains(&label)
-}
 
 // ---------------------------------------------------------------------------
 // window helpers
@@ -2811,218 +2808,79 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         screen_w: sw,
         screen_h: sh,
     };
-    let grid = app
-        .state::<AppState>()
-        .settings
-        .lock()
-        .unwrap()
-        .grid
-        .clone();
-    let collapsed = app
-        .state::<AppState>()
-        .settings
-        .lock()
-        .unwrap()
-        .collapsed
-        .clone();
+    let state = app.state::<AppState>();
+    let (grid, collapsed) = {
+        let settings = state.settings.lock().unwrap();
+        (settings.grid.clone(), settings.collapsed.clone())
+    };
 
-    tauri::WebviewWindowBuilder::new(app, "desktop", url.clone())
-        .title("Focus Desktop")
-        .fullscreen(true)
-        .decorations(false)
-        .build()?;
-
-    let (chat_px, chat_py, chat_pw, chat_ph, chat_collapsed) = initial_float_rect(
-        &grid,
-        &collapsed,
-        &gm,
-        "chat",
-        GridRect {
-            col: 0,
-            row: 0,
-            cols: 2,
-            rows: 2,
-        },
-    );
-    let chat = tauri::WebviewWindowBuilder::new(app, "chat", url.clone())
-        .title("对话")
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
-        .position(chat_px, chat_py)
-        .inner_size(chat_pw, chat_ph)
-        .visible(false)
-        .build()?;
-    configure_float_host(&chat);
-
-    let (stats_px, stats_py, stats_pw, stats_ph, stats_collapsed) = initial_float_rect(
-        &grid,
-        &collapsed,
-        &gm,
-        "stats",
-        GridRect {
-            col: 0,
-            row: 0,
-            cols: 2,
-            rows: 2,
-        },
-    );
-    let stats = tauri::WebviewWindowBuilder::new(app, "stats", url.clone())
-        .title("统计")
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
-        .position(stats_px, stats_py)
-        .inner_size(stats_pw, stats_ph)
-        .visible(false)
-        .build()?;
-    configure_float_host(&stats);
-
-    let (music_px, music_py, music_pw, music_ph, music_collapsed) = initial_float_rect(
-        &grid,
-        &collapsed,
-        &gm,
-        "music",
-        GridRect {
-            col: 0,
-            row: 0,
-            cols: 2,
-            rows: 2,
-        },
-    );
-    let music = tauri::WebviewWindowBuilder::new(app, "music", url.clone())
-        .title("音乐")
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
-        .position(music_px, music_py)
-        .inner_size(music_pw, music_ph)
-        .visible(false)
-        .build()?;
-    configure_float_host(&music);
-
-    let (pet_px, pet_py, pet_pw, pet_ph, pet_collapsed) = initial_float_rect(
-        &grid,
-        &collapsed,
-        &gm,
-        "pet",
-        GridRect {
-            col: 0,
-            row: 0,
-            cols: 2,
-            rows: 2,
-        },
-    );
-    let pet = tauri::WebviewWindowBuilder::new(app, "pet", url.clone())
-        .title("桌宠")
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
-        .position(pet_px, pet_py)
-        .inner_size(pet_pw, pet_ph)
-        .visible(false)
-        .build()?;
-    configure_float_host(&pet);
-
-    let bubble = tauri::WebviewWindowBuilder::new(app, "pet-bubble", url.clone())
-        .title("Focus Pet Bubble")
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .background_color(tauri::window::Color::from((0, 0, 0, 0)))
-        .inner_size(340.0, 120.0)
-    .visible(false)
-    .build()?;
-    configure_float_host(&bubble);
-    bubble.set_ignore_cursor_events(true)?;
-    if let Ok(hwnd) = bubble.hwnd() {
-        acrylic::noactivate(hwnd.0);
+    // ADR-0037: the declarative window registry drives creation; every
+    // builder flag mirrors the historical per-window builders exactly.
+    for spec in WINDOW_SPECS {
+        let mut builder = tauri::WebviewWindowBuilder::new(app, spec.label, url.clone())
+            .title(spec.title)
+            .decorations(false);
+        if spec.transparent {
+            builder = builder.transparent(true);
+        }
+        if spec.transparent_background {
+            builder = builder.background_color(tauri::window::Color::from((0, 0, 0, 0))); // v1.10.3.1 (#42/#48)
+        }
+        if spec.always_on_top {
+            builder = builder.always_on_top(true);
+        }
+        if spec.skip_taskbar {
+            builder = builder.skip_taskbar(true);
+        }
+        if !spec.resizable {
+            builder = builder.resizable(false);
+        }
+        if spec.fullscreen {
+            builder = builder.fullscreen(true);
+        }
+        if spec.hidden_at_start {
+            builder = builder.visible(false);
+        }
+        match spec.kind {
+            WindowKind::Float => {
+                let def = spec
+                    .birth_rect
+                    .unwrap_or(GridRect { col: 0, row: 0, cols: 2, rows: 2 });
+                let (x, y, w, h, _collapsed) =
+                    initial_float_rect(&grid, &collapsed, &gm, spec.label, def);
+                builder = builder.position(x, y).inner_size(w, h);
+            }
+            WindowKind::Bubble | WindowKind::Topbar => {
+                if let Some((w, h)) = spec.fixed_size {
+                    builder = builder.inner_size(w, h);
+                }
+            }
+            WindowKind::Desktop | WindowKind::Overlay => {}
+        }
+        let window = builder.build()?;
+        if spec.float_host {
+            configure_float_host(&window);
+        }
+        if spec.ignore_cursor_events {
+            // informational surfaces only: never intercept mouse clicks on
+            // apps underneath
+            window.set_ignore_cursor_events(true)?;
+            if let Ok(hwnd) = window.hwnd() {
+                acrylic::noactivate(hwnd.0);
+            }
+        }
     }
 
-    let (workflow_px, workflow_py, workflow_pw, workflow_ph, workflow_collapsed) =
-        initial_float_rect(
-            &grid,
-            &collapsed,
-            &gm,
-            "workflow",
-            GridRect {
-                col: 0,
-                row: 2,
-                cols: 6,
-                rows: 5,
-            },
-        ); // v1.10.4 (#51) default 6x5
-    let workflow = tauri::WebviewWindowBuilder::new(app, "workflow", url.clone())
-        .title("工作流")
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .background_color(tauri::window::Color::from((0, 0, 0, 0))) // v1.10.3.1 (#42/#48)
-        .position(workflow_px, workflow_py)
-        .inner_size(workflow_pw, workflow_ph)
-        .visible(false)
-        .build()?;
-    configure_float_host(&workflow);
-
-    for (label, collapsed) in [
-        ("chat", chat_collapsed),
-        ("stats", stats_collapsed),
-        ("music", music_collapsed),
-        ("pet", pet_collapsed),
-        ("workflow", workflow_collapsed),
-    ] {
-        if !collapsed
+    // Initial visibility: floats that are not collapsed show at startup;
+    // the pet additionally requires a valid package for the current Agent.
+    for label in float_labels() {
+        if !collapsed.iter().any(|c| c == label)
             && (label != "pet" || current_agent_has_valid_pet(&app.state::<AppState>()))
         {
             if let Some(window) = app.get_webview_window(label) {
                 show_window_noactivate(&window);
             }
         }
-    }
-
-    let overlay = tauri::WebviewWindowBuilder::new(app, "grid-overlay", url.clone())
-        .title("Grid Overlay")
-        .fullscreen(true)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .build()?;
-    overlay.set_ignore_cursor_events(true)?;
-    if let Ok(hwnd) = overlay.hwnd() {
-        acrylic::noactivate(hwnd.0);
-    }
-
-    let topbar = tauri::WebviewWindowBuilder::new(app, "topbar", url.clone())
-        .title("状态")
-        .inner_size(TOPBAR_WINDOW_WIDTH, TOPBAR_WINDOW_HEIGHT)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .build()?;
-    // informational only: never intercept mouse clicks on apps underneath
-    topbar.set_ignore_cursor_events(true)?;
-    if let Ok(hwnd) = topbar.hwnd() {
-        acrylic::noactivate(hwnd.0);
     }
 
     Ok(())
@@ -3116,28 +2974,17 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
     };
     let (resolved, collapsed, topmost) = {
         let mut settings = state.settings.lock().unwrap();
-        let saved = FLOAT_LABELS
-            .iter()
+        let saved = float_labels()
             .map(|label| {
-                let default_rect = if *label == "workflow" {
-                    GridRect {
-                        col: 4,
-                        row: 2,
-                        cols: 4,
-                        rows: 4,
-                    }
-                } else {
-                    GridRect {
+                let default_rect = window_spec::spec(label)
+                    .and_then(|s| s.default_rect)
+                    .unwrap_or(GridRect {
                         col: 0,
                         row: 0,
                         cols: 2,
                         rows: 2,
-                    }
-                };
-                (
-                    (*label).to_string(),
-                    settings.grid.get(*label).copied().unwrap_or(default_rect),
-                )
+                    });
+                (label.to_string(), settings.grid.get(label).copied().unwrap_or(default_rect))
             })
             .collect::<Vec<_>>();
         let (resolved, overflow) = gm.reconcile_visible_rects(&saved, &settings.collapsed);
@@ -3164,7 +3011,7 @@ fn apply_initial_layout(app: &tauri::App, state: &AppState) {
         )
     };
 
-    for label in FLOAT_LABELS {
+    for label in float_labels() {
         if let Some(rect) = resolved.get(label) {
             position_window(&app.handle(), label, rect, &gm);
         }
@@ -3373,8 +3220,10 @@ pub fn run() {
                 let s = app_state.settings.lock().unwrap();
                 glass_opacity(&s)
             };
-            for label in ["chat", "stats", "music", "workflow"] {
-                if let Some(w) = app.get_webview_window(label) {
+            // ADR-0037: glass setup derives from the registry; pet's glass is
+            // applied separately via its derived-tint path below.
+            for spec in WINDOW_SPECS.iter().filter(|s| s.setup_acrylic) {
+                if let Some(w) = app.get_webview_window(spec.label) {
                     apply_acrylic_opt(&w, acrylic_enabled, glass_opacity_value);
                 }
             }
