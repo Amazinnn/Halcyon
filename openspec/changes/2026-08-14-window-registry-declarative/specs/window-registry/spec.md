@@ -40,9 +40,9 @@ The frontend SHALL resolve each window label to its view component, its transpar
 - **WHEN** the frontend starts in a window whose label is not in the view registry
 - **THEN** it renders the desktop view
 
-#### Scenario: Tray shows every float view
+#### Scenario: Tray shows every tray-flagged float view
 - **WHEN** the desktop view tray is expanded
-- **THEN** it shows one entry per float window in the registry, with the declared title and icon, and opening an entry restores that window
+- **THEN** it shows one entry per float window flagged for the tray (chat, stats, music, workflow; the pet float is not flagged), with the declared title and icon, and opening an entry restores that window
 
 ### Requirement: Capability list stays consistent with the registry
 The Tauri capability window list SHALL exactly match the set of registry labels, and automated tests SHALL enforce that consistency.

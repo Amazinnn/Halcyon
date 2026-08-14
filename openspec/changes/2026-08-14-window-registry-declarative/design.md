@@ -28,13 +28,14 @@ See proposal.md - Why. The current implementation hard-codes nine `tauri::Webvie
 6. **Frontend ViewRegistry** (`src/lib/view-registry.ts`): `ViewSpec { label, kind, title, icon, component, transparent }`; `viewForLabel()` falls back to DesktopView for unknown labels (matching today's switch default); `floatViews()` returns float-kind entries for the tray; `isTransparentLabel()` replaces the hard-coded list in `App.vue` (result identical: all labels except desktop). DesktopView tray renders `floatViews()` via v-for and calls `openView(v.label)`. Rationale: single place to extend for a new window; the fallback keeps unknown-window startup safe.
 
 7. **Registry name/kind consistency across stacks** is enforced by the frontend tests (unique labels, expected float set) and the Rust capability test; there is no runtime cross-check between TS and Rust registries (they live in different processes), which is acceptable because both are compile-time tables reviewed in the same change.
+8. **Tray membership is an explicit flag** (`inTray`) rather than "every float": the historical tray shows chat/stats/music/workflow, while pet is a grid float that never appears in the tray. This keeps behavior identical and still lets a new float opt into the tray by declaration.
 
 ## Risks / Trade-offs
 
 - **Behavior drift during transcription** (flags, order, initial-show conditions) → transcribe one-to-one from the current builders, rely on the existing 211 Rust / 90 frontend tests plus the numbered manual Windows checklist; the freeze baseline tag/backup allows instant rollback of a stage commit.
 - **cwd assumption for the capabilities test** → cargo test runs from `src-tauri`; fallback to `env!("CARGO_MANIFEST_DIR")` if the assumption breaks; the test failure message names the file.
 - **TS/Rust registry duplication** (two files must both be updated for a new window) → documented in ADR-0037 and covered by tests on both sides; a future tier-2 gate could diff them automatically.
-- **Tray now derived from registry** — if a future float window should NOT appear in the tray, add an explicit tray flag later; today's four floats all appear, so behavior is unchanged.
+- **Tray membership is explicit** — a float window that should not appear in the tray (like pet today) sets `inTray: false`; behavior is unchanged and the flag is declarative.
 
 ## Migration Plan
 

@@ -11,6 +11,7 @@ import AppIcon from "../../components/AppIcon.vue";
 import SettingsPopover from "../../components/SettingsPopover.vue";
 import { restoreWindowError } from "../../lib/window-restore";
 import { ViewTrayActions } from "../../lib/view-tray-actions";
+import { floatViews } from "../../lib/view-registry";
 import { focusControlPolicy } from "../../lib/focus-mode";
 
 const ui = useUiStore();
@@ -225,17 +226,14 @@ onBeforeUnmount(() => {
           <AppIcon name="panel" />
         </button>
         <div v-if="viewTray.open" class="views-tray glass">
-          <button class="view-item" :disabled="viewTray.busy" @click="openView('chat')">
-            <AppIcon name="chat" /><span>对话</span>
-          </button>
-          <button class="view-item" :disabled="viewTray.busy" @click="openView('stats')">
-            <AppIcon name="stats" /><span>统计</span>
-          </button>
-          <button class="view-item" :disabled="viewTray.busy" @click="openView('music')">
-            <AppIcon name="music" /><span>音乐</span>
-          </button>
-          <button class="view-item" :disabled="viewTray.busy" @click="openView('workflow')">
-            <AppIcon name="panel" /><span>工作流</span>
+          <button
+            v-for="view in floatViews()"
+            :key="view.label"
+            class="view-item"
+            :disabled="viewTray.busy"
+            @click="openView(view.label)"
+          >
+            <AppIcon :name="view.icon" /><span>{{ view.title }}</span>
           </button>
           <p v-if="viewError" class="view-error" role="status">{{ viewError }}</p>
         </div>

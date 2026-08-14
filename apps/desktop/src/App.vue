@@ -3,15 +3,7 @@ import { computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import DesktopView from "./views/desktop/DesktopView.vue";
-import ChatView from "./views/chat/ChatView.vue";
-import StatsView from "./views/stats/StatsView.vue";
-import MusicView from "./views/music/MusicView.vue";
-import WorkflowView from "./views/workflow/WorkflowView.vue";
-import PetView from "./views/pet/PetView.vue";
-import PetBubbleView from "./views/pet/PetBubbleView.vue";
-import TopbarView from "./views/topbar/TopbarView.vue";
-import GridOverlayView from "./views/overlay/GridOverlayView.vue";
+import { viewForLabel, isTransparentLabel } from "./lib/view-registry";
 import { useUiStore } from "./stores/ui";
 import { useSettingsStore } from "./stores/settings";
 import { useAgentStore } from "./stores/agent";
@@ -19,23 +11,10 @@ import { playChime } from "./lib/sound";
 
 const label = getCurrentWebviewWindow().label;
 
-const view = computed(() => {
-  switch (label) {
-    case "desktop": return DesktopView;
-    case "chat": return ChatView;
-    case "stats": return StatsView;
-    case "music": return MusicView;
-    case "workflow": return WorkflowView;
-    case "pet": return PetView;
-    case "pet-bubble": return PetBubbleView;
-    case "topbar": return TopbarView;
-    case "grid-overlay": return GridOverlayView;
-    default: return DesktopView;
-  }
-});
+const view = computed(() => viewForLabel(label));
 
 onMounted(() => {
-  if (["pet", "pet-bubble", "music", "topbar", "chat", "stats", "workflow", "grid-overlay"].includes(label)) {
+  if (isTransparentLabel(label)) {
     document.documentElement.classList.add("transparent-window");
     document.body.classList.add("transparent-window");
   }
