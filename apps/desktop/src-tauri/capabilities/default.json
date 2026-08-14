@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for all Focus Desktop windows (v1.2)",
-  "windows": ["desktop", "chat", "stats", "music", "pet", "pet-bubble", "workflow", "grid-overlay", "topbar"],
+  "windows": ["desktop", "chat", "stats", "music", "pet", "pet-bubble", "workflow", "overview", "grid-overlay", "topbar"],
   "permissions": [
     "core:default",
     "core:window:allow-set-position",
