@@ -400,10 +400,20 @@ function fitCanvas() {
   drawFrame(frameIdx.value);
 }
 
+function applyGlassOpacity(opacity: number) {
+  const factor = opacity / 22;
+  document.documentElement.style.setProperty("--glass-opacity", String(Math.min(1, Math.max(0.04, 0.5 * factor))));
+}
+
 let unlistenPet: (() => void) | null = null;
 
 onMounted(async () => {
   unlistenPet = await listen("pet:changed", () => void refresh());
+  const bootstrap = await invoke<{ acrylicOpacity?: number }>("get_bootstrap").catch(() => ({ acrylicOpacity: undefined }));
+  applyGlassOpacity(bootstrap.acrylicOpacity ?? 22);
+  await listen<{ opacity?: number }>("settings:acrylic-changed", (e) => {
+    if (typeof e.payload.opacity === "number") applyGlassOpacity(e.payload.opacity);
+  });
   resizeObserver = new ResizeObserver(() => fitCanvas());
   await refresh();
   await nextTick();

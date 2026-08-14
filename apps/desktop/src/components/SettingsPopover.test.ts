@@ -67,3 +67,20 @@ describe("per-Agent provider settings", () => {
     expect(source).toContain("qualityWarnings");
   });
 });
+
+describe("global glass opacity slider", () => {
+  it("renders a range slider bound to set_acrylic_opacity", () => {
+    expect(source).toContain('type="range"');
+    expect(source).toContain('min="5"');
+    expect(source).toContain('max="100"');
+    expect(source).toContain('v-model.number="acrylicOpacity"');
+    expect(source).toContain('@change="changeAcrylicOpacity"');
+    expect(source).toContain("set_acrylic_opacity");
+  });
+
+  it("keeps the slider next to the 毛玻璃 switch in the appearance group", () => {
+    const appearance = source.slice(source.indexOf('<h4>外观</h4>'), source.indexOf('<h4>计时'));
+    expect(appearance).toContain("毛玻璃");
+    expect(appearance).toContain("玻璃透明度");
+  });
+});

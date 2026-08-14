@@ -13,6 +13,7 @@ export const useSettingsStore = defineStore("settings", {
     showTopbar: "auto" as "auto" | "on" | "off",
     petBgFade: true,
     chatStreamingEnabled: false,
+    acrylicOpacity: 22,
     currentAgentId: null as string | null,
     focusMode: DEFAULT_FOCUS_MODE as FocusMode,
   }),
@@ -26,6 +27,7 @@ export const useSettingsStore = defineStore("settings", {
         showTopbar?: string;
         petBgFade?: boolean;
         chatStreamingEnabled?: boolean;
+        acrylicOpacity?: number;
         currentAgentId?: string | null;
         focusMode?: string;
       }>("get_bootstrap");
@@ -36,6 +38,7 @@ export const useSettingsStore = defineStore("settings", {
       this.showTopbar = (b.showTopbar as "auto" | "on" | "off") ?? "auto";
       this.petBgFade = !!b.petBgFade;
       this.chatStreamingEnabled = !!b.chatStreamingEnabled;
+      this.acrylicOpacity = b.acrylicOpacity ?? 22;
       this.currentAgentId = b.currentAgentId ?? null;
       this.focusMode = normalizeFocusMode(b.focusMode);
       this.loaded = true;
@@ -62,6 +65,11 @@ export const useSettingsStore = defineStore("settings", {
     async setPetBgFade(enabled: boolean) {
       await invoke("set_pet_bg_fade", { enabled });
       this.petBgFade = enabled;
+    },
+    async setAcrylicOpacity(opacity: number) {
+      const clamped = Math.min(100, Math.max(5, Math.round(opacity)));
+      await invoke("set_acrylic_opacity", { opacity: clamped });
+      this.acrylicOpacity = clamped;
     },
     async setChatStreamingEnabled(enabled: boolean) {
       await invoke("set_chat_streaming_enabled", { enabled });

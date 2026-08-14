@@ -74,6 +74,10 @@ pub struct Settings {
     pub shortcuts: Vec<Shortcut>,
     #[serde(default = "default_true")]
     pub acrylic_enabled: bool,
+    /// Global glass opacity (requirement #123): 5..100, 22 = the historical
+    /// visual. Every glass layer derives alpha = round(base_alpha x opacity/22).
+    #[serde(default = "default_glass_opacity")]
+    pub acrylic_opacity: u8,
     #[serde(default = "default_subtitle")]
     pub focus_subtitle: String,
     #[serde(default = "default_25")]
@@ -116,6 +120,10 @@ fn default_5() -> u32 {
     5
 }
 
+fn default_glass_opacity() -> u8 {
+    22
+}
+
 fn default_show_topbar() -> String {
     "auto".into()
 }
@@ -155,6 +163,7 @@ impl Default for Settings {
             logos_edge: "top".into(),
             shortcuts: Vec::new(),
             acrylic_enabled: true,
+            acrylic_opacity: 22,
             focus_subtitle: "保持节奏，阳光会照到每一片叶子".into(),
             focus_minutes: 25,
             rest_minutes: 5,

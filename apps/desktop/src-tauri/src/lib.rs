@@ -170,7 +170,22 @@ fn is_float_label(label: &str) -> bool {
 // window helpers
 // ---------------------------------------------------------------------------
 
-fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
+/// Glass alpha for one layer under the global opacity (requirement #123):
+/// alpha = round(base_alpha x opacity/22), clamped to 8..=255, so opacity 22
+/// reproduces the historical visuals exactly and the slider never degrades
+/// the SWCA path to plain transparency.
+pub(crate) fn glass_alpha(base_alpha: u8, opacity: u8) -> u8 {
+    ((base_alpha as u32)
+        .saturating_mul(opacity.clamp(5, 100) as u32)
+        .div_ceil(22)
+        .clamp(8, 255)) as u8
+}
+
+fn glass_opacity(settings: &Settings) -> u8 {
+    settings.acrylic_opacity.clamp(5, 100)
+}
+
+fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool, opacity: u8) {
     // Frosted glass via the SWCA acrylic API with our own low-alpha deep-green
     // tint. (window-vibrancy 0.8's apply_acrylic ignores the tint on Win11,
     // leaving the system's default light-gray backdrop.) Failure is
@@ -185,11 +200,11 @@ fn apply_acrylic_opt(w: &tauri::WebviewWindow, enabled: bool) {
             return;
         }
         if let Ok(hwnd) = w.hwnd() {
-            acrylic::apply(hwnd.0, (14, 24, 18, 56));
+            acrylic::apply(hwnd.0, (14, 24, 18, crate::glass_alpha(56, opacity)));
         }
     }
     #[cfg(not(target_os = "windows"))]
-    let _ = (w, enabled);
+    let _ = (w, enabled, opacity);
 }
 
 fn parse_rgb_hex(value: &str) -> Option<(u8, u8, u8)> {
@@ -212,13 +227,16 @@ fn current_pet_host_tint(state: &AppState) -> Option<(u8, u8, u8)> {
 
 fn apply_current_pet_acrylic(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-    let enabled = state.settings.lock().unwrap().acrylic_enabled;
+    let (enabled, opacity) = {
+        let s = state.settings.lock().unwrap();
+        (s.acrylic_enabled, glass_opacity(&s))
+    };
     let tint = current_pet_host_tint(&state).unwrap_or((14, 24, 18));
     let Some(window) = app.get_webview_window("pet") else { return };
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = window.hwnd() {
         if enabled && std::env::var_os("FOCUS_NO_ACRYLIC").is_none() {
-            acrylic::apply(hwnd.0, (tint.0, tint.1, tint.2, 64));
+            acrylic::apply(hwnd.0, (tint.0, tint.1, tint.2, crate::glass_alpha(64, opacity)));
         } else {
             acrylic::clear(hwnd.0);
         }
@@ -368,6 +386,7 @@ struct Bootstrap {
     pet_bg_fade: bool,
     current_agent_id: Option<String>,
     chat_streaming_enabled: bool,
+    acrylic_opacity: u8,
 }
 
 #[tauri::command]
@@ -398,6 +417,7 @@ fn get_bootstrap(
         pet_bg_fade: s.pet_bg_fade,
         current_agent_id: s.current_agent_id.clone(),
         chat_streaming_enabled: s.chat_streaming_enabled,
+        acrylic_opacity: s.acrylic_opacity.clamp(5, 100),
     }
 }
 
@@ -1978,18 +1998,44 @@ fn set_acrylic(
     state: tauri::State<'_, AppState>,
     enabled: bool,
 ) -> Result<(), String> {
-    {
+    let opacity = {
         let mut s = state.settings.lock().unwrap();
         s.acrylic_enabled = enabled;
         let _ = s.save(&state.data_dir);
-    }
+        glass_opacity(&s)
+    };
     for label in ["chat", "stats", "music", "workflow"] {
         if let Some(w) = app.get_webview_window(label) {
-            apply_acrylic_opt(&w, enabled);
+            apply_acrylic_opt(&w, enabled, opacity);
         }
     }
-    let _ = app.emit("settings:acrylic-changed", serde_json::json!({ "enabled": enabled }));
+    let _ = app.emit("settings:acrylic-changed", serde_json::json!({ "enabled": enabled, "opacity": opacity }));
     apply_current_pet_acrylic(&app);
+    Ok(())
+}
+
+/// Global glass opacity (requirement #123): persists 5..100, re-applies the
+/// native acrylic on every float and the pet, then fans the value out to all
+/// WebView surfaces through the existing settings event.
+#[tauri::command]
+fn set_acrylic_opacity(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    opacity: u8,
+) -> Result<(), String> {
+    let (enabled, clamped) = {
+        let mut s = state.settings.lock().unwrap();
+        s.acrylic_opacity = opacity.clamp(5, 100);
+        let _ = s.save(&state.data_dir);
+        (s.acrylic_enabled, s.acrylic_opacity)
+    };
+    for label in ["chat", "stats", "music", "workflow"] {
+        if let Some(w) = app.get_webview_window(label) {
+            apply_acrylic_opt(&w, enabled, clamped);
+        }
+    }
+    apply_current_pet_acrylic(&app);
+    let _ = app.emit("settings:acrylic-changed", serde_json::json!({ "enabled": enabled, "opacity": clamped }));
     Ok(())
 }
 
@@ -2739,6 +2785,23 @@ fn pet_bubble_hide(app: tauri::AppHandle) {
     }
 }
 
+/// Content-sized bubble host (requirement #124): resize through the native
+/// no-activate path, then re-run placement with the new outer size so the
+/// bubble still avoids the pet and the visible chat window.
+#[tauri::command]
+fn pet_bubble_resize(app: tauri::AppHandle, width: u32, height: u32) -> Option<BubbleDirection> {
+    let bubble = app.get_webview_window("pet-bubble")?;
+    // The WebView measures in CSS pixels; the native path uses physical
+    // pixels (SetWindowPos), so convert with the window scale factor.
+    let scale = bubble.scale_factor().unwrap_or(1.0);
+    crate::drag::resize_window_raw(
+        &bubble,
+        ((width.max(120) as f64) * scale).round() as u32,
+        ((height.max(40) as f64) * scale).round() as u32,
+    );
+    position_pet_bubble(&app, 0.5, 0.05)
+}
+
 fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
     let url = tauri::WebviewUrl::App("index.html".into());
     // v1.10.3.1 (#46/#48): floats are born at their saved grid rect so they
@@ -2881,7 +2944,7 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .skip_taskbar(true)
         .resizable(false)
         .background_color(tauri::window::Color::from((0, 0, 0, 0)))
-        .inner_size(248.0, 82.0)
+        .inner_size(340.0, 120.0)
     .visible(false)
     .build()?;
     configure_float_host(&bubble);
@@ -3305,9 +3368,14 @@ pub fn run() {
                 .lock()
                 .unwrap()
                 .acrylic_enabled;
+            let glass_opacity_value = {
+                let app_state = app.state::<AppState>();
+                let s = app_state.settings.lock().unwrap();
+                glass_opacity(&s)
+            };
             for label in ["chat", "stats", "music", "workflow"] {
                 if let Some(w) = app.get_webview_window(label) {
-                    apply_acrylic_opt(&w, acrylic_enabled);
+                    apply_acrylic_opt(&w, acrylic_enabled, glass_opacity_value);
                 }
             }
             apply_current_pet_acrylic(&app.handle());
@@ -3556,6 +3624,7 @@ pub fn run() {
             set_shortcut_fit,
             launch_shortcut,
             set_acrylic,
+            set_acrylic_opacity,
             set_chat_streaming_enabled,
             set_focus_durations,
             set_focus_mode,
@@ -3603,6 +3672,7 @@ pub fn run() {
             pet_bubble_placement,
             pet_bubble_show,
             pet_bubble_hide,
+            pet_bubble_resize,
             pet_bubble_ready,
             pet_bubble_rendered,
             pet_bubble_diagnostics,
@@ -4581,6 +4651,25 @@ mod tests {
     fn float_hosts_prefer_dwm_rounded_corners_for_native_acrylic() {
         assert_eq!(float_corner_preference_attribute(), 33);
         assert_eq!(float_corner_preference_value(), 2);
+    }
+
+    #[test]
+    fn glass_alpha_preserves_default_and_clamps_extremes() {
+        // opacity 22 (the default) reproduces historical alphas exactly.
+        assert_eq!(crate::glass_alpha(56, 22), 56);
+        assert_eq!(crate::glass_alpha(64, 22), 64);
+        // The most solid slider value saturates at 255.
+        assert_eq!(crate::glass_alpha(56, 100), 255);
+        assert_eq!(crate::glass_alpha(64, 100), 255);
+        // The most transparent value never degrades below the floor.
+        assert_eq!(crate::glass_alpha(56, 5), 13);
+        assert_eq!(crate::glass_alpha(64, 5), 15);
+        assert!(crate::glass_alpha(56, 1) >= 8, "out-of-range input still floors");
+        // Monotonic in opacity.
+        let a = crate::glass_alpha(56, 10);
+        let b = crate::glass_alpha(56, 30);
+        let c = crate::glass_alpha(56, 80);
+        assert!(a < b && b < c, "alpha must grow with opacity: {a} {b} {c}");
     }
 
     #[test]

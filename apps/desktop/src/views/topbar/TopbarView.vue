@@ -21,6 +21,16 @@ const paused = ref(false);
 const phaseDone = ref(false);
 const supStatus = ref<"ok" | "drift">("ok");
 const acrylicEnabled = ref(true);
+const glassOpacity = ref(22);
+
+function applyGlassOpacity(opacity: number) {
+  glassOpacity.value = opacity;
+  // Requirement #123: one global glass opacity for every window's glass
+  // layer. The pill's historical alpha (0.84) is scaled by opacity/22.
+  const factor = opacity / 22;
+  const alpha = Math.min(1, Math.max(0.04, 0.84 * factor));
+  document.documentElement.style.setProperty("--glass-opacity", String(alpha));
+}
 
 function fmt(totalSec: number) {
   const s = Math.max(0, Math.floor(totalSec));
@@ -48,10 +58,12 @@ const supText = computed(() =>
 
 onMounted(async () => {
   void agent.init();
-  const bootstrap = await invoke<{ acrylicEnabled?: boolean }>("get_bootstrap");
+  const bootstrap = await invoke<{ acrylicEnabled?: boolean; acrylicOpacity?: number }>("get_bootstrap");
   acrylicEnabled.value = bootstrap.acrylicEnabled ?? true;
-  await listen<{ enabled: boolean }>("settings:acrylic-changed", (e) => {
+  applyGlassOpacity(bootstrap.acrylicOpacity ?? 22);
+  await listen<{ enabled: boolean; opacity?: number }>("settings:acrylic-changed", (e) => {
     acrylicEnabled.value = e.payload.enabled;
+    if (typeof e.payload.opacity === "number") applyGlassOpacity(e.payload.opacity);
   });
   await listen<{
     state: FocusState;
@@ -102,7 +114,7 @@ onMounted(async () => {
   border-radius: var(--r-pill);
   background:
     linear-gradient(135deg, rgba(255,255,255,0.13), rgba(255,255,255,0.035)),
-    rgba(12, 24, 17, 0.84);
+    rgb(12 24 17 / var(--glass-opacity, 0.84));
   border: 1px solid var(--glass-border);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 6px 18px rgba(0, 0, 0, 0.3);
   font-size: 12px;

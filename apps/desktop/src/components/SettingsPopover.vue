@@ -29,6 +29,7 @@ const musicFolder = ref("");
 const version = "v1.12.10";
 const wallpaperUrl = ref("");
 const acrylicOn = ref(true);
+const acrylicOpacity = ref(22);
 const streamingOn = ref(false);
 
 const apps = ref<string[]>([]);
@@ -45,9 +46,10 @@ const filteredApps = computed(() => apps.value.filter((name) => name.toLowerCase
 
 async function load() {
   await settings.load();
-  const b = await invoke<{ acrylicEnabled?: boolean; chatStreamingEnabled?: boolean }>("get_bootstrap");
+  const b = await invoke<{ acrylicEnabled?: boolean; chatStreamingEnabled?: boolean; acrylicOpacity?: number }>("get_bootstrap");
   acrylicOn.value = !!b.acrylicEnabled;
   streamingOn.value = !!b.chatStreamingEnabled;
+  acrylicOpacity.value = b.acrylicOpacity ?? 22;
   const p = await invoke<string | null>("get_wallpaper");
   wallpaperUrl.value = p ? convertFileSrc(p) : "";
   await agent.refreshStatus();
@@ -84,6 +86,14 @@ async function toggleAcrylic() {
   } catch (e) {
     console.error("[settings] set_acrylic failed", e);
     acrylicOn.value = !acrylicOn.value;
+  }
+}
+
+async function changeAcrylicOpacity() {
+  try {
+    await invoke("set_acrylic_opacity", { opacity: acrylicOpacity.value });
+  } catch (e) {
+    console.error("[settings] set_acrylic_opacity failed", e);
   }
 }
 
@@ -316,6 +326,18 @@ onMounted(load);
         <button class="switch" :class="{ on: acrylicOn }" @click="toggleAcrylic">
           {{ acrylicOn ? "开" : "关" }}
         </button>
+      </div>
+      <div class="row">
+        <span class="label">玻璃透明度 {{ acrylicOpacity }}%</span>
+        <input
+          class="correction-range"
+          type="range"
+          min="5"
+          max="100"
+          v-model.number="acrylicOpacity"
+          :disabled="!acrylicOn"
+          @change="changeAcrylicOpacity"
+        />
       </div>
       <div class="row">
         <span class="label">显示流式输出</span>
