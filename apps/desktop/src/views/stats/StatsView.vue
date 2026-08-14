@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import Chart from "chart.js/auto";
 import Heatmap from "../../components/Heatmap.vue";
-import WindowHeader from "../../components/WindowHeader.vue";
+import FocusWindowFrame from "../../components/focus/FocusWindowFrame.vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -99,7 +99,7 @@ onUnmounted(() => {
 
 <template>
   <div class="stats-window">
-    <WindowHeader title="统计" collapsible />
+    <FocusWindowFrame title="统计" collapsible />
     <div class="bento">
       <div class="card glass heatmap" style="grid-column: span 2; grid-row: span 2">
         <h4>本月专注热力图</h4>

@@ -12,6 +12,9 @@ import SettingsPopover from "../../components/SettingsPopover.vue";
 import { restoreWindowError } from "../../lib/window-restore";
 import { ViewTrayActions } from "../../lib/view-tray-actions";
 import { floatViews } from "../../lib/view-registry";
+import FocusInput from "../../components/focus/FocusInput.vue";
+import FocusButton from "../../components/focus/FocusButton.vue";
+import FocusSegmented from "../../components/focus/FocusSegmented.vue";
 import { focusControlPolicy } from "../../lib/focus-mode";
 
 const ui = useUiStore();
@@ -134,6 +137,10 @@ function remove(id: string) {
 
 function quit() {
   if (focusControls.value.quitVisible) void invoke("quit_app");
+}
+
+function setFocusMode(v: string) {
+  settings.setFocusMode(v as "light" | "standard" | "scholar");
 }
 
 onMounted(async () => {
@@ -269,9 +276,9 @@ onBeforeUnmount(() => {
             <button @click="pickFolders">文件夹</button>
             <button @click="menuMode = menuMode === 'url' ? '' : 'url'">URL 链接</button>
             <div v-if="menuMode === 'url'" class="menu-inline">
-              <input v-model="urlName" class="text-input" placeholder="名称（可选）" @keydown.enter="submitUrl" />
-              <input v-model="urlValue" class="text-input" placeholder="https://…" @keydown.enter="submitUrl" />
-              <button class="btn" @click="submitUrl">添加</button>
+              <FocusInput v-model="urlName" placeholder="名称（可选）" @keydown.enter="submitUrl" />
+              <FocusInput v-model="urlValue" placeholder="https://…" @keydown.enter="submitUrl" />
+              <FocusButton variant="glass" @click="submitUrl">添加</FocusButton>
             </div>
           </div>
         </div>
@@ -282,11 +289,15 @@ onBeforeUnmount(() => {
       <button v-if="ui.focusState !== 'focus'" class="dock-btn" @click="ui.startFocus()">
         <AppIcon name="leaf" /><span>开始专注</span>
       </button>
-      <div v-if="ui.focusState !== 'focus'" class="focus-mode-seg" role="group" aria-label="专注锁定模式">
-        <button :class="{ on: settings.focusMode === 'light' }" @click="settings.setFocusMode('light')">轻度</button>
-        <button :class="{ on: settings.focusMode === 'standard' }" @click="settings.setFocusMode('standard')">标准</button>
-        <button :class="{ on: settings.focusMode === 'scholar' }" @click="settings.setFocusMode('scholar')">学霸</button>
-      </div>
+      <FocusSegmented
+        v-if="ui.focusState !== 'focus'"
+        variant="pill"
+        role="group"
+        aria-label="专注锁定模式"
+        :model-value="settings.focusMode"
+        :options="[{ label: '轻度', value: 'light' }, { label: '标准', value: 'standard' }, { label: '学霸', value: 'scholar' }]"
+        @update:model-value="setFocusMode"
+      />
       <button class="dock-btn" @click="settingsOpen = !settingsOpen">
         <AppIcon name="settings" /><span>设置</span>
       </button>
@@ -483,17 +494,6 @@ onBeforeUnmount(() => {
   padding: 6px 8px 8px;
   width: max-content;
 }
-.text-input {
-  border: 1px solid var(--glass-border); background: var(--glass-strong);
-  color: var(--text-hi); border-radius: var(--r-sm); padding: 4px 8px; font-size: 12px;
-  font-family: inherit; min-width: 180px;
-}
-.menu-inline .btn {
-  border: 1px solid var(--glass-border); background: var(--glass-strong);
-  color: var(--text-hi); border-radius: var(--r-sm); padding: 5px 10px;
-  font-size: 12px; cursor: pointer; text-align: center;
-}
-.menu-inline .btn:hover { border-color: var(--accent); color: var(--accent-bright); }
 /* views icon + temporary tray (mouse leaves -> tray hides) */
 .views-wrap {
   pointer-events: auto;
@@ -543,24 +543,5 @@ onBeforeUnmount(() => {
   transition: color var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out);
 }
 .dock-btn:hover { color: var(--accent-bright); background: var(--accent-wash); }
-.focus-mode-seg {
-  display: inline-flex;
-  padding: 3px;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-pill);
-  background: rgba(0, 0, 0, 0.14);
-}
-.focus-mode-seg button {
-  border: 0;
-  border-radius: var(--r-pill);
-  padding: 5px 8px;
-  color: var(--text-mid);
-  background: transparent;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.focus-mode-seg button.on { color: var(--bg-0); background: var(--accent-bright); }
-
 .popover-backdrop { position: fixed; inset: 0; z-index: 20; }
 </style>

@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useMusicStore, type PlayMode } from "../../stores/music";
-import WindowHeader from "../../components/WindowHeader.vue";
+import FocusWindowFrame from "../../components/focus/FocusWindowFrame.vue";
 import AppIcon from "../../components/AppIcon.vue";
 
 const music = useMusicStore();
@@ -166,7 +166,7 @@ onUnmounted(() => {
 
 <template>
   <div class="music-window">
-    <WindowHeader title="音乐" collapsible />
+    <FocusWindowFrame title="音乐" collapsible />
 
     <div v-if="!music.folder" class="empty">
       <p class="empty-title">还没有音乐文件夹</p>

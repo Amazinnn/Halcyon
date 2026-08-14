@@ -3,10 +3,10 @@ import source from "./SettingsPopover.vue?raw";
 
 describe("per-Agent provider settings", () => {
   it("renders one compact Codex/Claude selector in each Agent management row", () => {
-    expect(source).toContain(':value="a.tool"');
-    expect(source).toContain('@change="onAgentProviderChange(a.id, $event)"');
-    expect(source).toContain('<option value="codex">Codex</option>');
-    expect(source).toContain('<option value="claude">Claude</option>');
+    expect(source).toContain('FocusSelect');
+    expect(source).toContain('onAgentProviderChange');
+    expect(source).toContain("value: 'codex'");
+    expect(source).toContain("value: 'claude'");
     expect(source).toContain("agent.setProvider");
     expect(source).toContain("await refreshAgents()");
     expect(source).toContain("await agent.refreshStatus()");
@@ -70,11 +70,11 @@ describe("per-Agent provider settings", () => {
 
 describe("global glass opacity slider", () => {
   it("renders a range slider bound to set_acrylic_opacity", () => {
-    expect(source).toContain('type="range"');
+    expect(source).toContain('FocusSlider');
     expect(source).toContain('min="5"');
     expect(source).toContain('max="100"');
-    expect(source).toContain('v-model.number="acrylicOpacity"');
-    expect(source).toContain('@change="changeAcrylicOpacity"');
+    expect(source).toContain(':model-value="acrylicOpacity"');
+    expect(source).toContain('changeAcrylicOpacity');
     expect(source).toContain("set_acrylic_opacity");
   });
 

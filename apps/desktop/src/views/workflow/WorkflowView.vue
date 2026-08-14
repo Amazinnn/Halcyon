@@ -6,7 +6,10 @@ import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
 import FlowNode from "./FlowNode.vue";
 import FlowTriggerNode from "./FlowTriggerNode.vue";
-import WindowHeader from "../../components/WindowHeader.vue";
+import FocusWindowFrame from "../../components/focus/FocusWindowFrame.vue";
+import FocusButton from "../../components/focus/FocusButton.vue";
+import FocusSegmented from "../../components/focus/FocusSegmented.vue";
+import FocusSelect from "../../components/focus/FocusSelect.vue";
 import { useWorkflowStore } from "../../stores/workflow";
 import {
   NODE_DESC,
@@ -464,7 +467,7 @@ function removeOpt(i: number) {
 </script>
 <template>
   <div class="wf-window">
-    <WindowHeader :title="currentName" collapsible />
+    <FocusWindowFrame :title="currentName" collapsible />
     <div class="wf-top">
       <span class="sep" />
       <button class="badge-btn" :class="{ on: currentWf }" @click="triggerEditor = !triggerEditor">
@@ -474,31 +477,20 @@ function removeOpt(i: number) {
       <span v-if="nodes.length" class="save-state" :class="{ ok: saveState === 'saved' }">
         {{ saveState === "saved" ? "已保存✓" : "保存中…" }}
       </span>
-      <button v-if="running" class="btn danger" @click="stopCurrent">停止</button>
-      <button v-else class="btn accent" :disabled="!store.currentWorkflowId" @click="runCurrent">
-        运行
-      </button>
+      <FocusButton v-if="running" variant="danger" size="xs" @click="stopCurrent">停止</FocusButton>
+      <FocusButton v-else variant="accent" size="xs" :disabled="!store.currentWorkflowId" @click="runCurrent">运行</FocusButton>
       <span v-if="errorMsg" class="err">{{ errorMsg }}</span>
     </div>
 
     <div v-if="triggerEditor" class="trigger-box">
       <div class="tr-row">
         <span class="label">触发</span>
-        <select class="sel" :value="meta.trigger" @change="setMeta('trigger', ($event.target as HTMLSelectElement).value)">
-          <option value="manual">保存</option>
-          <option value="scheduled">定时</option>
-          <option value="focus_end">专注结束</option>
-          <option value="supervision_alert">监督告警</option>
-        </select>
+        <FocusSelect class="sel" :model-value="meta.trigger" :options="[{ label: '保存', value: 'manual' }, { label: '定时', value: 'scheduled' }, { label: '专注结束', value: 'focus_end' }, { label: '监督告警', value: 'supervision_alert' }]" @update:model-value="(v) => setMeta('trigger', v)" />
       </div>
       <template v-if="meta.trigger === 'scheduled'">
         <div class="tr-row">
           <span class="label">方式</span>
-          <select class="sel" :value="meta.scheduleType ?? 'interval'" @change="setMeta('scheduleType', ($event.target as HTMLSelectElement).value)">
-            <option value="interval">间隔</option>
-            <option value="daily">每日</option>
-            <option value="weekly">每周</option>
-          </select>
+          <FocusSelect class="sel" :model-value="meta.scheduleType ?? 'interval'" :options="[{ label: '间隔', value: 'interval' }, { label: '每日', value: 'daily' }, { label: '每周', value: 'weekly' }]" @update:model-value="(v) => setMeta('scheduleType', v)" />
         </div>
         <div v-if="meta.scheduleType === 'interval'" class="tr-row">
           <span class="label">每</span>
@@ -531,31 +523,18 @@ function removeOpt(i: number) {
         </div>
         <div v-else class="tr-row">
           <span class="label">每周</span>
-          <select class="sel" :value="meta.weeklyDay ?? 0" @change="setMeta('weeklyDay', Number(($event.target as HTMLSelectElement).value))">
-            <option :value="0">周一</option>
-            <option :value="1">周二</option>
-            <option :value="2">周三</option>
-            <option :value="3">周四</option>
-            <option :value="4">周五</option>
-            <option :value="5">周六</option>
-            <option :value="6">周日</option>
-          </select>
+          <FocusSelect class="sel" :model-value="String(meta.weeklyDay ?? 0)" :options="[{ label: '周一', value: '0' }, { label: '周二', value: '1' }, { label: '周三', value: '2' }, { label: '周四', value: '3' }, { label: '周五', value: '4' }, { label: '周六', value: '5' }, { label: '周日', value: '6' }]" @update:model-value="(v) => setMeta('weeklyDay', Number(v))" />
           <input class="ta" type="time" :value="meta.weeklyTime ?? '09:00'"
             @change="setMeta('weeklyTime', ($event.target as HTMLInputElement).value || '09:00')" />
         </div>
       </template>
       <div class="tr-row">
         <span class="label">守卫</span>
-        <select class="sel" :value="meta.guard" @change="setMeta('guard', ($event.target as HTMLSelectElement).value)">
-          <option value="none">无</option>
-          <option value="focusing">仅专注中</option>
-          <option value="resting">仅休息中</option>
-          <option value="idle">仅空闲中</option>
-        </select>
+        <FocusSelect class="sel" :model-value="meta.guard" :options="[{ label: '无', value: 'none' }, { label: '仅专注中', value: 'focusing' }, { label: '仅休息中', value: 'resting' }, { label: '仅空闲中', value: 'idle' }]" @update:model-value="(v) => setMeta('guard', v)" />
       </div>
       <div class="tr-row">
-        <button class="btn accent" @click="applyTrigger">完成</button>
-        <button class="btn" @click="triggerEditor = false">取消</button>
+        <FocusButton variant="accent" size="xs" @click="applyTrigger">完成</FocusButton>
+        <FocusButton variant="default" size="xs" @click="triggerEditor = false">取消</FocusButton>
       </div>
     </div>
 
@@ -563,7 +542,7 @@ function removeOpt(i: number) {
       <aside class="wf-side">
         <div class="side-head">
           <span>工作流</span>
-          <button class="btn accent" @click="newDraft">+ 新建</button>
+          <FocusButton variant="accent" size="xs" @click="newDraft">+ 新建</FocusButton>
         </div>
         <div v-if="!store.workflows.length" class="muted">还没有工作流，点「+ 新建」创建</div>
         <div
@@ -578,10 +557,10 @@ function removeOpt(i: number) {
             <span class="wf-meta">{{ triggerBadge(w) }}</span>
           </div>
           <div class="wf-item-ops">
-            <button class="ghost" :class="{ off: !w.enabled }" @click.stop="toggleEnabled(w)">{{ w.enabled ? "开" : "关" }}</button>
-            <button class="ghost" @click.stop="void store.run(w.id)">▶</button>
-            <button class="ghost" @click.stop="void store.cancel(w.id)">停</button>
-            <button class="ghost danger" @click.stop="removeWorkflow(w)">删</button>
+            <FocusButton variant="ghost" size="tight" :off="!w.enabled" @click.stop="toggleEnabled(w)">{{ w.enabled ? "开" : "关" }}</FocusButton>
+            <FocusButton variant="ghost" size="tight" @click.stop="void store.run(w.id)">▶</FocusButton>
+            <FocusButton variant="ghost" size="tight" @click.stop="void store.cancel(w.id)">停</FocusButton>
+            <FocusButton variant="ghost" size="tight" class="danger" @click.stop="removeWorkflow(w)">删</FocusButton>
           </div>
         </div>
       </aside>
@@ -629,19 +608,13 @@ function removeOpt(i: number) {
         <div class="insp-section">
           <div class="insp-head">
             <span>{{ selectedNode ? NODE_LABELS[String(selectedNode.data.kind)] : "节点参数" }}</span>
-            <button v-if="selectedNode" class="ghost danger" @click="removeSelectedNode">删除</button>
+            <FocusButton v-if="selectedNode" variant="ghost" size="tight" class="danger" @click="removeSelectedNode">删除</FocusButton>
           </div>
           <template v-if="selectedNode">
             <div class="insp-body">
               <template v-if="selectedNode.data.kind === 'agent'">
                 <label>目标Agent</label>
-                <select
-                  class="sel"
-                  :value="String(sp.characterId ?? '')"
-                  @change="setParam('characterId', ($event.target as HTMLSelectElement).value)"
-                >
-                  <option v-for="c in store.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
-                </select>
+                <FocusSelect class="sel" :model-value="String(sp.characterId ?? '')" :options="store.characters.map((c) => ({ label: c.name, value: c.id }))" @update:model-value="(v) => setParam('characterId', v)" />
                 <label>提示词（身份由 AGENTS.md 提供，输出纪律系统注入）</label>
                 <textarea
                   class="ta"
@@ -680,21 +653,16 @@ function removeOpt(i: number) {
                       <input ref="fillInput" class="ta" :value="addFillText"
                         @input="addFillText = ($event.target as HTMLInputElement).value"
                         @keydown.enter="confirmAddFill" @keydown.esc="addingFill = false" />
-                      <button class="btn accent" @click="confirmAddFill">确定</button>
+                      <FocusButton variant="accent" size="xs" @click="confirmAddFill">确定</FocusButton>
                     </div>
-                    <button v-else class="btn" @click="startAddFill">+ 添加</button>
+                    <FocusButton v-else variant="default" size="xs" @click="startAddFill">+ 添加</FocusButton>
                   </div>
                 </template>
               </template>
 
               <template v-else-if="selectedNode.data.kind === 'show_window'">
                 <label>目标窗口</label>
-                <select class="sel" :value="String(sp.target ?? 'chat')" @change="setParam('target', ($event.target as HTMLSelectElement).value)">
-                  <option value="chat">对话</option>
-                  <option value="stats">统计</option>
-                  <option value="music">音乐</option>
-                  <option value="workflow">工作流</option>
-                </select>
+                <FocusSelect class="sel" :model-value="String(sp.target ?? 'chat')" :options="[{ label: '对话', value: 'chat' }, { label: '统计', value: 'stats' }, { label: '音乐', value: 'music' }, { label: '工作流', value: 'workflow' }]" @update:model-value="(v) => setParam('target', v)" />
               </template>
 
               <template v-else-if="selectedNode.data.kind === 'wait'">
@@ -714,17 +682,10 @@ function removeOpt(i: number) {
 
               <template v-else-if="selectedNode.data.kind === 'branch'">
                 <label>条件来源</label>
-                <div class="seg">
-                  <button :class="{ on: sp.condition !== 'focus_state' }" @click="setParam('condition', 'slot')">上游 Agent 槽值</button>
-                  <button :class="{ on: sp.condition === 'focus_state' }" @click="setParam('condition', 'focus_state')">当前专注状态</button>
-                </div>
+                <FocusSegmented variant="soft" :model-value="String(sp.condition ?? 'slot')" :options="[{ label: '上游 Agent 槽值', value: 'slot' }, { label: '当前专注状态', value: 'focus_state' }]" @update:model-value="(v) => setParam('condition', v)" />
                 <template v-if="sp.condition === 'focus_state'">
                   <label>状态</label>
-                  <div class="seg">
-                    <button :class="{ on: sp.focusState === 'focus' }" @click="setParam('focusState', 'focus')">专注中</button>
-                    <button :class="{ on: sp.focusState === 'rest' }" @click="setParam('focusState', 'rest')">休息中</button>
-                    <button :class="{ on: sp.focusState === 'idle' }" @click="setParam('focusState', 'idle')">空闲中</button>
-                  </div>
+                  <FocusSegmented variant="soft" :model-value="String(sp.focusState ?? '')" :options="[{ label: '专注中', value: 'focus' }, { label: '休息中', value: 'rest' }, { label: '空闲中', value: 'idle' }]" @update:model-value="(v) => setParam('focusState', v)" />
                   <label class="muted">出口：符合 / 不符合</label>
                 </template>
                 <template v-else>
@@ -738,9 +699,9 @@ function removeOpt(i: number) {
                       <input ref="optInput" class="ta" :value="addOptText"
                         @input="addOptText = ($event.target as HTMLInputElement).value"
                         @keydown.enter="confirmAddOpt" @keydown.esc="addingOpt = false" />
-                      <button class="btn accent" @click="confirmAddOpt">确定</button>
+                      <FocusButton variant="accent" size="xs" @click="confirmAddOpt">确定</FocusButton>
                     </div>
-                    <button v-else class="btn" @click="startAddOpt">+ 添加</button>
+                    <FocusButton v-else variant="default" size="xs" @click="startAddOpt">+ 添加</FocusButton>
                   </div>
                 </template>
               </template>
@@ -790,40 +751,7 @@ function removeOpt(i: number) {
 }
 .label { color: var(--text-low); font-size: 11px; }
 .sep { flex: 1; }
-.sel {
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-sm);
-  padding: 3px 6px;
-  font-size: 11px;
-  background: #101a15;
-  color: var(--text-hi);
-}
-.btn {
-  border: 1px solid var(--glass-border);
-  background: transparent;
-  color: var(--text-mid);
-  border-radius: var(--r-sm);
-  font-size: 10px;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-.btn:hover { color: var(--text-hi); border-color: var(--accent); }
-.btn.accent { background: var(--accent); color: #0a110e; border-color: var(--accent); font-weight: 600; }
-.btn:disabled { opacity: 0.45; cursor: default; }
-.ghost {
-  border: 1px solid var(--glass-border);
-  background: transparent;
-  color: var(--text-mid);
-  border-radius: var(--r-sm);
-  font-size: 10px;
-  padding: 1px 5px;
-  cursor: pointer;
-}
-.ghost:hover { color: var(--text-hi); border-color: var(--accent); }
-.ghost.danger:hover { color: #ff7b72; border-color: #ff7b72; }
-.ghost.off { opacity: 0.5; }
-.btn.danger { background: #b23c3c; border-color: #b23c3c; color: #fff; }
-.btn.danger:hover { background: #c94f4f; }
+.sel { font-size: 11px; }
 .save-state { font-size: 10px; color: var(--text-low); white-space: nowrap; }
 .save-state.ok { color: var(--accent); }
 .err { color: #ff7b72; font-size: 11px; }
@@ -995,15 +923,4 @@ textarea.ta { min-height: 56px; resize: vertical; }
 .chip-x:hover { color: #ff7b72; }
 .card-add { display: flex; gap: 4px; align-items: center; }
 .card-add .ta { flex: 1; }
-.seg { display: flex; gap: 4px; flex-wrap: wrap; }
-.seg button {
-  border: 1px solid var(--glass-border);
-  background: transparent;
-  color: var(--text-mid);
-  border-radius: var(--r-sm);
-  padding: 3px 8px;
-  font-size: 10px;
-  cursor: pointer;
-}
-.seg button.on { background: var(--accent-wash); color: var(--accent-bright); border-color: var(--accent); }
 </style>

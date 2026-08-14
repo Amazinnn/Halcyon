@@ -9,6 +9,12 @@ import { useMusicStore } from "../stores/music";
 import { useWorkflowStore } from "../stores/workflow";
 import AppIcon from "./AppIcon.vue";
 import SettingsHelp from "./SettingsHelp.vue";
+import FocusButton from "./focus/FocusButton.vue";
+import FocusToggle from "./focus/FocusToggle.vue";
+import FocusSegmented from "./focus/FocusSegmented.vue";
+import FocusInput from "./focus/FocusInput.vue";
+import FocusSlider from "./focus/FocusSlider.vue";
+import FocusSelect from "./focus/FocusSelect.vue";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const settings = useSettingsStore();
@@ -244,9 +250,12 @@ async function setAgentProvider(id: string, provider: "codex" | "claude") {
   }
 }
 
-function onAgentProviderChange(id: string, event: Event) {
-  const provider = (event.target as HTMLSelectElement).value;
+function onAgentProviderChange(id: string, provider: string) {
   if (provider === "codex" || provider === "claude") void setAgentProvider(id, provider);
+}
+
+function setShowTopbarMode(v: string) {
+  settings.setShowTopbar(v as "auto" | "on" | "off");
 }
 
 async function deleteAgent(id: string) {
@@ -293,7 +302,7 @@ onMounted(load);
   <div class="popover glass" @click.stop>
     <div class="head">
       <span class="title">设置</span>
-      <button class="ghost" title="关闭" @click="emit('close')"><AppIcon name="close" /></button>
+      <FocusButton variant="ghost" size="icon" title="关闭" @click="emit('close')"><AppIcon name="close" /></FocusButton>
     </div>
 
     <section class="group">
@@ -311,8 +320,8 @@ onMounted(load);
       <SettingsHelp summary="导入后作为主界面背景；支持 PNG、JPG、JPEG、WebP。" detail="Focus 会复制所选图片到本机数据目录；重置只恢复默认背景，不影响其他设置。" />
       <div class="row">
         <div class="btns">
-          <button @click="pickWallpaper">导入</button>
-          <button @click="resetWallpaper">重置</button>
+          <FocusButton variant="glass" @click="pickWallpaper">导入</FocusButton>
+          <FocusButton variant="glass" @click="resetWallpaper">重置</FocusButton>
         </div>
         <span v-if="wallpaperUrl" class="ok">已设置</span>
       </div>
@@ -323,41 +332,36 @@ onMounted(load);
       <SettingsHelp summary="控制毛玻璃、提示音与顶条显示，不改变计时或锁定规则。" detail="顶条只展示当前计时和 Agent 状态。毛玻璃仅影响内部浮窗的视觉效果。" />
       <div class="row">
         <span class="label">毛玻璃</span>
-        <button class="switch" :class="{ on: acrylicOn }" @click="toggleAcrylic">
-          {{ acrylicOn ? "开" : "关" }}
-        </button>
+        <FocusToggle :model-value="acrylicOn" :label="acrylicOn ? '开' : '关'" @update:model-value="toggleAcrylic" />
       </div>
       <div class="row">
         <span class="label">玻璃透明度 {{ acrylicOpacity }}%</span>
-        <input
+        <FocusSlider
           class="correction-range"
-          type="range"
-          min="5"
-          max="100"
-          v-model.number="acrylicOpacity"
+          :model-value="acrylicOpacity"
+          :min="5"
+          :max="100"
           :disabled="!acrylicOn"
+          @update:model-value="acrylicOpacity = $event"
           @change="changeAcrylicOpacity"
         />
       </div>
       <div class="row">
         <span class="label">显示流式输出</span>
-        <button class="switch" :class="{ on: streamingOn }" @click="toggleStreaming">
-          {{ streamingOn ? "开" : "关" }}
-        </button>
+        <FocusToggle :model-value="streamingOn" :label="streamingOn ? '开' : '关'" @update:model-value="toggleStreaming" />
       </div>
       <div class="row">
         <span class="label">提示音</span>
-        <button class="switch" :class="{ on: settings.soundEnabled }" @click="settings.setSound(!settings.soundEnabled)">
-          {{ settings.soundEnabled ? "开" : "关" }}
-        </button>
+        <FocusToggle :model-value="settings.soundEnabled" :label="settings.soundEnabled ? '开' : '关'" @update:model-value="settings.setSound" />
       </div>
       <div class="row">
         <span class="label">顶条</span>
-        <div class="seg">
-          <button :class="{ on: settings.showTopbar === 'auto' }" @click="settings.setShowTopbar('auto')">自动</button>
-          <button :class="{ on: settings.showTopbar === 'on' }" @click="settings.setShowTopbar('on')">常显</button>
-          <button :class="{ on: settings.showTopbar === 'off' }" @click="settings.setShowTopbar('off')">隐藏</button>
-        </div>
+        <FocusSegmented
+          variant="solid"
+          :model-value="settings.showTopbar"
+          :options="[{ label: '自动', value: 'auto' }, { label: '常显', value: 'on' }, { label: '隐藏', value: 'off' }]"
+          @update:model-value="setShowTopbarMode"
+        />
       </div>
     </section>
 
@@ -366,16 +370,16 @@ onMounted(load);
       <SettingsHelp summary="手动设置下一轮专注与休息时长，不会中断当前计时。" detail="专注可设为 1-240 分钟，休息可设为 1-120 分钟；没有内置预设。" />
       <div class="row">
         <span class="label">专注</span>
-        <input v-model.number="settings.focusMinutes" type="number" min="1" max="240" class="num-input" />
+        <FocusInput :model-value="settings.focusMinutes" type="number" :min="1" :max="240" @update:model-value="settings.focusMinutes = Number($event)" />
         <span class="unit">分钟</span>
       </div>
       <div class="row">
         <span class="label">休息</span>
-        <input v-model.number="settings.restMinutes" type="number" min="1" max="120" class="num-input" />
+        <FocusInput :model-value="settings.restMinutes" type="number" :min="1" :max="120" @update:model-value="settings.restMinutes = Number($event)" />
         <span class="unit">分钟</span>
       </div>
       <div class="row">
-        <button class="btn" @click="settings.setFocusDurations(settings.focusMinutes, settings.restMinutes)">应用时长</button>
+        <FocusButton variant="glass" @click="settings.setFocusDurations(settings.focusMinutes, settings.restMinutes)">应用时长</FocusButton>
       </div>
     </section>
 
@@ -383,15 +387,15 @@ onMounted(load);
       <h4>应用提醒</h4>
       <SettingsHelp summary="黑名单应用在专注时只提醒，不会强制关闭；未选择时不监测。" detail="列表合并已安装程序和当前可见窗口。匹配使用精确 exe 名称，不支持正则或通配符。" />
       <div class="row col">
-        <button class="btn" @click="toggleApps">
+        <FocusButton variant="glass" @click="toggleApps">
           {{ appsOpen ? "收起应用列表" : `管理应用（已选 ${selectedApps.size}）` }}
-        </button>
+        </FocusButton>
         <div v-if="appsOpen" class="app-list">
-          <input v-model="appQuery" class="text-input" placeholder="搜索应用或 exe 名" />
+          <FocusInput v-model="appQuery" placeholder="搜索应用或 exe 名" />
           <div v-for="name in filteredApps" :key="name" class="app-row">
             <span class="app-name" :title="name">{{ name }}</span>
             <span class="app-actions">
-              <button class="mini" :class="{ on: settings.distractionApps.includes(name) }" title="黑名单应用" @click="setAppList(name, !settings.distractionApps.includes(name))">黑名单</button>
+              <FocusButton variant="ghost" size="sm" title="黑名单应用" @click="setAppList(name, !settings.distractionApps.includes(name))">黑名单</FocusButton>
             </span>
           </div>
         </div>
@@ -405,21 +409,18 @@ onMounted(load);
       <div v-if="agentError" class="err">{{ agentError }}</div>
       <div v-if="petError" class="err">{{ petError }}</div>
       <div class="row">
-        <input v-model="newAgentName" class="text-input" placeholder="Agent 名称" @keydown.enter="createAgent" />
-        <select v-model="newAgentProvider" class="provider-select"><option value="codex">Codex</option><option value="claude">Claude</option></select>
-        <button class="mini" @click="createAgent">添加</button>
+        <FocusInput v-model="newAgentName" placeholder="Agent 名称" @keydown.enter="createAgent" />
+        <FocusSelect v-model="newAgentProvider" :options="[{ label: 'Codex', value: 'codex' }, { label: 'Claude', value: 'claude' }]" />
+        <FocusButton variant="ghost" size="sm" @click="createAgent">添加</FocusButton>
       </div>
       <div v-if="agentList.length" class="pack-list">
         <div v-for="a in agentList" :key="a.id" class="pack-row">
           <button class="pack-name" :class="{ active: a.id === settings.currentAgentId }" @click="setCurrentAgent(a.id)">{{ a.name }}</button>
-          <select :value="a.tool" class="provider-select" @change="onAgentProviderChange(a.id, $event)">
-            <option value="codex">Codex</option>
-            <option value="claude">Claude</option>
-          </select>
-          <button class="mini" title="打开工作区（编辑 AGENTS.md）" @click="openWorkspace(a.id)">工作区</button>
-          <button class="mini" :disabled="petImporting" @click="importPetPack(a.id)">{{ a.petPackId ? "替换宠物" : "导入宠物" }}</button>
-          <button v-if="a.petPackId" class="mini" @click="removePet(a.id)">删除宠物</button>
-          <button class="mini" title="删除 Agent 与关联工作流" @click="deleteAgent(a.id)">删除</button>
+          <FocusSelect :model-value="a.tool" :options="[{ label: 'Codex', value: 'codex' }, { label: 'Claude', value: 'claude' }]" @update:model-value="(v) => onAgentProviderChange(a.id, v)" />
+          <FocusButton variant="ghost" size="sm" title="打开工作区（编辑 AGENTS.md）" @click="openWorkspace(a.id)">工作区</FocusButton>
+          <FocusButton variant="ghost" size="sm" :disabled="petImporting" @click="importPetPack(a.id)">{{ a.petPackId ? "替换宠物" : "导入宠物" }}</FocusButton>
+          <FocusButton v-if="a.petPackId" variant="ghost" size="sm" @click="removePet(a.id)">删除宠物</FocusButton>
+          <FocusButton variant="ghost" size="sm" title="删除 Agent 与关联工作流" @click="deleteAgent(a.id)">删除</FocusButton>
         </div>
       </div>
       <div v-else class="row"><span class="label">无 Agent</span></div>
@@ -427,21 +428,20 @@ onMounted(load);
         <span class="label">状态</span>
         <span :class="agent.ready ? 'ok' : 'err'">{{ agent.ready ? `${agent.provider} ready` : `${agent.provider} unavailable` }}</span>
       </div>
-      <div class="row"><span class="label">桌宠背景淡化</span><button class="switch" :class="{ on: settings.petBgFade }" @click="settings.setPetBgFade(!settings.petBgFade)">{{ settings.petBgFade ? "开" : "关" }}</button></div>
+      <div class="row"><span class="label">桌宠背景淡化</span><FocusToggle :model-value="settings.petBgFade" :label="settings.petBgFade ? '开' : '关'" @update:model-value="settings.setPetBgFade" /></div>
       <div v-if="activePetInfo" class="pet-correction">
         <div class="row">
           <span class="label">宽高校正 {{ activePetInfo.horizontalCorrection.toFixed(2) }}</span>
-          <input
+          <FocusSlider
             class="correction-range"
-            type="range"
-            min="0.75"
-            max="1.33"
-            step="0.01"
+            :model-value="activePetInfo.horizontalCorrection"
+            :min="0.75"
+            :max="1.33"
+            :step="0.01"
             :disabled="correctionSaving"
-            :value="activePetInfo.horizontalCorrection"
-            @change="setPetCorrection(Number(($event.target as HTMLInputElement).value))"
+            @update:model-value="setPetCorrection(Number($event))"
           />
-          <button class="mini" :disabled="correctionSaving || activePetInfo.horizontalCorrection === 1" @click="setPetCorrection(1)">恢复</button>
+          <FocusButton variant="ghost" size="sm" :disabled="correctionSaving || activePetInfo.horizontalCorrection === 1" @click="setPetCorrection(1)">恢复</FocusButton>
         </div>
         <p v-for="warning in activePetInfo.qualityWarnings" :key="warning" class="pet-warning">{{ warning }}</p>
       </div>
@@ -469,7 +469,7 @@ onMounted(load);
         <span class="text-input folder-path">{{ musicFolder || "未选择" }}</span>
       </div>
       <div class="row">
-        <button class="btn" @click="chooseMusicFolder">选择 / 更换</button>
+        <FocusButton variant="glass" @click="chooseMusicFolder">选择 / 更换</FocusButton>
       </div>
     </section>
 
@@ -489,7 +489,7 @@ onMounted(load);
         </div>
       </div>
       <div class="row">
-        <button class="btn" @click="clearRuns">清空记录</button>
+        <FocusButton variant="glass" @click="clearRuns">清空记录</FocusButton>
       </div>
     </section>
 
@@ -519,11 +519,6 @@ onMounted(load);
   justify-content: space-between;
 }
 .title { font-size: 13px; font-weight: 600; color: var(--text-hi); }
-.ghost {
-  border: none; background: transparent; color: var(--text-mid);
-  border-radius: var(--r-sm); padding: 3px; cursor: pointer; display: inline-flex;
-}
-.ghost:hover { color: var(--accent); background: var(--accent-wash); }
 .group { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: 1px solid var(--glass-border); }
 .group h4 { margin: 0; font-size: 11px; color: var(--text-low); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
 .group-note { margin: -2px 0 0; color: var(--text-low); font-size: 11px; line-height: 1.45; }
@@ -531,39 +526,14 @@ onMounted(load);
 .row.col { flex-direction: column; align-items: stretch; }
 .label { font-size: 12px; color: var(--text-mid); flex-shrink: 0; }
 .btns { display: flex; gap: 6px; }
-.btns button, .btn {
-  border: 1px solid var(--glass-border); background: var(--glass-strong);
-  color: var(--text-hi); border-radius: var(--r-sm); padding: 4px 10px;
-  font-size: 12px; cursor: pointer;
-}
-.btns button:hover, .btn:hover { border-color: var(--accent); color: var(--accent-bright); }
 .ok { font-size: 11px; color: var(--accent-bright); }
-.switch {
-  border: 1px solid var(--glass-border); background: var(--glass-strong);
-  color: var(--text-low); border-radius: var(--r-pill); padding: 4px 14px;
-  font-size: 12px; cursor: pointer;
-}
-.switch.on { background: var(--accent); color: #0a110e; border-color: var(--accent); font-weight: 600; }
-.seg { display: flex; gap: 4px; }
-.seg button {
-  border: 1px solid var(--glass-border); background: transparent; color: var(--text-mid);
-  border-radius: var(--r-sm); padding: 3px 10px; font-size: 12px; cursor: pointer;
-}
-.seg button.on { background: var(--accent-wash); color: var(--accent-bright); border-color: var(--accent); }
-.presets { gap: 6px; }
-.presets button {
-  border: 1px solid var(--glass-border); background: transparent; color: var(--text-mid);
-  border-radius: var(--r-sm); padding: 3px 12px; font-size: 12px; cursor: pointer;
-}
-.presets button:hover { border-color: var(--accent); color: var(--accent-bright); }
-.num-input, .text-input, .ta {
+/* span used as a read-only folder display (kit inputs cover real inputs) */
+.text-input {
   border: 1px solid var(--glass-border); background: var(--glass-strong);
   color: var(--text-hi); border-radius: var(--r-sm); padding: 4px 8px; font-size: 12px;
   font-family: inherit;
 }
-.num-input { width: 64px; }
 .text-input { flex: 1; min-width: 0; }
-.ta { width: 100%; resize: vertical; }
 .unit { font-size: 11px; color: var(--text-low); }
 .folder-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-list { display: flex; flex-direction: column; gap: 3px; max-height: 180px; overflow-y: auto; }
@@ -605,16 +575,6 @@ onMounted(load);
   min-width: 0;
 }
 .app-actions { display: inline-flex; gap: 4px; flex-shrink: 0; }
-.mini {
-  border: 1px solid var(--glass-border);
-  background: transparent;
-  color: var(--text-mid);
-  border-radius: var(--r-sm);
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: pointer;
-}
-.mini:hover { border-color: var(--accent); color: var(--accent-bright); }
 .err { font-size: 11px; color: var(--err); }
 .pack-list { display: flex; flex-direction: column; gap: 2px; max-height: 140px; overflow-y: auto; }
 .pack-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
@@ -625,22 +585,10 @@ onMounted(load);
 }
 .pack-name:hover { background: var(--accent-wash); color: var(--accent-bright); }
 .pack-name.active { background: var(--accent-wash); color: var(--accent-bright); }
-.provider-select {
-  border: 1px solid var(--glass-border); background: var(--glass-strong);
-  color: var(--text-hi); border-radius: var(--r-sm); padding: 2px 5px;
-  font-size: 11px; cursor: pointer;
-}
 .about { font-size: 11px; color: var(--text-low); border-top: 1px solid var(--glass-border); padding-top: 8px; }
 .mode-help { display: flex; flex-direction: column; gap: 5px; }
 .mode-help p { margin: 0; color: var(--text-mid); font-size: 12px; line-height: 1.45; }
 .mode-help strong { color: var(--accent-bright); }
-.seg { display: flex; gap: 4px; }
-.seg button {
-  border: 1px solid var(--glass-border); background: var(--glass-strong);
-  color: var(--text-mid); border-radius: var(--r-sm); padding: 3px 10px;
-  font-size: 12px; cursor: pointer;
-}
-.seg button.on { background: var(--accent); color: #0a110e; border-color: var(--accent); }
 .text-input {
   flex: 1; border: 1px solid var(--glass-border); background: #101a15;
   color: var(--text-hi); border-radius: var(--r-sm); padding: 4px 8px; font-size: 12px;

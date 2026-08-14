@@ -7,7 +7,9 @@ import {
   serializeInlineComposer,
   type InlineComposerPart,
 } from "../../lib/inline-composer";
-import WindowHeader from "../../components/WindowHeader.vue";
+import FocusWindowFrame from "../../components/focus/FocusWindowFrame.vue";
+import FocusButton from "../../components/focus/FocusButton.vue";
+import FocusSelect from "../../components/focus/FocusSelect.vue";
 import { useSettingsStore } from "../../stores/settings";
 
 const agent = useAgentStore();
@@ -195,20 +197,19 @@ function handleComposerPaste(event: ClipboardEvent) {
   syncComposer();
 }
 
-function selectSkill(event: Event) {
-  const target = event.target as HTMLSelectElement;
+function selectSkill(value: string) {
   skillPicker.value = "";
-  if (!target.value) return;
+  if (!value) return;
   const range = restoreComposerSelection();
   if (!range) return;
   range.deleteContents();
   const fragment = document.createDocumentFragment();
   if (!caretAtComposerStart(range)) fragment.append(document.createTextNode("  "));
-  const tokenPart = insertSkillToken([], 0, target.value)[0];
+  const tokenPart = insertSkillToken([], 0, value)[0];
   const token = document.createElement("span");
   token.className = "skill-chip";
   token.contentEditable = "false";
-  token.dataset.skill = tokenPart.kind === "skill" ? tokenPart.name : target.value;
+  token.dataset.skill = tokenPart.kind === "skill" ? tokenPart.name : value;
   token.textContent = `$${token.dataset.skill}`;
   const spacer = document.createTextNode("  ");
   fragment.append(token, spacer);
@@ -221,18 +222,16 @@ function selectSkill(event: Event) {
 
 <template>
   <div class="chat-window">
-    <WindowHeader :title="agent.characterName" collapsible />
+    <FocusWindowFrame :title="agent.characterName" collapsible />
 
     <div class="agent-row">
-      <select v-if="agent.characters.length" class="agent-select" :value="agent.characterId" :disabled="isBusy" @change="agent.selectCharacter(($event.target as HTMLSelectElement).value)">
-        <option v-for="c in agent.characters" :key="c.id" :value="c.id">{{ c.name }}</option>
-      </select>
-      <button v-else class="ghost" @click="agent.refreshCharacters()">Agent 正在初始化，点击刷新</button>
+      <FocusSelect v-if="agent.characters.length" :model-value="agent.characterId" :disabled="isBusy" :options="agent.characters.map((c) => ({ label: c.name, value: c.id }))" @update:model-value="(v) => agent.selectCharacter(v)" />
+      <FocusButton v-else variant="ghost" size="sm" @click="agent.refreshCharacters()">Agent 正在初始化，点击刷新</FocusButton>
       <span class="badge">{{ agent.provider === "claude" ? "Claude" : "Codex" }}</span>
       <span v-if="isBusy" class="phase" :class="agent.phase">{{ phaseText }}</span>
-      <button class="ghost" :class="{ on: settings.chatStreamingEnabled }" :disabled="isBusy" @click="settings.setChatStreamingEnabled(!settings.chatStreamingEnabled)">
+      <FocusButton variant="ghost" size="sm" :disabled="isBusy" @click="settings.setChatStreamingEnabled(!settings.chatStreamingEnabled)">
         流式 {{ settings.chatStreamingEnabled ? "开" : "关" }}
-      </button>
+      </FocusButton>
     </div>
 
     <div ref="listRef" class="msg-list">
@@ -250,17 +249,14 @@ function selectSkill(event: Event) {
 
     <p v-if="agent.errorMessage" class="error-message" role="alert">{{ agent.errorMessage }}</p>
     <form class="composer" @submit.prevent="send">
-      <select
+      <FocusSelect
         v-if="agent.skills.length"
-        class="skill-select"
         aria-label="Skills"
-        :value="skillPicker"
+        :model-value="skillPicker"
         :disabled="isBusy || !agent.characterId"
-        @change="selectSkill"
-      >
-        <option value="">Skills</option>
-        <option v-for="skill in agent.skills" :key="skill" :value="skill">{{ skill }}</option>
-      </select>
+        :options="[{ label: 'Skills', value: '' }, ...agent.skills.map((skill) => ({ label: skill, value: skill }))]"
+        @update:model-value="selectSkill"
+      />
       <div class="composer-input">
         <div
           ref="editorRef"
@@ -301,15 +297,7 @@ function selectSkill(event: Event) {
   border-bottom: 1px solid var(--glass-border);
   flex-wrap: wrap;
 }
-.agent-select {
-  border: 1px solid var(--glass-border);
-  background: #101a15;
-  color: var(--text-hi);
-  border-radius: var(--r-sm);
-  font-size: 12px;
-  padding: 3px 8px;
-  max-width: 160px;
-}
+.agent-select { max-width: 160px; }
 .badge {
   font-size: 11px;
   font-weight: 700;
@@ -328,19 +316,6 @@ function selectSkill(event: Event) {
 }
 .phase.error {
   color: #ff7b72;
-}
-.ghost {
-  border: 1px solid var(--glass-border);
-  background: transparent;
-  color: var(--text-mid);
-  border-radius: var(--r-sm);
-  font-size: 11px;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-.ghost:hover {
-  color: var(--text-hi);
-  border-color: var(--accent);
 }
 .msg-list {
   flex: 1;
@@ -415,16 +390,7 @@ function selectSkill(event: Event) {
   padding: 8px 12px;
   border-top: 1px solid var(--glass-border);
 }
-.skill-select {
-  width: 86px;
-  flex: 0 0 86px;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-sm);
-  background: #101a15;
-  color: var(--text-mid);
-  font-size: 12px;
-  padding: 0 6px;
-}
+.skill-select { width: 86px; flex: 0 0 86px; }
 .error-message {
   margin: 0;
   padding: 6px 12px;

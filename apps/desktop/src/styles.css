@@ -31,6 +31,11 @@
   /* motion */
   --t-fast: 120ms; --t-base: 200ms; --t-slow: 320ms;
   --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  /* control tokens (Focus UI Kit, ADR-0038): historical values, one source */
+  --fs-xs: 10px; --fs-sm: 11px; --fs-md: 12px; --fs-lg: 13px;
+  --shadow-pop: 0 10px 28px rgba(0, 0, 0, 0.35);
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.35);
+  --z-tray: 12; --z-backdrop: 20; --z-popover: 30;
 }
 
 html, body, #app { height: 100%; margin: 0; padding: 0; }
