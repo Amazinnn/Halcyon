@@ -8,8 +8,8 @@ import {
   BubbleVisibilityRequest,
   bubbleDisplayDurationMs,
   bubbleShouldBeVisible,
+  layoutBubblePages,
   nextBubblePage,
-  paginateBubbleTextMeasured,
 } from "../../lib/pet-bubble";
 
 type LocalBubble = BubbleDelivery & { id: number };
@@ -42,7 +42,8 @@ function measureBubbleText(text: string): number {
   return context.measureText(text).width;
 }
 
-const pages = computed(() => paginateBubbleTextMeasured(bubble.value?.text ?? "", measureBubbleText, 214));
+const layout = computed(() => layoutBubblePages(bubble.value?.text ?? "", measureBubbleText));
+const pages = computed(() => layout.value.pages);
 const visible = computed(() => bubbleShouldBeVisible({
   hasMessage: Boolean(bubble.value),
   dragging: dragging.value,
@@ -50,6 +51,14 @@ const visible = computed(() => bubbleShouldBeVisible({
   expiresAt: expiresAt.value,
 }));
 const currentLines = computed(() => pages.value[page.value] ?? []);
+
+watch(
+  () => [layout.value.width, layout.value.height],
+  async ([width, height]) => {
+    if (!bubble.value) return;
+    await invoke("pet_bubble_resize", { width, height });
+  },
+);
 
 async function syncVisibility() {
   visibilityRequests.issue();
@@ -148,6 +157,12 @@ onMounted(async () => {
   unlistenBubbleDelivery = await listen<BubbleDelivery>("bubble:deliver", (event) => {
     void receiveDelivery(event.payload);
   });
+  await listen<{ opacity?: number }>("settings:acrylic-changed", (e) => {
+    if (typeof e.payload.opacity === "number") {
+      const factor = e.payload.opacity / 22;
+      document.documentElement.style.setProperty("--glass-opacity", String(Math.min(1, Math.max(0.04, 0.77 * factor))));
+    }
+  });
   unlistenPetChanged = await listen("pet:changed", () => {
     void refreshCurrentAgent();
   });
@@ -179,7 +194,7 @@ onMounted(async () => {
   padding: 11px 15px 12px;
   border: 1px solid color-mix(in srgb, var(--pet-accent, #8aa68d) 40%, white);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.77);
+  background: rgb(255 255 255 / var(--glass-opacity, 0.77));
   box-shadow: 0 8px 24px rgba(18, 32, 24, 0.17);
   backdrop-filter: blur(18px) saturate(118%);
   color: #183226;
@@ -189,7 +204,7 @@ onMounted(async () => {
 }
 .pet-bubble::after {
   content: ""; position: absolute; left: 50%; bottom: -7px; width: 13px; height: 13px;
-  background: rgba(255, 255, 255, 0.77); border-right: 1px solid color-mix(in srgb, var(--pet-accent, #8aa68d) 40%, white);
+  background: rgb(255 255 255 / var(--glass-opacity, 0.77)); border-right: 1px solid color-mix(in srgb, var(--pet-accent, #8aa68d) 40%, white);
   border-bottom: 1px solid color-mix(in srgb, var(--pet-accent, #8aa68d) 40%, white); transform: translateX(-50%) rotate(45deg);
 }
 .pet-bubble.below::after { top: -7px; bottom: auto; transform: translateX(-50%) rotate(225deg); }

@@ -5,6 +5,7 @@ import {
   bubbleDisplayDurationMs,
   bubbleShouldBeVisible,
   nextBubblePage,
+  layoutBubblePages,
   paginateBubbleText,
   paginateBubbleTextMeasured,
 } from "./pet-bubble";
@@ -89,5 +90,66 @@ describe("pet bubble pagination", () => {
 
     requests.invalidate();
     expect(requests.isCurrent(hiding)).toBe(false);
+  });
+});
+
+describe("sentence-complete bubble layout (requirement #124)", () => {
+  const cjkMeasure = (s: string) => s.length * 14;
+
+  it("shows a whole short paragraph regardless of sentence count", () => {
+    const { pages, width } = layoutBubblePages("你好。谢谢。再见。", cjkMeasure);
+    expect(pages).toEqual([["你好。谢谢。再见。"]]);
+    expect(width).toBeGreaterThanOrEqual(180);
+  });
+
+  it("splits a long paragraph at sentence finals and never mid-sentence", () => {
+    const long = "第一句是完整的陈述。第二句带感叹号！第三句呢？后面还有很长的一段文字需要继续补充完整直到超出宽度限制为止。";
+    const { pages } = layoutBubblePages(long, cjkMeasure);
+    const flat = pages.flat().join("");
+    expect(flat).toBe(long);
+    for (const page of pages) {
+      const text = page.join("");
+      expect(text.endsWith("。") || text.endsWith("！") || text.endsWith("？") || text === "" || /^第一句/.test(text)).toBe(true);
+    }
+    expect(pages.every((page) => page.length <= 4)).toBe(true);
+  });
+
+  it("keeps authored paragraphs as separate blocks", () => {
+    const { pages } = layoutBubblePages("短段一。\n短段二。", cjkMeasure);
+    expect(pages.flat().join("")).toBe("短段一。短段二。");
+  });
+
+  it("clamps width to the 180-340 range and grows height by lines", () => {
+    const tiny = layoutBubblePages("好", cjkMeasure);
+    expect(tiny.width).toBeGreaterThanOrEqual(180);
+    expect(tiny.width).toBeLessThanOrEqual(340);
+    const tall = layoutBubblePages("这是一个没有标点符号的长句用来验证宽度上限应当被钳制在三百四十像素处不多不少。", cjkMeasure);
+    expect(tall.width).toBeGreaterThan(300);
+    expect(tall.width).toBeLessThanOrEqual(340);
+    expect(tall.height).toBeGreaterThan(60);
+  });
+
+  it("converges: identical input yields identical layout", () => {
+    const a = layoutBubblePages("稳定的文本。再来一句。", cjkMeasure);
+    const b = layoutBubblePages("稳定的文本。再来一句。", cjkMeasure);
+    expect(a).toEqual(b);
+  });
+
+  it("rotates only when content spans multiple pages", () => {
+    const short = layoutBubblePages("一句话。", cjkMeasure);
+    expect(short.pages.length).toBe(1);
+    const multi = layoutBubblePages("第一句。第二句。第三句。第四句。第五句。第六句。", cjkMeasure);
+    expect(multi.pages.length).toBeGreaterThan(1);
+  });
+
+  it("keeps sentence-final punctuation attached to the previous line", () => {
+    const long = "这是一个非常长的句子用来测试句号是否会被单独拆到下一行造成孤立标点。";
+    const { pages } = layoutBubblePages(long, cjkMeasure);
+    const lines = pages.flat();
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i] === "。") throw new Error("lone sentence-final punctuation on line " + i);
+      if (lines[i].startsWith("。")) throw new Error("line starts with sentence-final punctuation: " + lines[i]);
+    }
+    expect(lines.join("")).toBe(long);
   });
 });
