@@ -796,6 +796,8 @@ fn handle_turn_completed(
                     text: result.clone(),
                     priority: "normal".to_string(),
                     agent_id: Some(shared.character_id.clone()),
+                    delivery_id: None,
+                    reliable_delivery: true,
                 });
             }
             emit_status(tx, shared, "success");

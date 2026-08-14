@@ -143,6 +143,8 @@ impl MockProvider {
                         text: text.to_string(),
                         priority: priority.to_string(),
                         agent_id: None,
+                        delivery_id: None,
+                        reliable_delivery: false,
                     });
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(600)).await;

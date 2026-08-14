@@ -83,6 +83,20 @@ not hide the companion.
 `bubble:requested` is the only presentation authority. Frontend chat-completion
 and workflow-history events never synthesize a second bubble.
 
+### Reliable delivery revision (2026-08-14)
+
+The event relay assigns a stable delivery id to each targeted bubble event. It
+retains only the latest current-Agent delivery in AppState memory for 30 seconds.
+The pet-bubble window claims a matching delivery after its Agent store finishes
+initialization; claiming consumes it. Agent switching and deletion clear the
+record. Immediate delivery and a later claim use the same id, so the frontend
+can deduplicate without extending playback. The record is not stored on disk.
+
+The Agent store uses one shared initialization Promise for concurrent WebViews.
+Current-Agent persistence is awaited before dependent pet refresh events are
+emitted. The pet-bubble host receives the accepted float-host configuration only
+once while hidden; later movement and visibility remain no-activate operations.
+
 Placement evaluates, in order, centered-above, above-left, above-right, right,
 left, and below candidates with a 10px gap. Candidates remain in the work area
 and never intersect the pet; if clamping leaves none pet-safe, Focus hides the

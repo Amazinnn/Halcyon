@@ -826,6 +826,8 @@ fn finish_success(
             text: result.to_string(),
             priority: "normal".to_string(),
             agent_id: Some(turn.character_id.clone()),
+            delivery_id: None,
+            reliable_delivery: true,
         });
     }
     emit_status(tx, turn, "success");

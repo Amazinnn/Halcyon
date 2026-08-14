@@ -37,6 +37,12 @@
   chat-independent visibility, six-candidate placement, pet/chat avoidance,
   drag suppression, replacement, two-line pagination, rotation, and fades.
 - [ ] 3.4 Run the state/bubble manual gate.
+- [x] 3.5 Add red-first reliable-delivery tests for late initialization,
+  delivery-id de-duplication, expiry, and Agent switching.
+- [x] 3.6 Add the 30-second current-Agent in-memory delivery handoff and
+  one-time bubble-window claim; keep workflow semantics unchanged.
+- [x] 3.7 Configure `pet-bubble` once while hidden using the accepted float
+  host path, run automated gates and rebuild; push the Pending checkpoint.
 
 ## 4. Restricted controls and closeout
 

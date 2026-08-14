@@ -29,6 +29,12 @@
 > package DOM. Automated validation and release rebuild passed; all Windows
 > visual checks remain Pending until user acceptance.
 
+> 2026-08-14 / Requirement #115: successful direct replies can miss the
+> independent pet bubble when its WebView restores Agent identity after the
+> event. The active `pet-state-pack-and-settings` OpenSpec change now adds a
+> 30-second, current-Agent-only memory handoff and one-time claim path; Windows
+> visual acceptance remains Pending. See `INC-022` and the latest Eval.
+
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，AGPL-3.0-only）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。

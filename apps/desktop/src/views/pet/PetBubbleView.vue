@@ -123,6 +123,8 @@ onBeforeUnmount(() => {
 });
 
 onMounted(async () => {
+  await agent.init();
+  await agent.claimPendingBubble();
   restartRotation();
   restartExpiry();
   void syncVisibility();

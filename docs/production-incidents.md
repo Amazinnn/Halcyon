@@ -14,14 +14,14 @@
 
 状态只能为 `Open`、`Fixed pending verification`、`Verified` 或 `Accepted limitation`。`Fixed pending verification` 不等于用户验收通过。
 
-## 统计（2026-08-13 当前）
+## 统计（2026-08-14 当前）
 
 | 维度 | 统计 |
 | --- | --- |
-| 总事故数 | 21 |
-| 状态 | Open 0；Fixed pending verification 13；Verified 7；Accepted limitation 1 |
-| 严重性 | S1 2；S2 14；S3 4 |
-| 类别 | Window 7；Automation 2；Data 1；Launch 1；Pet 3；Desktop lock 2；Agent/workflow 5 |
+| 总事故数 | 22 |
+| 状态 | Open 1；Fixed pending verification 13；Verified 7；Accepted limitation 1 |
+| 严重性 | S1 2；S2 15；S3 4 |
+| 类别 | Window 7；Automation 2；Data 1；Launch 1；Pet 4；Desktop lock 2；Agent/workflow 5 |
 | 缺少自动回归覆盖 | 1（INC-005）；其余为自动或部分自动覆盖，仍可能要求 Windows 手工验收。 |
 
 2026-08-13 quality update: the pet drag freeze reported after importing a
@@ -32,6 +32,16 @@ repair was later accepted by the user and is now Verified. Package calibration,
 mapping, and companion visual work remain a separate Pending acceptance scope.
 
 ## 记录
+
+### INC-022 Successful direct replies can miss the pet bubble
+| 字段 | 内容 |
+| --- | --- |
+| 类别 / 严重性 / 状态 | Pet / S2 / Fixed pending verification |
+| 首次报告 | 2026-08-14，需求 #115。 |
+| 影响与复现 | 成功直接与 Agent 对话后，桌宠旁没有气泡；聊天窗口打开或关闭均应不影响此行为。 |
+| 根因证据 | 静态排查确认 Codex/Claude 成功最终回复发送 `bubble:requested`。独立 `pet-bubble` WebView 有自己的 Pinia store，可能在其完成当前 Agent 初始化前因目标 `agentId` 过滤事件；原生气泡宿主也未复用其他浮窗的隐藏创建配置。完整 Windows 时序仍待本轮验收。 |
+| 修复 | 当前 Agent 的 30 秒单条内存投递、一次领取和 `deliveryId` 去重；气泡窗口完成初始化后补领，并在隐藏创建时一次性配置浮窗宿主。工作流与监督提醒不进入此补领缓存。 |
+| 验证证据 / 回归覆盖 | 红灯前端去重测试、单次领取/过期 Rust 测试已转绿；90 个前端测试、211 个 Rust 测试、schema、构建、OpenSpec 严格校验和 release rebuild 通过。Windows 人工验收仍 Pending。关联 OpenSpec `pet-state-pack-and-settings` 与本轮 Eval。 |
 
 ### INC-021 Pet spritesheet does not resize with its grid host
 | 字段 | 内容 |

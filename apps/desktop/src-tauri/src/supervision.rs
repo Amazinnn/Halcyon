@@ -90,6 +90,8 @@ fn fire(
         text: text.to_string(),
         priority: "high".to_string(),
         agent_id,
+        delivery_id: None,
+        reliable_delivery: false,
     });
     if let Ok(store) = store.lock() {
         let _ = store.record_supervision_event("distraction", app_name, level);

@@ -590,6 +590,8 @@ impl EventSink for WorkflowManager {
                 text: text.to_string(),
                 priority: priority.to_string(),
                 agent_id: agent_id.map(str::to_owned),
+                delivery_id: None,
+                reliable_delivery: false,
             });
     }
 

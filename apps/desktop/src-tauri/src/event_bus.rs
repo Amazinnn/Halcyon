@@ -16,6 +16,8 @@ pub enum CoreEvent {
         text: String,
         priority: String,
         agent_id: Option<String>,
+        delivery_id: Option<String>,
+        reliable_delivery: bool,
     },
     /// Panel mode changed (chat / statistics / ...).
     PanelModeChanged { mode: String },
@@ -80,10 +82,15 @@ impl CoreEvent {
                 text,
                 priority,
                 agent_id,
+                delivery_id,
+                ..
             } => {
                 let mut payload = json!({ "text": text, "priority": priority });
                 if let Some(agent_id) = agent_id {
                     payload["agentId"] = json!(agent_id);
+                }
+                if let Some(delivery_id) = delivery_id {
+                    payload["deliveryId"] = json!(delivery_id);
                 }
                 payload
             }
@@ -133,7 +140,17 @@ pub async fn relay_task(
     use tauri::Emitter;
     loop {
         match rx.recv().await {
-            Ok(event) => {
+            Ok(mut event) => {
+                if let CoreEvent::BubbleRequested { text, priority, agent_id: Some(agent_id), delivery_id: None, reliable_delivery: true } = &event {
+                    let delivery_id = crate::queue_bubble_for_agent(&app, agent_id, text.clone(), priority.clone());
+                    event = CoreEvent::BubbleRequested {
+                        text: text.clone(),
+                        priority: priority.clone(),
+                        agent_id: Some(agent_id.clone()),
+                        delivery_id: Some(delivery_id),
+                        reliable_delivery: true,
+                    };
+                }
                 let _ = app.emit(event.event_name(), event.payload());
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -174,11 +191,13 @@ mod tests {
             text: "done".into(),
             priority: "normal".into(),
             agent_id: Some("char-b".into()),
+            delivery_id: Some("delivery-1".into()),
+            reliable_delivery: true,
         };
 
         assert_eq!(
             event.payload(),
-            json!({ "text": "done", "priority": "normal", "agentId": "char-b" })
+            json!({ "text": "done", "priority": "normal", "agentId": "char-b", "deliveryId": "delivery-1" })
         );
     }
 }

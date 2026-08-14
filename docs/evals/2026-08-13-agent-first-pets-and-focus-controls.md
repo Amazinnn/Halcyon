@@ -185,3 +185,45 @@ the CSS canvas and DPR backing dimensions after package loading and mounting.
 
 Until these checks are reported, the new rendering, tint, and companion visuals
 remain Pending even after this checkpoint is pushed to `main`.
+## 2026-08-14 Requirement #115: pet bubble reliable delivery
+
+Status: **automated verification passed; Windows manual acceptance Pending**.
+
+Observed production symptom: a successful direct Agent reply can emit the
+targeted `bubble:requested` event before the independent `pet-bubble` WebView
+has restored the current Agent identity, causing that window to discard it.
+The repair keeps one latest direct-reply envelope for the current Agent only in
+memory for 30 seconds. A bubble window claims it once after Agent initialization;
+the immediate and claimed paths share a delivery id and the frontend de-duplicates
+it. The record clears on Agent switch/deletion and is not persisted across
+restart. Workflow and supervision bubbles are explicitly excluded from this
+handoff.
+
+Red-first evidence:
+
+- `agent.test.ts`: duplicate immediate/claimed `deliveryId` initially produced
+  two playback identities, then passed after de-duplication; concurrent `init()`
+  shares its listener registration; a post-init current-Agent claim produces
+  one bubble.
+- `pending_bubble_is_claimed_once_for_matching_agent_and_expires` covers target
+  matching, one-time consumption, and TTL expiry.
+
+Completed gates on 2026-08-14: `npm test -- --run` (90 tests), `npm run build`,
+`cargo test --lib` (211 passed, 1 ignored), `packages/event-schema` `npm test`,
+`openspec validate pet-state-pack-and-settings --strict`, `git diff --check`, and
+`launch-focus.cmd rebuild`. The rebuild result is ready for the manual list below;
+no release tag or OpenSpec archive has been created.
+
+Native scope: `pet-bubble` now receives the same once-only hidden creation float
+host setup as accepted internal float hosts. Its later show/hide/move path stays
+no-activate and mouse-through; it remains outside grid and tray lifecycle.
+
+Manual acceptance required after rebuild:
+
+1. Start Focus and send the first real direct Agent message; verify one bubble.
+2. Repeat with chat closed and open; the bubble must remain independent.
+3. Confirm a long reply paginates, drag suppression/return still works, and the
+   bubble avoids the pet and visible chat window.
+4. Switch to another Agent and test again; no prior Agent message may appear.
+5. Check an Agent without a pet package; no visible pet/bubble host, no float
+   caption, blue strip, overlap, freeze, or brightness-center regression.

@@ -68,3 +68,19 @@ reposition and fade it in after snapping finishes outside persistence locks.
 - **WHEN** `bubble:requested` arrives before pet snap finalization
 - **THEN** its message replaces the old one but the companion remains hidden
   until `pet:drag-ended`
+### Requirement: Reliable direct-reply delivery
+The system MUST display a successful direct Agent reply in the pet bubble even
+when the bubble WebView initializes after the provider event. The core MUST keep
+at most one latest in-memory delivery for the current Agent, expire it after 30
+seconds, and remove it after one claim. Switching or deleting the current Agent
+MUST clear it; a Focus restart MUST NOT restore it.
+
+#### Scenario: late bubble window initialization
+- **WHEN** a successful direct reply is emitted before the pet-bubble WebView
+  has restored its Agent identity
+- **THEN** the initialized bubble window claims and displays the reply exactly
+  once with the original delivery id
+
+#### Scenario: unrelated or expired delivery
+- **WHEN** a delivery targets another Agent or is older than 30 seconds
+- **THEN** the bubble window MUST NOT display it

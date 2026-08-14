@@ -21,6 +21,14 @@ This change is deliberately phased and gated by real Windows acceptance.
 4. Hide restricted focus controls and leave the top status capsule to a later
    change.
 
+### Bubble delivery revision (2026-08-14)
+
+Successful direct Agent replies must reach the independent pet-bubble window
+when that WebView finishes initialization after the provider event. The core
+keeps only the newest current-Agent envelope in memory for 30 seconds; a bubble
+window claims it once after initialization. This does not persist through a
+Focus restart, and chat visibility does not affect delivery.
+
 ## Capabilities
 
 ### New Capabilities

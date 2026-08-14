@@ -69,6 +69,31 @@ pub struct AppState {
     /// v1.12.3: desktop-lock Drop guard kept alive for the process lifetime
     /// (a local in setup() would drop when setup returns, never restoring).
     pub _desktop_lock_guard: Mutex<Option<desktop_lock::DesktopLock>>,
+    pending_bubble: Mutex<Option<PendingBubble>>,
+    bubble_next_id: AtomicU64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingBubble {
+    delivery_id: String,
+    agent_id: String,
+    text: String,
+    priority: String,
+    created_at_ms: u64,
+}
+
+const PENDING_BUBBLE_TTL_MS: u64 = 30_000;
+
+fn claim_pending_bubble(
+    pending: &mut Option<PendingBubble>,
+    agent_id: &str,
+    now_ms: u64,
+) -> Option<PendingBubble> {
+    let expired = pending.as_ref().map(|bubble| now_ms.saturating_sub(bubble.created_at_ms) > PENDING_BUBBLE_TTL_MS).unwrap_or(false);
+    if expired { *pending = None; }
+    if pending.as_ref().map(|bubble| bubble.agent_id == agent_id).unwrap_or(false) {
+        pending.take()
+    } else { None }
 }
 
 #[derive(Default)]
@@ -871,6 +896,7 @@ fn agent_delete(app: tauri::AppHandle, character_id: String) -> Result<usize, St
         is_current
     };
     if removed_current {
+        state.pending_bubble.lock().unwrap().take();
         sync_pet_host_visibility(&app);
     }
     Ok(removed)
@@ -905,9 +931,50 @@ fn agent_set_current(app: tauri::AppHandle, character_id: String) -> Result<(), 
         settings.current_agent_id = Some(character_id);
         settings.save(&state.data_dir)?;
     }
+    state.pending_bubble.lock().unwrap().take();
     sync_pet_host_visibility(&app);
     apply_current_pet_acrylic(&app);
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingBubbleView {
+    delivery_id: String,
+    text: String,
+    priority: String,
+    agent_id: String,
+}
+
+pub(crate) fn queue_bubble_for_agent(app: &tauri::AppHandle, agent_id: &str, text: String, priority: String) -> String {
+    let state = app.state::<AppState>();
+    let id = format!("bubble-{}", state.bubble_next_id.fetch_add(1, Ordering::Relaxed) + 1);
+    if state.settings.lock().unwrap().current_agent_id.as_deref() == Some(agent_id) {
+        *state.pending_bubble.lock().unwrap() = Some(PendingBubble {
+            delivery_id: id.clone(),
+            agent_id: agent_id.to_string(),
+            text,
+            priority,
+            created_at_ms: now_millis(),
+        });
+    }
+    id
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
+
+#[tauri::command]
+fn pet_bubble_claim_pending(app: tauri::AppHandle, character_id: String) -> Option<PendingBubbleView> {
+    let state = app.state::<AppState>();
+    let claimed = claim_pending_bubble(&mut state.pending_bubble.lock().unwrap(), &character_id, now_millis());
+    claimed.map(|bubble| PendingBubbleView {
+        delivery_id: bubble.delivery_id,
+        text: bubble.text,
+        priority: bubble.priority,
+        agent_id: bubble.agent_id,
+    })
 }
 
 /// M5 (ADR-0022): open the Agent's workspace folder in explorer so the user
@@ -2667,8 +2734,9 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .resizable(false)
         .background_color(tauri::window::Color::from((0, 0, 0, 0)))
         .inner_size(248.0, 82.0)
-        .visible(false)
-        .build()?;
+    .visible(false)
+    .build()?;
+    configure_float_host(&bubble);
     bubble.set_ignore_cursor_events(true)?;
     if let Ok(hwnd) = bubble.hwnd() {
         acrylic::noactivate(hwnd.0);
@@ -3046,6 +3114,8 @@ pub fn run() {
                 store: store_arc,
                 // v1.12.3: guard lives with AppState → dropped only at process exit.
                 _desktop_lock_guard: Mutex::new(Some(desktop_lock::DesktopLock)),
+                pending_bubble: Mutex::new(None),
+                bubble_next_id: AtomicU64::new(0),
             };
             app.manage(state);
             // M5 (ADR-0022): no upfront runtime — agents are built lazily per
@@ -3381,6 +3451,7 @@ pub fn run() {
             pet_bubble_placement,
             pet_bubble_show,
             pet_bubble_hide,
+            pet_bubble_claim_pending,
             pet_get_state_mapping,
             pet_save_state_mapping,
             resize_preview,
@@ -3416,7 +3487,33 @@ mod tests {
         FloatVisibilityGate,
         resume_with_initial_message, saved_session_for_today, select_status_character,
         set_agent_provider_serialized_with, topbar_visible, with_agent_runtime_serialized,
+        claim_pending_bubble, PendingBubble, PENDING_BUBBLE_TTL_MS,
     };
+
+    #[test]
+    fn pending_bubble_is_claimed_once_for_matching_agent_and_expires() {
+        let mut pending = Some(PendingBubble {
+            delivery_id: "bubble-1".into(),
+            agent_id: "char-a".into(),
+            text: "hello".into(),
+            priority: "normal".into(),
+            created_at_ms: 1_000,
+        });
+        assert_eq!(claim_pending_bubble(&mut pending, "char-b", 1_001), None);
+        assert!(pending.is_some());
+        assert_eq!(claim_pending_bubble(&mut pending, "char-a", 1_001).unwrap().delivery_id, "bubble-1");
+        assert!(pending.is_none());
+
+        pending = Some(PendingBubble {
+            delivery_id: "bubble-2".into(),
+            agent_id: "char-a".into(),
+            text: "expired".into(),
+            priority: "normal".into(),
+            created_at_ms: 1_000,
+        });
+        assert_eq!(claim_pending_bubble(&mut pending, "char-a", 1_000 + PENDING_BUBBLE_TTL_MS + 1), None);
+        assert!(pending.is_none());
+    }
 
     #[test]
     fn successful_placement_releases_settings_before_post_placement_work() {

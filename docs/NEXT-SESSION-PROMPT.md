@@ -73,3 +73,11 @@ Requirement #114 is covered by a stable `pet-stage` `ResizeObserver` and a
 post-`nextTick` canvas refit after package loading. The regression test,
 full automated gates, and release rebuild passed; the existing Windows
 package/rendering acceptance remains Pending. INC-021 records this incident.
+## Current checkpoint (2026-08-14)
+
+Continue the OpenSpec change `pet-state-pack-and-settings`. Requirement #115
+addresses successful direct Agent replies that can miss the independent
+pet-bubble WebView during initialization. The implementation uses one latest
+current-Agent pending envelope in memory for 30 seconds, an idempotent
+delivery ID, and a one-time post-init claim. Do not archive or tag before the
+user completes the Windows manual acceptance list in the latest Eval.
