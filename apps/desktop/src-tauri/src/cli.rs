@@ -80,6 +80,319 @@ fn shortcuts_json(_app: &AppHandle, store: &Arc<Mutex<Store>>) -> Vec<Value> {
         .collect()
 }
 
+/// Shared context for command handlers (C2 command registry, ADR-0038).
+pub struct CommandCtx<'a> {
+    pub app: &'a AppHandle,
+    pub store: &'a Arc<Mutex<Store>>,
+    pub parts: &'a [&'a str],
+    pub payload: Option<&'a Value>,
+}
+
+/// One declarative command entry: dispatch, Agent whitelist, and client
+/// help all derive from this table (extensibility plan C2).
+pub struct CommandSpec {
+    pub name: &'static str,
+    pub help: &'static str,
+    pub agent_allowed: bool,
+    pub matches: fn(&[&str]) -> bool,
+    pub handler: fn(&CommandCtx) -> Value,
+}
+
+fn cmd_ping(_ctx: &CommandCtx) -> Value {
+    json!({ "pong": true })
+}
+
+fn cmd_debug_windows(ctx: &CommandCtx) -> Value {
+    let app_state = ctx.app.state::<AppState>();
+    let settings = app_state.settings.lock().unwrap();
+    let collapsed = settings.collapsed.clone();
+    let grid = settings.grid.clone();
+    drop(settings);
+    let mut wins = Vec::new();
+    // ADR-0037: the float set derives from the window registry.
+    for label in crate::window_spec::float_labels() {
+        let visible = ctx
+            .app
+            .get_webview_window(label)
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false);
+        wins.push(json!({
+            "label": label,
+            "visible": visible,
+            "collapsed": collapsed.contains(&label.to_string()),
+        }));
+    }
+    let topbar_visible = ctx
+        .app
+        .get_webview_window("topbar")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+    let active_drag = app_state
+        .active_drag
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|d| d.label.clone());
+    json!({
+        "windows": wins,
+        "topbarVisible": topbar_visible,
+        "activeDrag": active_drag,
+        "grid": grid,
+    })
+}
+
+fn cmd_timer(ctx: &CommandCtx) -> Value {
+    let action = ctx.parts.get(1).copied().unwrap_or("");
+    timer_roundtrip(ctx.app, action)
+}
+
+fn with_store(store: &Arc<Mutex<Store>>, f: impl FnOnce(&mut Store) -> Result<Value, String>) -> Value {
+    match store.lock() {
+        Ok(mut s) => match f(&mut s) {
+            Ok(v) => v,
+            Err(e) => json!({ "error": e }),
+        },
+        Err(_) => json!({ "error": "store locked" }),
+    }
+}
+
+fn cmd_stats_today(ctx: &CommandCtx) -> Value {
+    with_store(ctx.store, |s| {
+        s.today_focus_summary()
+            .map(|(sec, rounds)| json!({ "totalSec": sec, "rounds": rounds }))
+            .map_err(|e| e.to_string())
+    })
+}
+
+fn cmd_stats_week(ctx: &CommandCtx) -> Value {
+    with_store(ctx.store, |s| {
+        s.week_focus_summary()
+            .map(|days| json!({ "days": days.into_iter().map(|(d, sec)| json!({ "date": d, "totalSec": sec })).collect::<Vec<_>>() }))
+            .map_err(|e| e.to_string())
+    })
+}
+
+fn cmd_stats_sessions(ctx: &CommandCtx) -> Value {
+    with_store(ctx.store, |s| {
+        s.recent_sessions(20)
+            .map(|rows| json!({ "sessions": rows.iter().map(|r| json!({
+                "id": r.id, "startedAt": r.started_at, "endedAt": r.ended_at,
+                "durationSec": r.duration_sec, "taskId": r.task_id,
+            })).collect::<Vec<_>>() }))
+            .map_err(|e| e.to_string())
+    })
+}
+
+fn cmd_stats_dashboard(ctx: &CommandCtx) -> Value {
+    with_store(ctx.store, |s| {
+        s.dashboard()
+            .map_err(|e| e.to_string())
+            .and_then(|d| serde_json::to_value(d).map_err(|e| e.to_string()))
+    })
+}
+
+fn cmd_desktop_layout(ctx: &CommandCtx) -> Value {
+    let app_state = ctx.app.state::<AppState>();
+    let settings = app_state.settings.lock().unwrap();
+    json!({
+        "grid": settings.grid,
+        "collapsed": settings.collapsed,
+        "shortcuts": shortcuts_json(ctx.app, ctx.store),
+    })
+}
+
+// v1.12: desktop lock/unlock (escape hatch — TCP cannot be blocked by
+// the keyboard hook).
+fn cmd_desktop_lock(_ctx: &CommandCtx) -> Value {
+    match crate::desktop_lock::lock_desktop() {
+        Ok(()) => json!({ "locked": true }),
+        Err(e) => json!({ "error": e }),
+    }
+}
+
+fn cmd_desktop_unlock(_ctx: &CommandCtx) -> Value {
+    match crate::desktop_lock::unlock_desktop() {
+        Ok(()) => json!({ "locked": false }),
+        Err(e) => json!({ "error": e }),
+    }
+}
+
+fn cmd_desktop_status(_ctx: &CommandCtx) -> Value {
+    json!({ "locked": crate::desktop_lock::is_locked() })
+}
+
+fn cmd_apps_now(_ctx: &CommandCtx) -> Value {
+    match crate::activity::probe_foreground() {
+        Some(f) => json!({ "process": f.process, "title": f.title }),
+        None => json!({ "process": null, "title": null }),
+    }
+}
+
+fn cmd_apps_visible(_ctx: &CommandCtx) -> Value {
+    json!({ "apps": crate::apps::list_running_apps() })
+}
+
+// M4 workflow engine (ADR-0012): local control only; the Agent whitelist
+// covers the CRUD sub-commands below (ADR-0020, Agent is the Boss).
+fn cmd_workflow(ctx: &CommandCtx) -> Value {
+    match crate::workflow::cli_handle(ctx.app, ctx.parts, ctx.payload) {
+        Ok(v) => v,
+        Err(e) => json!({ "error": e }),
+    }
+}
+
+// M5 (ADR-0022): Agent-facing session info — the Agent reads its own
+// current session hash to revisit history as context.
+fn cmd_agent_session(ctx: &CommandCtx) -> Value {
+    let agent_id = ctx.parts.get(2).copied().unwrap_or("");
+    let app_state = ctx.app.state::<AppState>();
+    let store = app_state.store.clone();
+    let Ok(s) = store.lock() else { return json!({ "error": "store locked" }) };
+    match s.get_character(agent_id) {
+        Ok(Some(c)) => json!({
+            "agentId": c.id,
+            "sessionHash": c.current_session_hash,
+            "sessionDate": c.session_date,
+            "workspaceDir": c.workspace_dir,
+            "name": c.name,
+            "tool": c.tool,
+        }),
+        Ok(None) => json!({ "error": format!("角色 {agent_id} 不存在") }),
+        Err(e) => json!({ "error": e.to_string() }),
+    }
+}
+
+fn cmd_agent_list(ctx: &CommandCtx) -> Value {
+    let app_state = ctx.app.state::<AppState>();
+    let store = app_state.store.clone();
+    let Ok(s) = store.lock() else { return json!({ "error": "store locked" }) };
+    match s.list_characters() {
+        Ok(chars) => json!({
+            "agents": chars.into_iter().map(|c| serde_json::json!({
+                "agentId": c.id,
+                "name": c.name,
+                "tool": c.tool,
+                "workspaceDir": c.workspace_dir,
+                "sessionHash": c.current_session_hash,
+                "sessionDate": c.session_date,
+            })).collect::<Vec<_>>()
+        }),
+        Err(e) => json!({ "error": e.to_string() }),
+    }
+}
+
+/// Declarative command table (extensibility plan C2). Table order is
+/// semantic: first match wins, mirroring the historical match arms.
+pub const COMMAND_SPECS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "ping",
+        help: "focus-cli ping — 连通性检查",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["ping"]),
+        handler: cmd_ping,
+    },
+    CommandSpec {
+        name: "debug windows",
+        help: "focus-cli debug windows — 窗口可见性/布局诊断",
+        agent_allowed: false,
+        matches: |p| matches!(p, ["debug", "windows"]),
+        handler: cmd_debug_windows,
+    },
+    CommandSpec {
+        name: "timer",
+        help: "focus-cli timer start|pause|skip|status",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["timer", a] if ["start", "pause", "skip", "status"].contains(a)),
+        handler: cmd_timer,
+    },
+    CommandSpec {
+        name: "stats today",
+        help: "focus-cli stats today — 今日专注汇总",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["stats", "today"]),
+        handler: cmd_stats_today,
+    },
+    CommandSpec {
+        name: "stats week",
+        help: "focus-cli stats week — 近 7 日专注",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["stats", "week"]),
+        handler: cmd_stats_week,
+    },
+    CommandSpec {
+        name: "stats sessions",
+        help: "focus-cli stats sessions — 最近会话",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["stats", "sessions"]),
+        handler: cmd_stats_sessions,
+    },
+    CommandSpec {
+        name: "stats dashboard",
+        help: "focus-cli stats dashboard — 统计面板",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["stats", "dashboard"]),
+        handler: cmd_stats_dashboard,
+    },
+    CommandSpec {
+        name: "desktop layout",
+        help: "focus-cli desktop layout — 桌面布局",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["desktop", "layout"]),
+        handler: cmd_desktop_layout,
+    },
+    CommandSpec {
+        name: "desktop lock",
+        help: "focus-cli desktop lock|unlock|status — 桌面锁",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["desktop", "lock"] | ["desktop", "unlock"] | ["desktop", "status"]),
+        handler: |ctx| match ctx.parts.get(1).copied().unwrap_or("") {
+            "lock" => cmd_desktop_lock(ctx),
+            "unlock" => cmd_desktop_unlock(ctx),
+            _ => cmd_desktop_status(ctx),
+        },
+    },
+    CommandSpec {
+        name: "apps now",
+        help: "focus-cli apps now|visible — 前台应用/可见应用",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["apps", "now"] | ["apps", "visible"]),
+        handler: |ctx| match ctx.parts.get(1).copied().unwrap_or("") {
+            "now" => cmd_apps_now(ctx),
+            _ => cmd_apps_visible(ctx),
+        },
+    },
+    CommandSpec {
+        name: "workflow",
+        help: "focus-cli workflow list|read|create|update|delete|run|runs|cancel",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["workflow", sub, ..] if ["list", "read", "create", "update", "delete", "run", "runs", "cancel"].contains(sub)),
+        handler: cmd_workflow,
+    },
+    CommandSpec {
+        name: "agent session",
+        help: "focus-cli agent session <agent-id> — 当前会话信息",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["agent", "session", _]),
+        handler: cmd_agent_session,
+    },
+    CommandSpec {
+        name: "agent list",
+        help: "focus-cli agent list — Agent 列表",
+        agent_allowed: true,
+        matches: |p| matches!(p, ["agent", "list"]),
+        handler: cmd_agent_list,
+    },
+];
+
+fn dispatch(parts: &[&str], ctx: &CommandCtx) -> Value {
+    for spec in COMMAND_SPECS {
+        if (spec.matches)(parts) {
+            return (spec.handler)(ctx);
+        }
+    }
+    json!({ "error": format!("unknown command: {}", parts.join(" ")) })
+}
+
 fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Value {
     let token_ok = req
         .get("token")
@@ -97,178 +410,25 @@ fn handle_request(app: &AppHandle, store: &Arc<Mutex<Store>>, req: &Value) -> Va
         audit_agent_call(store, agent_thread.as_deref().unwrap_or(""), &cmd, false, &denied);
         return denied;
     }
-    let resp = match parts.as_slice() {
-        ["ping"] => json!({ "pong": true }),
-        ["debug", "windows"] => {
-            let app_state = app.state::<AppState>();
-            let settings = app_state.settings.lock().unwrap();
-            let collapsed = settings.collapsed.clone();
-            let grid = settings.grid.clone();
-            drop(settings);
-            let mut wins = Vec::new();
-            for label in ["chat", "stats", "music", "pet"] {
-                let visible = app
-                    .get_webview_window(label)
-                    .and_then(|w| w.is_visible().ok())
-                    .unwrap_or(false);
-                wins.push(json!({
-                    "label": label,
-                    "visible": visible,
-                    "collapsed": collapsed.contains(&label.to_string()),
-                }));
-            }
-            let topbar_visible = app
-                .get_webview_window("topbar")
-                .and_then(|w| w.is_visible().ok())
-                .unwrap_or(false);
-            let active_drag = app_state
-                .active_drag
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|d| d.label.clone());
-            json!({
-                "windows": wins,
-                "topbarVisible": topbar_visible,
-                "activeDrag": active_drag,
-                "grid": grid,
-            })
-        }
-        ["timer", action] if ["start", "pause", "skip", "status"].contains(action) => {
-            timer_roundtrip(app, action)
-        }
-        ["stats", "today"] => match store.lock() {
-            Ok(s) => match s.today_focus_summary() {
-                Ok((sec, rounds)) => json!({ "totalSec": sec, "rounds": rounds }),
-                Err(e) => json!({ "error": e.to_string() }),
-            },
-            Err(_) => json!({ "error": "store locked" }),
-        },
-        ["stats", "week"] => match store.lock() {
-            Ok(s) => match s.week_focus_summary() {
-                Ok(days) => json!({
-                    "days": days.into_iter().map(|(d, sec)| json!({ "date": d, "totalSec": sec })).collect::<Vec<_>>()
-                }),
-                Err(e) => json!({ "error": e.to_string() }),
-            },
-            Err(_) => json!({ "error": "store locked" }),
-        },
-        ["stats", "sessions"] => match store.lock() {
-            Ok(s) => match s.recent_sessions(20) {
-                Ok(rows) => json!({
-                    "sessions": rows.iter().map(|r| json!({
-                        "id": r.id, "startedAt": r.started_at, "endedAt": r.ended_at,
-                        "durationSec": r.duration_sec, "taskId": r.task_id,
-                    })).collect::<Vec<_>>()
-                }),
-                Err(e) => json!({ "error": e.to_string() }),
-            },
-            Err(_) => json!({ "error": "store locked" }),
-        },
-        ["stats", "dashboard"] => match store.lock() {
-            Ok(s) => match s.dashboard() {
-                Ok(d) => serde_json::to_value(d).unwrap_or_else(|e| json!({ "error": e.to_string() })),
-                Err(e) => json!({ "error": e.to_string() }),
-            },
-            Err(_) => json!({ "error": "store locked" }),
-        },
-        ["desktop", "layout"] => {
-            let app_state = app.state::<AppState>();
-            let settings = app_state.settings.lock().unwrap();
-            json!({
-                "grid": settings.grid,
-                "collapsed": settings.collapsed,
-                "shortcuts": shortcuts_json(app, store),
-            })
-        }
-        // v1.12: desktop lock/unlock (escape hatch — TCP cannot be blocked by
-        // the keyboard hook).
-        ["desktop", "lock"] => match crate::desktop_lock::lock_desktop() {
-            Ok(()) => json!({ "locked": true }),
-            Err(e) => json!({ "error": e }),
-        },
-        ["desktop", "unlock"] => match crate::desktop_lock::unlock_desktop() {
-            Ok(()) => json!({ "locked": false }),
-            Err(e) => json!({ "error": e }),
-        },
-        ["desktop", "status"] => json!({ "locked": crate::desktop_lock::is_locked() }),
-        ["apps", "now"] => match crate::activity::probe_foreground() {
-            Some(f) => json!({ "process": f.process, "title": f.title }),
-            None => json!({ "process": null, "title": null }),
-        },
-        ["apps", "visible"] => json!({ "apps": crate::apps::list_running_apps() }),
-        // M4 workflow engine (ADR-0012): local control only; workflow commands
-        // are intentionally NOT in the agent whitelist (anti-loop rule).
-        // v1.11 (ADR-0020): Agent is the Boss — workflow CRUD moved into the
-        // whitelist so Agents can schedule themselves (whitelist below).
-        ["workflow", ..] => match crate::workflow::cli_handle(&app, &parts, req.get("payload")) {
-            Ok(v) => v,
-            Err(e) => json!({ "error": e }),
-        },
-        // M5 (ADR-0022): Agent-facing session info — the Agent reads its own
-        // current session hash to revisit history as context.
-        ["agent", "session", agent_id] => {
-            let state = app.state::<AppState>();
-            let store = state.store.clone();
-            let Ok(s) = store.lock() else { return json!({ "error": "store locked" }) };
-            match s.get_character(agent_id) {
-                Ok(Some(c)) => json!({
-                    "agentId": c.id,
-                    "sessionHash": c.current_session_hash,
-                    "sessionDate": c.session_date,
-                    "workspaceDir": c.workspace_dir,
-                    "name": c.name,
-                    "tool": c.tool,
-                }),
-                Ok(None) => json!({ "error": format!("角色 {agent_id} 不存在") }),
-                Err(e) => json!({ "error": e.to_string() }),
-            }
-        }
-        ["agent", "list"] => {
-            let state = app.state::<AppState>();
-            let store = state.store.clone();
-            let Ok(s) = store.lock() else { return json!({ "error": "store locked" }) };
-            match s.list_characters() {
-                Ok(chars) => json!({
-                    "agents": chars.into_iter().map(|c| serde_json::json!({
-                        "agentId": c.id,
-                        "name": c.name,
-                        "tool": c.tool,
-                        "workspaceDir": c.workspace_dir,
-                        "sessionHash": c.current_session_hash,
-                        "sessionDate": c.session_date,
-                    })).collect::<Vec<_>>()
-                }),
-                Err(e) => json!({ "error": e.to_string() }),
-            }
-        }
-        _ => json!({ "error": format!("unknown command: {cmd}") }),
+    let ctx = CommandCtx {
+        app,
+        store,
+        parts: &parts,
+        payload: req.get("payload"),
     };
+    let resp = dispatch(&parts, &ctx);
     if let Some(tid) = agent_thread {
         audit_agent_call(store, &tid, &cmd, true, &resp);
     }
     resp
 }
 
-
-/// Whitelist enforced only for agent-triggered calls (ADR-0007): exactly the
-/// ADR-0006 command set. `debug` and any future/unknown command are denied.
-/// v1.11 (ADR-0020): `workflow *` is allowed — the Agent manages its own
-/// schedule board (list/read/create/update/delete/run/runs/cancel).
+/// Whitelist for agent-triggered calls (ADR-0007), derived from the
+/// declarative command registry (extensibility plan C2).
 fn agent_whitelisted(parts: &[&str]) -> bool {
-    match parts {
-        ["ping"] => true,
-        ["timer", a] if ["start", "pause", "skip", "status"].contains(a) => true,
-        ["stats", "today"] | ["stats", "week"] | ["stats", "sessions"] | ["stats", "dashboard"] => true,
-        ["desktop", "layout"] => true,
-        // v1.12: desktop lock/unlock/status — Agent can also lock/unlock.
-        ["desktop", "lock"] | ["desktop", "unlock"] | ["desktop", "status"] => true,
-        ["apps", "now"] | ["apps", "visible"] => true,
-        ["workflow", sub, ..] if ["list", "read", "create", "update", "delete", "run", "runs", "cancel"].contains(sub) => true,
-        // M5 (ADR-0022): Agent reads its own session hash / agent list.
-        ["agent", "session", _] | ["agent", "list"] => true,
-        _ => false,
-    }
+    COMMAND_SPECS
+        .iter()
+        .any(|s| s.agent_allowed && (s.matches)(parts))
 }
 
 fn audit_agent_call(

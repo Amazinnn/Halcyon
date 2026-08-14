@@ -124,21 +124,13 @@ fn main() {
     }
 }
 
+/// Help text derives from the declarative command registry (extensibility
+/// plan C2) so client and server share one command source.
 fn print_help() {
     println!("focus-cli — Focus Desktop 本地控制面（需先运行 Focus Desktop）");
     println!("用法：");
-    println!("  focus-cli timer start|pause|skip|status");
-    println!("  focus-cli stats today|week|sessions|dashboard");
-    println!("  focus-cli desktop layout");
-    println!("  focus-cli desktop lock|unlock|status");
-    println!("  focus-cli apps now|visible");
-    println!("  focus-cli workflow list|run <id>|runs <id>|cancel <id>");
-    println!("  focus-cli workflow read <id>");
-    println!("  focus-cli workflow create --payload <workflow-json>");
-    println!("  focus-cli workflow update <id> --payload <workflow-json>");
-    println!("  focus-cli workflow delete <id>");
-    println!("  focus-cli agent list");
-    println!("  focus-cli agent session <agent-id>");
-    println!("  focus-cli ping");
+    for spec in desktop_lib::cli::COMMAND_SPECS {
+        println!("  {}", spec.help);
+    }
     println!("  focus-cli --agent-thread <thread_id> <command>  （Agent 专用：白名单+审计）");
 }
