@@ -1,46 +1,46 @@
 ## Context
 
-See proposal.md for the reported boundary mismatch. `topbar` is deliberately
-excluded from ADR-0029 float-host frame configuration: it is a transparent,
-mouse-through, non-activating native window with a pill only in its WebView CSS.
-Native acrylic therefore remains rectangular unless Windows composition receives
-an explicit region.
+See proposal.md for the reported boundary mismatch. The previous region-only
+attempt did not become visible: a hidden HWND can report a zero `GetClientRect`.
+Topbar now reuses the accepted hidden float-host creation configuration, then
+uses Tauri's physical inner size for its exact native pill region. It remains a
+transparent, mouse-through, non-activating window outside all float-label,
+grid, tray, and drag ownership.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Clip only the topbar native composition to its real client-pixel pill.
+- Reuse the accepted hidden host configuration and clip only the topbar native
+  composition to its real client-pixel pill.
 - Make the existing global acrylic toggle update topbar.
 - Preserve creation-only native setup and all existing topbar input/show paths.
 
 **Non-Goals:**
 
-- Do not call the float-host configuration on topbar.
 - Do not alter grid sizing, desktop lock, tray, topbar CSS geometry, Provider
   behavior, workflows, or any other HWND's clipping strategy.
 
 ## Decisions
 
-### Apply a once-only native pill region at hidden topbar creation
+### Reuse the accepted host setup, then apply the exact topbar pill
 
-The topbar creation path reads the actual client rectangle in pixels and makes a
-round-rectangle native region whose radius is half the client height. It applies
-the region once before visibility. This clips native acrylic at the ownership
+The topbar calls the same one-time hidden `configure_float_host` used by the
+accepted floating windows. It then reads Tauri's physical `inner_size` (rather
+than hidden-HWND `GetClientRect`) and makes a round-rectangle native region whose
+radius is half the client height. This clips native acrylic at the ownership
 layer that CSS cannot reach.
 
 CSS-only clipping was rejected because it cannot constrain the already-observed
-rectangular native acrylic. Reusing ADR-0029 float-host configuration was
-rejected because that established policy explicitly excludes topbar and carries
-unrelated non-client and drag ownership.
+rectangular native acrylic. The shared host call is creation-only; topbar is not
+added to `FLOAT_LABELS`, so it does not inherit grid, tray, or drag ownership.
 
 ### Keep the region immutable after creation
 
 The current topbar size is fixed at creation, so show/hide/move need no region
-mutation. A helper will make the client width, height, and half-height radius
-independently testable; Windows calls remain confined to the existing native
-window module. If a future change resizes topbar, it must explicitly revisit
-this design and the region lifecycle.
+mutation. Helpers make the physical width, height, half-height radius, shared
+host setup, and region decision independently testable. If a future change
+resizes topbar, it must explicitly revisit this lifecycle.
 
 ### Include topbar in global acrylic synchronization only
 

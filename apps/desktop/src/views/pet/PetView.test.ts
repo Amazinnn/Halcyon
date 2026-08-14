@@ -11,4 +11,10 @@ describe("pet canvas resize lifecycle", () => {
     expect(source).toContain("await nextTick();\n  observePetStage();\n  fitCanvas();");
     expect(source).toContain('<div ref="stageRef" class="pet-stage">');
   });
+
+  it("renders an explicit translucent primary-color glass surface behind the sprite", () => {
+    expect(source).toContain("linear-gradient(135deg");
+    expect(source).toContain("backdrop-filter: blur(18px) saturate(125%)");
+    expect(source).toContain("color-mix(in srgb, var(--pet-host-tint, #122018) 58%, transparent)");
+  });
 });

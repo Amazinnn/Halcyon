@@ -7,10 +7,11 @@ control that composition consistently.
 ## ADDED Requirements
 
 ### Requirement: Topbar acrylic follows the capsule boundary
-The system SHALL clip native acrylic for the top status capsule to a pill whose
-corner radius equals half of that window's actual client-pixel height. The
-native clip SHALL be established once while topbar is hidden before it is first
-shown.
+The system SHALL first reuse the accepted hidden float-host creation
+configuration, then clip native acrylic for the top status capsule to a pill
+whose corner radius equals half of that window's actual client-pixel height.
+The native clip SHALL be established once while topbar is hidden before it is
+first shown.
 
 #### Scenario: Topbar is first shown
 - **WHEN** Focus creates and then displays the top status capsule
@@ -38,8 +39,9 @@ Focus hosts.
 
 ### Requirement: Topbar keeps its established interaction contract
 The system SHALL keep the top status capsule non-activating, mouse-through, and
-topmost. It MUST NOT join the float-host frame, grid, tray, desktop-lock,
-Provider, or workflow lifecycles.
+topmost. It MAY reuse only the accepted creation-time float-host setup; it MUST
+NOT join the float-label/grid, tray, desktop-lock, Provider, or workflow
+lifecycles.
 
 #### Scenario: Pointer passes through a visible topbar
 - **WHEN** a user clicks or drags at the visible top status capsule

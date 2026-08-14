@@ -137,6 +137,24 @@
 
 - 实现与自动测试已完成；真实 Claude 控制面已完成一次对话和临时工作流 create/read/update/run/delete 闭环。聊天窗口直接发送与视觉回流仍须手工验收；Codex 认证状态不作为 Claude 验收替代条件。
 - 该工作流仅含目标为当前宠物的 Agent 节点、无桌面副作用；应得到一次合理真实回复、一次「日程 · 名称」来源消息与宠物泡泡、自动刷新的列表、成功运行记录，最后确认临时数据已删除。Provider 不可用、Mock 回退、重复消息或清理失败均不通过。
+## 2026-08-14 Visible pet and topbar rework
+
+Requirements #116-#119 remain active. The earlier automated result did not
+match the user's Windows observation and is not treated as visual acceptance.
+
+- `pet-bubble` is now a local delivery endpoint: it listens before bootstrap,
+  then claims the 30-second current-Agent envelope without bootstrapping the
+  separate chat Agent store.
+- The pet surface is an explicit translucent package-tint gradient with blur
+  and highlight, while no-package Agents remain hidden.
+- Topbar reuses the accepted hidden float-host setup and then applies an exact
+  half-height pill region from Tauri physical inner size; it remains outside
+  float-label/grid/tray ownership (ADR-0034).
+
+Automated verification and `launch-focus.cmd rebuild` are still required after
+this rework. Both OpenSpec changes stay open until user mouse-driven Windows
+acceptance reports real bubble, streaming, pet glass, and capsule behavior.
+
 ## Current Checkpoint Update (2026-08-11)
 
 The recurring float-frame incident is under dedicated repair. The user has

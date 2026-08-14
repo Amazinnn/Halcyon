@@ -87,15 +87,17 @@ and workflow-history events never synthesize a second bubble.
 
 The event relay assigns a stable delivery id to each targeted bubble event. It
 retains only the latest current-Agent delivery in AppState memory for 30 seconds.
-The pet-bubble window claims a matching delivery after its Agent store finishes
-initialization; claiming consumes it. Agent switching and deletion clear the
-record. Immediate delivery and a later claim use the same id, so the frontend
-can deduplicate without extending playback. The record is not stored on disk.
+The pet-bubble window is a dedicated local delivery endpoint, not a second
+Agent-store bootstrap. It first listens for `bubble:requested`, obtains the
+current Agent identity from bootstrap, and claims a matching delivery; claiming
+consumes it. Agent switching and deletion clear the record. Immediate delivery
+and a later claim use the same id, so the bubble endpoint can deduplicate
+without extending playback. The record is not stored on disk.
 
-The Agent store uses one shared initialization Promise for concurrent WebViews.
-Current-Agent persistence is awaited before dependent pet refresh events are
-emitted. The pet-bubble host receives the accepted float-host configuration only
-once while hidden; later movement and visibility remain no-activate operations.
+The chat Agent store retains its shared initialization Promise. The bubble
+window deliberately does not use it. The pet-bubble host receives the accepted
+float-host configuration only once while hidden; later movement and visibility
+remain no-activate operations.
 
 Writing the same current Agent ID during bubble-WebView initialization is not a
 switch and MUST preserve a matching pending delivery. Only a changed persisted
@@ -109,8 +111,9 @@ does not alter Provider requests, expose hidden reasoning, surface workflow
 events, or create tool summaries.
 
 The existing package-derived `hostTint` remains the single pet-surface color
-source. The pet WebView mixes that tint at 50% opacity, leaving the native
-acrylic installed by the global glass setting visible beneath it.
+source. The pet WebView renders it as an explicit translucent gradient surface,
+edge highlight, and blur rather than an imperceptible single color-mix, leaving
+the native acrylic installed by the global glass setting visible beneath it.
 
 Placement evaluates, in order, centered-above, above-left, above-right, right,
 left, and below candidates with a 10px gap. Candidates remain in the work area

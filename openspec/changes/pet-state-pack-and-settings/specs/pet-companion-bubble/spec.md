@@ -78,8 +78,8 @@ MUST clear it; a Focus restart MUST NOT restore it.
 #### Scenario: late bubble window initialization
 - **WHEN** a successful direct reply is emitted before the pet-bubble WebView
   has restored its Agent identity
-- **THEN** the initialized bubble window claims and displays the reply exactly
-  once with the original delivery id
+- **THEN** its local delivery endpoint listens, restores identity from bootstrap,
+  claims and displays the reply exactly once with the original delivery id
 
 #### Scenario: unrelated or expired delivery
 - **WHEN** a delivery targets another Agent or is older than 30 seconds

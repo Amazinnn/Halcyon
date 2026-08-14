@@ -55,6 +55,16 @@ the pending delivery, while a real switch/deletion continues to clear it. The
 full frontend/Rust/schema/build/OpenSpec/diff/rebuild gate passed; Windows
 delivery acceptance remains Pending.
 
+2026-08-14 rework after the failed Windows report: the earlier same-Agent cache
+repair was insufficient because `PetBubbleView` still depended on its own full
+Pinia Agent-store initialization. The direct reply can arrive before that store
+has registered identity/listeners. The repaired endpoint registers the bubble
+listener first, reads current identity from bootstrap, and claims the pending
+delivery independently; immediate and claimed paths retain `deliveryId`
+deduplication. It continues to use the accepted hidden float-host setup and
+no-activate positioning path. The user has not yet verified this rework, so
+INC-022 remains `Fixed pending verification`.
+
 ### INC-021 Pet spritesheet does not resize with its grid host
 | 字段 | 内容 |
 | --- | --- |

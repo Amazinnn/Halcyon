@@ -7,11 +7,11 @@ composition surface owns the rectangle.
 
 ## What Changes
 
-- Create a topbar-only native pill region once during hidden window creation,
-  using its actual client-pixel dimensions and a radius equal to half its client
-  height, so native acrylic is clipped to the capsule boundary.
+- Reuse the accepted hidden float-host creation configuration for topbar, then
+  add its topbar-only exact native pill region using Tauri's physical client
+  dimensions and a radius equal to half its client height.
 - Keep the existing no-activate, mouse-through, topmost, and show/move paths;
-  do not apply float-host frame configuration or grid behavior to topbar.
+  topbar still does not enter float-label, grid, tray, or drag lifecycle.
 - Make the existing global acrylic setting update topbar as well as the other
   acrylic-backed hosts.
 - Record the intentional topbar-only exception to ADR-0029 in a new ADR and
@@ -35,4 +35,5 @@ This affects topbar creation and global acrylic updates in
 topbar-related Eval/incident/ADR records. It deliberately leaves the accepted
 float hosts, pet-bubble host, grid overlay, tray behavior, desktop locking,
 providers, and workflows unchanged. ADR-0029 remains the governing policy for
-float hosts; this proposal scopes one native region to topbar only.
+float hosts; this proposal scopes shared creation configuration plus one native
+pill region to topbar only.

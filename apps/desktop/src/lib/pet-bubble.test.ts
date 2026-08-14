@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  acceptBubbleDelivery,
   BubbleVisibilityRequest,
   bubbleDisplayDurationMs,
   bubbleShouldBeVisible,
@@ -9,6 +10,30 @@ import {
 } from "./pet-bubble";
 
 describe("pet bubble pagination", () => {
+  it("accepts an immediate delivery for the local bubble window without an Agent-store initialization", () => {
+    const received = acceptBubbleDelivery("char-a", [], {
+      deliveryId: "reply-1",
+      agentId: "char-a",
+      text: "第一条真实回复",
+      priority: "normal",
+    });
+
+    expect(received.message?.text).toBe("第一条真实回复");
+    expect(received.seenDeliveryIds).toEqual(["reply-1"]);
+  });
+
+  it("keeps the local bubble window from replaying a delivery or accepting another Agent's reply", () => {
+    const duplicate = acceptBubbleDelivery("char-a", ["reply-1"], {
+      deliveryId: "reply-1", agentId: "char-a", text: "重复", priority: "normal",
+    });
+    const otherAgent = acceptBubbleDelivery("char-a", [], {
+      deliveryId: "reply-2", agentId: "char-b", text: "别人的回复", priority: "normal",
+    });
+
+    expect(duplicate.message).toBeNull();
+    expect(otherAgent.message).toBeNull();
+  });
+
   it("keeps authored lines and never returns more than two lines per page", () => {
     const pages = paginateBubbleText("第一行\n第二行\n第三行", 8);
     expect(pages).toEqual([["第一行", "第二行"], ["第三行"]]);

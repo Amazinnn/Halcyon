@@ -1,16 +1,16 @@
 # ADR-0033: Topbar Native Acrylic Pill Clip
 
-Status: Accepted
+Status: Superseded by ADR-0034
 Date: 2026-08-14
-Requirements: #117
+Requirements: #117, #118
 OpenSpec: `topbar-capsule-acrylic-clip`
 
 ## Context
 
 The topbar WebView draws a pill, but its HWND acrylic composition is rectangular.
-CSS cannot clip that native composition. ADR-0029 intentionally excludes topbar
-from float-host frame ownership because topbar is mouse-through and does not
-participate in the grid, tray, or float drag lifecycle.
+CSS cannot clip that native composition. The region-only method documented here
+used hidden-HWND `GetClientRect`, which can be zero before first display and did
+not correct the user-visible boundary. ADR-0034 replaces its operational path.
 
 ## Decision
 
@@ -26,7 +26,6 @@ participate in the grid, tray, or float drag lifecycle.
 
 ## Consequences
 
-The topbar receives a narrowly scoped native composition clip, not the
-ADR-0029 float-host style/procedure configuration. Any future topbar resizing
-must explicitly revisit the creation-only region assumption. Automated tests
-prove geometry only; Windows visual acceptance remains mandatory.
+This historical region-only decision was superseded after the Windows visual
+report. Automated tests prove geometry only; Windows visual acceptance remains
+mandatory.

@@ -2119,27 +2119,37 @@ pub(crate) const fn float_corner_preference_value() -> i32 {
     2 // DWMWCP_ROUND
 }
 
+/// The topbar shares the proven, creation-only native host configuration used
+/// by the visible float windows. It deliberately remains outside
+/// `FLOAT_LABELS`, so grid/tray lifecycle ownership does not change.
+pub(crate) const fn topbar_uses_float_host_creation_config() -> bool {
+    true
+}
+
+pub(crate) const fn topbar_uses_exact_pill_region() -> bool {
+    true
+}
+
 pub(crate) const fn topbar_capsule_region(client_width: i32, client_height: i32) -> (i32, i32, i32) {
     (client_width, client_height, client_height / 2)
 }
 
-/// Topbar is intentionally not a float host (ADR-0029). Its native acrylic
-/// nevertheless needs one creation-only region because CSS cannot clip HWND
-/// composition. This must run while the window remains hidden.
+/// The topbar first receives the same hidden float-host configuration as the
+/// accepted floating windows. Its remaining topbar-specific step is an exact
+/// pill region, because DWM's generic ROUND preference is not a half-height
+/// capsule at 44 px.
 fn configure_topbar_capsule_region(w: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = w.hwnd() {
-        use windows::Win32::Foundation::{HWND, RECT};
+        use windows::Win32::Foundation::HWND;
         use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
-        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
         let hwnd = HWND(hwnd.0 as *mut core::ffi::c_void);
         unsafe {
-            let mut client = RECT::default();
-            if !GetClientRect(hwnd, &mut client).is_ok() { return; }
-            let (width, height, radius) = topbar_capsule_region(
-                client.right - client.left,
-                client.bottom - client.top,
-            );
+            // Tauri reports the physical client size before a hidden window
+            // is shown. GetClientRect may still be zero at that lifecycle
+            // point, which was the reason the prior region never appeared.
+            let client = w.inner_size().unwrap_or_default();
+            let (width, height, radius) = topbar_capsule_region(client.width as i32, client.height as i32);
             if width <= 0 || height <= 0 || radius <= 0 { return; }
             let region = CreateRoundRectRgn(0, 0, width, height, radius * 2, radius * 2);
             if region.0.is_null() { return; }
@@ -2876,6 +2886,12 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .skip_taskbar(true)
         .visible(false)
         .build()?;
+    if topbar_uses_float_host_creation_config() {
+        configure_float_host(&topbar);
+    }
+    if topbar_uses_exact_pill_region() {
+        configure_topbar_capsule_region(&topbar);
+    }
     // informational only: never intercept mouse clicks on apps underneath
     topbar.set_ignore_cursor_events(true)?;
     if let Ok(hwnd) = topbar.hwnd() {
@@ -3218,13 +3234,6 @@ pub fn run() {
 
             create_windows(app)?;
 
-            // The hidden builder can report a zero client rect. Apply the
-            // creation-only topbar region only after the HWND has completed
-            // creation, still before the first visibility decision.
-            if let Some(topbar) = app.get_webview_window("topbar") {
-                configure_topbar_capsule_region(&topbar);
-            }
-
             // frosted glass on floating windows (respects settings toggle)
             let acrylic_enabled = app
                 .state::<AppState>()
@@ -3562,7 +3571,7 @@ mod tests {
         resolve_window_placement, ClientFrame, ClientGeometry, ScreenRect,
         FloatVisibilityGate,
         resume_with_initial_message, saved_session_for_today, select_status_character,
-        set_agent_provider_serialized_with, topbar_capsule_region, topbar_visible, with_agent_runtime_serialized,
+        set_agent_provider_serialized_with, topbar_capsule_region, topbar_uses_exact_pill_region, topbar_uses_float_host_creation_config, topbar_visible, with_agent_runtime_serialized,
         claim_pending_bubble, PendingBubble, PENDING_BUBBLE_TTL_MS,
     };
 
@@ -4504,6 +4513,18 @@ mod tests {
     fn topbar_capsule_region_uses_client_height_as_its_diameter_once() {
         assert_eq!(topbar_capsule_region(500, 44), (500, 44, 22));
         assert_eq!(topbar_capsule_region(137, 43), (137, 43, 21));
+    }
+
+    #[test]
+    fn topbar_reuses_the_accepted_float_host_creation_configuration() {
+        assert!(topbar_uses_float_host_creation_config());
+        assert!(!is_float_label("topbar"), "topbar remains outside grid/tray lifecycle");
+    }
+
+    #[test]
+    fn topbar_adds_an_exact_pill_region_after_the_shared_host_setup() {
+        assert!(topbar_uses_exact_pill_region());
+        assert_eq!(topbar_capsule_region(500, 44), (500, 44, 22));
     }
 
     #[test]

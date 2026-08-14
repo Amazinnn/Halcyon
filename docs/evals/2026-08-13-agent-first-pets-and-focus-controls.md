@@ -285,3 +285,46 @@ topbar native-region creation until after HWND creation but before first show,
 and exposes the persisted streaming preference directly in the chat header as
 well as Settings. Fresh frontend, Rust, schema, strict-validation, diff, and
 release-rebuild gates passed. Windows acceptance remains required.
+
+## 2026-08-14 Rework after the user-reported visual failure
+
+Status: **implementation changed; Windows visual acceptance remains Pending**.
+
+The user reported that the prior rebuilt candidate still showed none of the four
+requested behaviors. That report supersedes any implication that prior automated
+gates proved visible behavior.
+
+- Bubble delivery no longer boots the independent window's full Pinia Agent
+  store. It registers its dedicated event listener first, gets current identity
+  from bootstrap, and claims the one pending direct-reply delivery. The local
+  endpoint de-duplicates immediate and claimed delivery ids.
+- The pet surface now has a visible package-derived translucent gradient,
+  border/highlight, and blur rather than a single subtle color-mix layer.
+- Topbar now reuses the accepted hidden float-host creation setup, then creates
+  its exact half-height pill region from physical `inner_size`; ADR-0034
+  supersedes the earlier region-only mechanism.
+
+Fresh red-first evidence in this rework:
+
+- `pet-bubble.test.ts` failed because a bubble-local endpoint did not exist,
+  then passed for immediate delivery, duplicate suppression, and wrong-Agent
+  rejection.
+- `PetView.test.ts` failed because there was no explicit translucent glass
+  surface, then passed with the gradient/blur contract.
+- Rust topbar tests failed until shared host setup and exact-pill configuration
+  were both declared, then passed.
+
+Fresh completion gates on 2026-08-14:
+
+| Check | Status | Evidence |
+| --- | --- | --- |
+| Frontend tests | Pass | `npm test -- --run`: 18 files, 93 tests passed. |
+| Frontend build | Pass | `npm run build` exited 0; the existing Vite chunk-size advisory remains. |
+| Rust library tests | Pass | `cargo test --lib`: 215 passed, 1 ignored, 0 failed. |
+| Event schema | Pass | `packages/event-schema` `npm test`: 11 valid and 4 invalid fixtures checked. |
+| OpenSpec | Pass | Both active changes and global strict validation exited 0. |
+| Diff hygiene | Pass | `git diff --check` exited 0. |
+| Release rebuild | Pass | `launch-focus.cmd rebuild` exited 0. |
+
+None of these gates proves native Windows composition or the live direct-reply
+flow. Visual behavior still requires the user's mouse.

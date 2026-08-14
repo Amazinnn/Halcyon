@@ -21,6 +21,31 @@ export class BubbleVisibilityRequest {
   }
 }
 
+export interface BubbleDelivery {
+  deliveryId: string;
+  agentId: string;
+  text: string;
+  priority: string;
+}
+
+/**
+ * The bubble WebView owns its own delivery state.  It must be able to consume
+ * a reply before any full Agent-store bootstrap has completed.
+ */
+export function acceptBubbleDelivery(
+  currentAgentId: string,
+  seenDeliveryIds: string[],
+  delivery: BubbleDelivery,
+): { message: BubbleDelivery | null; seenDeliveryIds: string[] } {
+  if (!currentAgentId || delivery.agentId !== currentAgentId || seenDeliveryIds.includes(delivery.deliveryId)) {
+    return { message: null, seenDeliveryIds };
+  }
+  return {
+    message: delivery,
+    seenDeliveryIds: [...seenDeliveryIds, delivery.deliveryId],
+  };
+}
+
 export function bubbleDisplayDurationMs(pages: string[][]): number {
   return Math.max(1, pages.length) * 3000;
 }

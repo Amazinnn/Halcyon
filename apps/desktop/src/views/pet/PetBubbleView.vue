@@ -2,8 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useAgentStore } from "../../stores/agent";
 import {
+  acceptBubbleDelivery,
+  type BubbleDelivery,
   BubbleVisibilityRequest,
   bubbleDisplayDurationMs,
   bubbleShouldBeVisible,
@@ -11,7 +12,12 @@ import {
   paginateBubbleTextMeasured,
 } from "../../lib/pet-bubble";
 
-const agent = useAgentStore();
+type LocalBubble = BubbleDelivery & { id: number };
+
+const currentAgentId = ref("");
+const bubble = ref<LocalBubble | null>(null);
+const seenDeliveryIds = ref<string[]>([]);
+let bubbleSequence = 0;
 const page = ref(0);
 const fading = ref(false);
 const appearing = ref(false);
@@ -20,6 +26,8 @@ let transitionTimer: ReturnType<typeof setTimeout> | null = null;
 let expiryTimer: ReturnType<typeof setTimeout> | null = null;
 let unlistenDragStart: (() => void) | null = null;
 let unlistenDragEnd: (() => void) | null = null;
+let unlistenBubbleRequested: (() => void) | null = null;
+let unlistenPetChanged: (() => void) | null = null;
 const now = ref(Date.now());
 const expiresAt = ref(0);
 const dragging = ref(false);
@@ -41,9 +49,9 @@ function measureBubbleText(text: string): number {
   return context.measureText(text).width;
 }
 
-const pages = computed(() => paginateBubbleTextMeasured(agent.bubble?.text ?? "", measureBubbleText, 214));
+const pages = computed(() => paginateBubbleTextMeasured(bubble.value?.text ?? "", measureBubbleText, 214));
 const visible = computed(() => bubbleShouldBeVisible({
-  hasMessage: Boolean(agent.bubble),
+  hasMessage: Boolean(bubble.value),
   dragging: dragging.value,
   now: now.value,
   expiresAt: expiresAt.value,
@@ -52,14 +60,14 @@ const currentLines = computed(() => pages.value[page.value] ?? []);
 
 async function syncVisibility() {
   const generation = visibilityRequests.issue();
-  const bubbleId = agent.bubble?.id ?? null;
-  const characterId = agent.characterId;
+  const bubbleId = bubble.value?.id ?? null;
+  const characterId = currentAgentId.value;
   if (!visible.value) {
     await invoke("pet_bubble_hide");
     return;
   }
   const placement = await invoke<BubblePlacement | null>("pet_bubble_placement");
-  if (!visibilityRequests.isCurrent(generation) || !visible.value || agent.bubble?.id !== bubbleId || agent.characterId !== characterId) return;
+  if (!visibilityRequests.isCurrent(generation) || !visible.value || bubble.value?.id !== bubbleId || currentAgentId.value !== characterId) return;
   if (!placement) {
     await invoke("pet_bubble_hide");
     return;
@@ -67,7 +75,7 @@ async function syncVisibility() {
   accent.value = placement.accent;
   anchor.value = { x: placement.anchorX, y: placement.anchorY };
   const nextDirection = await invoke<string | null>("pet_bubble_show", { anchorX: anchor.value.x, anchorY: anchor.value.y });
-  if (!visibilityRequests.isCurrent(generation) || !visible.value || agent.bubble?.id !== bubbleId || agent.characterId !== characterId) {
+  if (!visibilityRequests.isCurrent(generation) || !visible.value || bubble.value?.id !== bubbleId || currentAgentId.value !== characterId) {
     if (!visible.value) {
       await invoke("pet_bubble_hide");
     }
@@ -97,7 +105,7 @@ function restartRotation() {
 
 function restartExpiry() {
   if (expiryTimer) clearTimeout(expiryTimer);
-  if (!agent.bubble) return;
+  if (!bubble.value) return;
   expiresAt.value = Date.now() + bubbleDisplayDurationMs(pages.value);
   expiryTimer = setTimeout(() => {
     now.value = Date.now();
@@ -105,13 +113,39 @@ function restartExpiry() {
   }, Math.max(0, expiresAt.value - Date.now()) + 1);
 }
 
-watch(() => agent.bubble?.id, () => {
+function receiveDelivery(delivery: BubbleDelivery) {
+  const accepted = acceptBubbleDelivery(currentAgentId.value, seenDeliveryIds.value, delivery);
+  if (!accepted.message) return;
+  seenDeliveryIds.value = accepted.seenDeliveryIds;
+  bubble.value = { ...accepted.message, id: ++bubbleSequence };
+}
+
+async function claimPendingBubble() {
+  if (!currentAgentId.value) return;
+  const pending = await invoke<BubbleDelivery | null>("pet_bubble_claim_pending", {
+    characterId: currentAgentId.value,
+  });
+  if (pending) receiveDelivery(pending);
+}
+
+async function refreshCurrentAgent() {
+  const bootstrap = await invoke<{ currentAgentId?: string | null }>("get_bootstrap");
+  const nextAgentId = bootstrap.currentAgentId ?? "";
+  if (nextAgentId !== currentAgentId.value) {
+    currentAgentId.value = nextAgentId;
+    bubble.value = null;
+    seenDeliveryIds.value = [];
+  }
+  await claimPendingBubble();
+}
+
+watch(() => bubble.value?.id, () => {
   now.value = Date.now();
   restartRotation();
   restartExpiry();
   void syncVisibility();
 });
-watch(() => agent.characterId, () => void syncVisibility());
+watch(currentAgentId, () => void syncVisibility());
 
 onBeforeUnmount(() => {
   visibilityRequests.invalidate();
@@ -120,11 +154,21 @@ onBeforeUnmount(() => {
   if (expiryTimer) clearTimeout(expiryTimer);
   unlistenDragStart?.();
   unlistenDragEnd?.();
+  unlistenBubbleRequested?.();
+  unlistenPetChanged?.();
 });
 
 onMounted(async () => {
-  await agent.init();
-  await agent.claimPendingBubble();
+  // This window is a delivery endpoint, not another chat client. Register its
+  // dedicated listener before reading identity so a first direct reply is
+  // either received immediately or recovered by the single pending claim.
+  unlistenBubbleRequested = await listen<BubbleDelivery>("bubble:requested", (event) => {
+    receiveDelivery(event.payload);
+  });
+  unlistenPetChanged = await listen("pet:changed", () => {
+    void refreshCurrentAgent();
+  });
+  await refreshCurrentAgent();
   restartRotation();
   restartExpiry();
   void syncVisibility();

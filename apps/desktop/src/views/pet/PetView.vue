@@ -481,7 +481,14 @@ onBeforeUnmount(() => {
   cursor: grab;
   border-radius: var(--window-host-radius);
   overflow: hidden;
-  background: color-mix(in srgb, var(--pet-host-tint, #122018) 50%, transparent);
+  background:
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--pet-host-tint, #122018) 58%, transparent),
+      color-mix(in srgb, var(--pet-host-tint, #122018) 42%, transparent));
+  border: 1px solid color-mix(in srgb, var(--pet-host-tint, #122018) 44%, rgba(255, 255, 255, 0.68));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 8px 22px rgba(8, 20, 12, 0.22);
+  backdrop-filter: blur(18px) saturate(125%);
+  -webkit-backdrop-filter: blur(18px) saturate(125%);
 }
 .pet-stage {
   width: 100%;
