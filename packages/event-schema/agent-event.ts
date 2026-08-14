@@ -29,6 +29,7 @@ export type AgentState = (typeof AGENT_STATES)[number];
 export const AGENT_EVENT_TYPES = [
   "session.started",
   "message.delta",
+  "message.thinking",
   "message.completed",
   "tool.started",
   "tool.completed",
@@ -56,6 +57,7 @@ export interface AgentEventEnvelope {
 export type AgentEventBody =
   | { type: "session.started" }
   | { type: "message.delta"; text: string }
+  | { type: "message.thinking"; text: string }
   | { type: "message.completed"; text: string }
   | { type: "tool.started"; tool: string; inputSummary: string }
   | { type: "tool.completed"; tool: string; resultSummary: string }

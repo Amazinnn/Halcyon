@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://focus.desktop/schemas/agent-event.schema.json",
   "title": "AgentEvent",
-  "description": "Envelope for Focus Desktop Agent events. The envelope carries identity (agentId/sessionId) and protocol version; the inner `event` is a discriminated union over the 11 event kinds defined in the design document (v0.2, section 8.2).",
+  "description": "Envelope for Focus Desktop Agent events. The envelope carries identity (agentId/sessionId) and protocol version; the inner `event` is a discriminated union over the 12 event kinds defined in the design document (v0.2, section 8.2).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "agentId", "sessionId", "timestamp", "event"],
@@ -21,6 +21,7 @@
       "oneOf": [
         { "$ref": "#/$defs/sessionStarted" },
         { "$ref": "#/$defs/messageDelta" },
+        { "$ref": "#/$defs/messageThinking" },
         { "$ref": "#/$defs/messageCompleted" },
         { "$ref": "#/$defs/toolStarted" },
         { "$ref": "#/$defs/toolCompleted" },
@@ -43,6 +44,12 @@
       "additionalProperties": false,
       "required": ["type", "text"],
       "properties": { "type": { "const": "message.delta" }, "text": { "type": "string" } }
+    },
+    "messageThinking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "text"],
+      "properties": { "type": { "const": "message.thinking" }, "text": { "type": "string" } }
     },
     "messageCompleted": {
       "type": "object",
