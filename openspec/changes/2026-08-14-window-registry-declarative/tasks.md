@@ -19,8 +19,8 @@
 
 ## 3. Full gates, Eval, and manual acceptance
 
-- [ ] 3.1 Run the full gate set: `npm test -- --run`, `npm run build`, `cargo test --lib`, `packages/event-schema npm test`, `openspec validate --specs --strict`, `git diff --check`; stop desktop.exe/watchdog, then `npm run tauri build -- --no-bundle`
-- [ ] 3.2 Write `docs/evals/2026-08-14-window-registry-refactor-checkpoint.md` with scope (requirement #125, ADR-0037, this change), gate commands/results, test counts, and all manual items Pending
-- [ ] 3.3 Update `docs/STATUS.md` (checkpoint section linking the Eval, manual acceptance Pending) and `docs/next-phase.md` (tier-1 progress; next candidate Focus UI Kit)
-- [ ] 3.4 Commit docs and push all stages to origin (Clash proxy or `git -c http.proxy= -c https.proxy= push`)
+- [x] 3.1 Run the full gate set: `npm test -- --run`, `npm run build`, `cargo test --lib`, `packages/event-schema npm test`, `openspec validate --specs --strict`, `git diff --check`; stop desktop.exe/watchdog, then `npm run tauri build -- --no-bundle`
+- [x] 3.2 Write `docs/evals/2026-08-14-window-registry-refactor-checkpoint.md` with scope (requirement #125, ADR-0037, this change), gate commands/results, test counts, and all manual items Pending
+- [x] 3.3 Update `docs/STATUS.md` (checkpoint section linking the Eval, manual acceptance Pending) and `docs/next-phase.md` (tier-1 progress; next candidate Focus UI Kit)
+- [x] 3.4 Commit docs and push all stages to origin (Clash proxy or `git -c http.proxy= -c https.proxy= push`)
 - [ ] 3.5 Deliver the numbered manual Windows checklist to the user; after acceptance, `openspec sync-specs` and archive the change; no release tag until acceptance
