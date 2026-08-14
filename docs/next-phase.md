@@ -182,3 +182,9 @@ input and atomic adjacent-token deletion are implemented and tested.
 > 扩展 / 多窗口事件协同；桌宠扩展为 P2 预留。实施路线图 C1 Focus UI Kit →
 > C2 CLI 命令注册表 → C3 事件流领域分组+薄窗口订阅 → C4 面板框架；每项为独立
 > OpenSpec 变更。
+>
+> 2026-08-14 实施进度（#128 一把做完）：C1-C4 已全部实现并提交（前端 129
+> 测试全绿；cargo test 与 rebuild 待重启系统补跑，见 Eval）。UI 设计/维护
+> 文档：docs/ui-design.md（设计契约）与 docs/ui-maintenance.md（维护流程）；
+> 事件订阅矩阵：docs/architecture/event-streams-v1.md。剩余：重启补跑 Rust
+> 门禁 → rebuild → 编号手测 → 验收后逐个 sync+archive。

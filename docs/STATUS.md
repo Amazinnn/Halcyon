@@ -101,6 +101,16 @@
 > 薄窗口订阅 → C4 面板框架，每项为独立 OpenSpec 变更。见
 > [规划 Eval](./evals/2026-08-14-extensibility-planning-checkpoint.md)。
 
+> 2026-08-14 扩展性实施（需求 #126/#127/#128，"一把做完"）：C1-C4 全部实现。
+> C1 Focus UI Kit（8 控件 + tokens + ui-design/ui-maintenance 文档，4 视图
+> 迁移去重）；C2 CLI 命令注册表（COMMAND_SPECS 声明驱动分发/白名单/帮助）；
+> C3 事件 Domain 分组 + agent store 薄模式（topbar/pet-bubble/overlay 最小
+> 订阅）+ 事件流订阅矩阵文档；C4 overview 概览面板（三处声明 + 只读查询 +
+> 事件订阅 + Kit 拼装，托盘 4→5）。前端 129 测试与 build 全绿。**注意：本机
+> 有挂起 Windows 更新导致 debug 二进制启动失败（0xc0000139），cargo test
+> 与 rebuild 需重启系统后补跑**，随后交付手测清单。见
+> [C1-C4 Eval](./evals/2026-08-14-extensibility-c1-c4-checkpoint.md)。
+
 
 ## 项目一句话
 
