@@ -65,7 +65,7 @@ Status: 随 C1/C4 变更交付；扩展性规划见 docs/architecture/extensibil
 ## 6. 门禁清单（交付前全跑）
 
 - cd apps/desktop && npm test -- --run && npm run build
-- cd apps/desktop/src-tauri && cargo test --lib
+- cd apps/desktop/src-tauri && cargo test --lib（或 scripts/rust-gate.ps1——测试二进制需 comctl32 v6 manifest，见 scripts/rust-gate.ps1 头注释）
 - cd packages/event-schema && npm test
 - openspec validate --specs --strict
 - git diff --check

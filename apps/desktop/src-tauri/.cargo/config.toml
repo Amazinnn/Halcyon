@@ -1,8 +1,0 @@
-# Extensibility round fix: debug (test/dev) binaries must declare the
-# comctl32 v6 dependency; without a manifest the loader binds v5 and
-# binaries that import TaskDialogIndirect fail at startup with
-# STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139).
-# Absolute path required: the linker resolves MANIFESTINPUT from each
-# crate build dir, not from src-tauri.
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=/MANIFEST:EMBED", "-C", "link-arg=/MANIFESTINPUT:D:\\Projects\\Focus\\apps\\desktop\\src-tauri\\focus.manifest"]

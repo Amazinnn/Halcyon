@@ -51,7 +51,7 @@ One batch implementation of the extensibility roadmap C1-C4 (user: "一把做完
 | Diff hygiene | `git diff --check` | Clean |
 | Release rebuild | `npm run tauri build -- --no-bundle` | **Deferred with cargo test** (same environment block) |
 
-## Environment Note (blocking, not a code defect)
+## Root Cause Note (resolved)
 
 Every debug test binary (cargo test, focus-cli.exe) now fails at process
 start with STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139), while release binaries

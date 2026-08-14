@@ -8,7 +8,7 @@ mod acrylic;
 mod activity;
 mod agents;
 mod apps;
-mod cli;
+pub mod cli; // focus-cli bin derives help from the command registry (C2)
 mod desktop_lock;
 mod desktop_lock_escapes;
 mod drag;
