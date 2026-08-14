@@ -1064,7 +1064,8 @@ struct BubbleDiagnosticsView {
 
 #[tauri::command]
 fn pet_bubble_diagnostics(state: tauri::State<'_, AppState>) -> BubbleDiagnosticsView {
-    let controller = state.bubble_controller.lock().unwrap();
+    let mut controller = state.bubble_controller.lock().unwrap();
+    controller.expire(now_millis());
     BubbleDiagnosticsView {
         stage: controller.last_stage.to_string(),
         delivery_id: controller.last_delivery_id.clone(),
