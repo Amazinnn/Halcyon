@@ -56,6 +56,21 @@
 > in progress and Windows mouse acceptance remains the only authority for
 > visible behavior.
 
+> 2026-08-14 / Requirements #121/#122: live CDP instrumentation verified the
+> true production root causes. The pet-bubble WebView was missing from the
+> Tauri capability window list (every event listen ACL-rejected; the bubble
+> host never reported ready), and resident Claude turns stream increments only
+> through partial assistant messages (thinking/text/tool_use blocks), which the
+> adapter ignored. The capability list now includes `pet-bubble`; the Claude
+> adapter consumes assistant messages and streams Provider-visible thinking as
+> the new additive `message.thinking` event (user approved showing thinking
+> while the streaming switch is on); topbar's transparent host reserves shadow
+> margins so the WebView pill shadow renders fully and follows the pill curve.
+> ADR-0036 records the new policy. Automated gates and release rebuild pass;
+> Windows mouse acceptance is the only remaining gate for both OpenSpec
+> changes.
+
+
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，AGPL-3.0-only）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。

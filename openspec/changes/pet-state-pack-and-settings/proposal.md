@@ -80,3 +80,23 @@ and visual checks stay explicit in the Eval. This checkpoint may be committed
 and pushed to `main` after automated verification, but it MUST remain marked
 pending and MUST NOT be tagged as a release until the deferred manual gate is
 completed.
+
+### Resident streaming and delivery-ACL revision (2026-08-14, #121/#122)
+
+Live CDP instrumentation verified the real production failures behind the
+recurring "no bubble" and "no streaming" reports. The bubble WebView was never
+listed in the Tauri capability window set, so its event listeners were rejected
+and the host never reported ready; the Controller therefore never dispatched.
+The capability list now includes `pet-bubble` for every delivery path.
+
+Resident Claude turns (stdin held open) never emit `content_block_delta`;
+their only increments are partial `assistant` messages whose `thinking`
+blocks contain raw newlines (multi-line JSON) and whose `text` blocks are
+cumulative. The adapter now parses an accumulating JSON document and consumes
+`assistant` messages: `thinking` blocks stream as a new additive
+`message.thinking` event, `text` blocks as `message.delta` (cumulative
+length diffed), and `tool_use` blocks restore `tool.started`. The user
+approved showing the Provider-visible thinking process while the streaming
+switch is on; the switch still gates everything, and Codex keeps its existing
+public-text path. The topbar host gains a shadow margin so its single-WebView
+pill shadow renders fully inside the window and follows the pill curve exactly.

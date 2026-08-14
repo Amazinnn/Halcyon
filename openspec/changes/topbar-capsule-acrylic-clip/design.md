@@ -63,3 +63,14 @@ create, resize, activate, or otherwise configure the window.
 The change has no stored-data migration. Rebuild Focus after automated gates;
 the native region is recreated on the next process start. Reverting removes the
 creation-only region and returns to the previous rectangular native acrylic.
+
+### Shadow-margin revision (2026-08-14, requirement #121)
+
+Windows pixel sampling of the rebuilt candidate showed the WebView pill shadow
+(`0 6px 18px`) clipped by the transparent host's rectangular bounds: dark
+pixels appear up to 28 device px outside the pill curve at the four corners.
+The host now reserves shadow margins (L/R 20, top 14, bottom 26 px) around the
+500x44 pill and the capsule is laid out with `position:absolute` insets. The
+shadow renders fully inside the window and follows `border-radius: 999px`
+exactly. The pill's screen position moves down about 6 px; input is unchanged
+(mouse-through, no-activate, topmost).

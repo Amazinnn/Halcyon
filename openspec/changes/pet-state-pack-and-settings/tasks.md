@@ -66,3 +66,26 @@
 - [x] 4.4 Run the full automated gates and rebuild. Commit and push the Pending
   checkpoint to `main` as explicitly authorized; do not tag or archive before
   all affected manual gates pass.
+
+
+## 5. Verified production fixes for bubble delivery and resident streaming
+
+- [x] 5.1 CDP-verified root cause: `pet-bubble` was missing from the Tauri
+  capability window list; add it so event listeners register and the host
+  reports ready generations.
+- [x] 5.2 Red-first coverage for a real captured resident-mode Claude stream:
+  multi-line `assistant` JSON with `thinking` raw newlines must parse and
+  emit `message.thinking`/`message.delta` cumulative increments plus
+  `tool.started` from `tool_use` blocks.
+- [x] 5.3 Add the additive `message.thinking` AgentEvent schema kind,
+  fixture, and TypeScript union; keep schemaVersion 1.
+- [x] 5.4 Frontend thinking accumulation, muted rendering above the answer,
+  `publicTextDeltaSeen` on thinking, finalize retention, and history
+  round-trip.
+- [x] 5.5 Keep the streaming switch as the single gate for thinking and text
+  increments; Codex public-text path unchanged.
+- [x] 5.6 Refresh diagnostics expiry so stale pending envelopes expire on
+  read.
+- [ ] 5.7 User mouse-driven Windows acceptance: bubble beside the pet on every
+  successful reply, visible streaming with thinking, and no pet/chat overlap
+  regressions.

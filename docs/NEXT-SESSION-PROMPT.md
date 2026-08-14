@@ -97,3 +97,16 @@ start unrelated features: wait for the user to perform the latest Eval's Windows
 mouse-driven checklist, then record results in the Eval, incident ledger,
 STATUS, and the still-open OpenSpec changes. Do not archive or tag either
 change before that report.
+
+## Current checkpoint (2026-08-14, root-cause rework)
+
+Read `docs/STATUS.md`, ADR-0035/0036, the latest Eval, and both active OpenSpec
+changes. Verified root causes: `pet-bubble` was missing from the capability
+window list (bubble host could never listen/report ready), and resident Claude
+turns only stream increments through partial `assistant` messages
+(thinking/text/tool_use blocks) that the adapter ignored. The user approved
+showing the Provider-visible thinking process while the streaming switch is on
+(requirement #122). The rebuilt candidate now has the capability fix, the
+assistant-message streaming source with the additive `message.thinking`
+event, and topbar shadow margins. Do not archive or tag either OpenSpec change
+until the user completes the latest Eval's Windows mouse-driven checklist.

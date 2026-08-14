@@ -340,3 +340,54 @@ the acknowledged native show succeeds. Codex and Claude now use one public-text
 delta gate instead of first-versus-later output heuristics; a Claude turn with
 no public delta shows an activity state. Focused Rust red tests passed; full
 gates and Windows mouse acceptance remain pending.
+
+## 2026-08-14 Production-root-cause rework (Requirements #121/#122)
+
+Status: **automated verification passed; Windows visual acceptance Pending**.
+
+Live CDP instrumentation on the rebuilt release found the true production
+failures behind the recurring "no bubble" and "no streaming" reports:
+
+- The pet-bubble WebView was missing from the Tauri capability window list, so
+  every `plugin:event|listen` was ACL-rejected and the host never reported a
+  ready generation. The native Bubble Controller therefore never dispatched
+  (diagnostics showed `readyAgentId: null`; console showed
+  `Command plugin:event|listen not allowed by ACL`). The capability list now
+  includes `pet-bubble`.
+- Resident Claude turns (stdin held open) never emit `content_block_delta`;
+  their only increments are partial `assistant` messages carrying
+  `thinking`/`text`/`tool_use` content blocks (verified with the real CLI
+  in five configurations, including open stdin and `--resume`). The adapter
+  parsed only `content_block_delta`, so resident-mode deltas were always
+  zero. The adapter now consumes `assistant` messages: `thinking` streams
+  as the new additive `message.thinking` event, `text` as `message.delta`
+  (cumulative-length diffed), and `tool_use` restores `tool.started`. The
+  user explicitly approved showing the Provider-visible thinking process while
+  the streaming switch is on (requirement #122); the switch remains the single
+  gate and Codex keeps its public-text path.
+- Topbar pixel sampling showed the WebView pill shadow (`0 6px 18px`) clipped
+  by the transparent host's rectangular bounds (dark pixels up to 28 device px
+  outside the pill curve at the corners). The host now reserves shadow margins
+  (L/R 20, top 14, bottom 26) around the 500x44 pill; the shadow renders fully
+  and follows the pill curve exactly.
+
+Fresh gates on 2026-08-14: frontend tests (95), `npm run build`, event-schema
+tests (12 valid), `cargo test --lib` (217 passed, 1 ignored), strict
+validation for both active changes and global specs, `git diff --check`, and
+`launch-focus.cmd rebuild`.
+
+Manual Windows acceptance required after rebuild:
+
+1. With the streaming switch on, send a real direct message; verify the chat
+   shows the thinking block (muted) and the answer appearing incrementally, and
+   the final reply is complete.
+2. With the switch off, verify no increments appear and the final reply still
+   arrives.
+3. Send successful replies with chat open and closed; each must produce one
+   pet bubble beside the pet that avoids the pet and the visible chat window.
+4. Verify the topbar capsule shadow fully follows the pill curve with no
+   clipped corners; position and click-through are unchanged.
+5. Drag the pet with a bubble visible; the bubble hides and returns after
+   release without overlapping.
+6. Regressions: no caption/blue strip, no overlap/freeze, pet resize through
+   all four host sizes, and no prior-Agent bubble residue after switching.

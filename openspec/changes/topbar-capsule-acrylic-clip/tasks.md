@@ -25,3 +25,11 @@
 - [ ] 2.5 After Requirement #120, add red-first coverage that topbar never
   enters native acrylic/region/shadow setup and that one WebView pill owns all
   glass layers under the global preference.
+
+- [x] 2.5 (partial) Red-first coverage that topbar never enters native
+  acrylic/region/shadow setup and one WebView pill owns all glass layers.
+- [x] 2.6 After requirement #121, add shadow-margin window geometry and CSS
+  insets so the WebView pill shadow renders fully and follows the pill curve;
+  keep position, mouse-through, and no-activate behavior.
+- [ ] 2.7 User mouse-driven Windows acceptance: fully aligned capsule shadow,
+  pill position unchanged, clicks pass through, no float/grid/tray regressions.

@@ -104,11 +104,15 @@ switch and MUST preserve a matching pending delivery. Only a changed persisted
 current-Agent ID, or deletion of that Agent, clears the record.
 
 The global persisted setting `chat_streaming_enabled` defaults to false. A
-direct Codex or Claude turn snapshots it at turn creation: when enabled, chat
-renders only Provider-public text deltas as they arrive and still renders the
-final result; when disabled, deltas remain hidden until the final result. It
-does not alter Provider requests, expose hidden reasoning, surface workflow
-events, or create tool summaries.
+direct Claude turn snapshots it at turn creation: when enabled, chat renders
+Provider-visible thinking increments (`message.thinking`) and public text
+deltas (`message.delta`) as they arrive, then the final result; when
+disabled, increments remain hidden until the final result. Showing thinking was
+explicitly approved by the user (requirement #122) and replaces the earlier
+no-hidden-reasoning boundary. Codex continues to stream only its public text
+deltas. The pet-bubble WebView is a first-class delivery endpoint in the Tauri
+capability ACL; its event listeners register before readiness, and the native
+Controller dispatches only to a ready generation.
 
 The existing package-derived `hostTint` remains the single pet-surface color
 source. The pet WebView renders it as an explicit translucent gradient surface,

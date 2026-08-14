@@ -314,3 +314,11 @@ pending user verification.
 | Fix | v1.12.10 uses one ClientGeometry snapshot for preview, snap, and final client-to-outer conversion. |
 | Verification and regression coverage | The red-first Rust test proves preview client geometry converts back to final outer placement; 49 frontend tests, 176 Rust tests, schema tests, build, and release rebuild passed. User completed the real mouse-drag gate with no glow, caption, overlap, or tray-freeze regression. |
 | Links | Requirement #102; docs/maintenance/float-window-blue-border-repair.md; docs/evals/2026-08-11-v1.12.10-float-geometry.md |
+
+2026-08-14 root cause verified: the independent pet-bubble WebView was never in
+the Tauri capability window list, so every event `listen` was ACL-rejected and
+the host never reported a ready generation; the native Bubble Controller could
+never dispatch. `pet-bubble` is now in the default capability window list and
+the diagnostics command expires stale pending envelopes. INC-022 stays
+`Fixed pending verification` until the user confirms a real bubble next to
+the pet on a successful reply.
