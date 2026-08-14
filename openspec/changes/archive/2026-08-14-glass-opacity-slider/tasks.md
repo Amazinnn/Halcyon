@@ -17,7 +17,7 @@
 
 ## 3. Evidence and acceptance
 
-- [ ] 3.1 Run all automated gates and rebuild.
-- [ ] 3.2 User mouse-driven Windows acceptance: slider changes every window's
+- [x] 3.1 Run all automated gates and rebuild.
+- [x] 3.2 User mouse-driven Windows acceptance: slider changes every window's
   glass in real time, default equals the previous look, restart keeps the
   value, and readability of content cards is unchanged.

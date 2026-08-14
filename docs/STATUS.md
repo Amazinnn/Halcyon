@@ -81,6 +81,13 @@
 > both changes stay open.
 
 
+> 2026-08-14 验收完成：用户逐项通过 Windows 鼠标验收（气泡出现与避让、流式思考、
+> 胶囊阴影贴合、透明度滑条全局同步并重启保持、气泡句子级分页与动态尺寸、无回归）。
+> 四个 OpenSpec 变更已同步主规格并归档：`2026-08-14-pet-state-pack-and-settings`、
+> `2026-08-14-topbar-capsule-acrylic-clip`、`2026-08-14-glass-opacity-slider`、
+> `2026-08-14-pet-bubble-sentence-pages`。INC-022 已 Verified。当前无进行中变更。
+
+
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，AGPL-3.0-only）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。

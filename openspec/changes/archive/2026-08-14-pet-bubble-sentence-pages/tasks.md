@@ -17,7 +17,7 @@
 
 ## 3. Evidence and acceptance
 
-- [ ] 3.1 Run all automated gates and rebuild.
-- [ ] 3.2 User mouse-driven Windows acceptance: short reply shows whole, long
+- [x] 3.1 Run all automated gates and rebuild.
+- [x] 3.2 User mouse-driven Windows acceptance: short reply shows whole, long
   reply rotates sentence-complete pages, bubble sizes to content, avoids pet
   and chat, drag hides/restores.

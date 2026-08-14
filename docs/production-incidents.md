@@ -36,7 +36,7 @@ mapping, and companion visual work remain a separate Pending acceptance scope.
 ### INC-022 Successful direct replies can miss the pet bubble
 | 字段 | 内容 |
 | --- | --- |
-| 类别 / 严重性 / 状态 | Pet / S2 / Fixed pending verification |
+| 类别 / 严重性 / 状态 | Pet / S2 / Verified |
 | 首次报告 | 2026-08-14，需求 #115。 |
 | 影响与复现 | 成功直接与 Agent 对话后，桌宠旁没有气泡；聊天窗口打开或关闭均应不影响此行为。 |
 | 根因证据 | 静态排查确认 Codex/Claude 成功最终回复发送 `bubble:requested`。独立 `pet-bubble` WebView 有自己的 Pinia store，可能在其完成当前 Agent 初始化前因目标 `agentId` 过滤事件；原生气泡宿主也未复用其他浮窗的隐藏创建配置。完整 Windows 时序仍待本轮验收。 |
@@ -322,3 +322,7 @@ never dispatch. `pet-bubble` is now in the default capability window list and
 the diagnostics command expires stale pending envelopes. INC-022 stays
 `Fixed pending verification` until the user confirms a real bubble next to
 the pet on a successful reply.
+
+2026-08-14 Verified: the user confirmed the bubble appears beside the pet on
+every successful direct reply with chat open and closed, after the capability
+ACL and resident assistant-message streaming fixes.

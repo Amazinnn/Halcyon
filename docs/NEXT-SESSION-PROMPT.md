@@ -121,3 +121,12 @@ content cards opaque) and sentence-complete bubble pagination with a
 content-sized host (180-340px wide, height by lines, native no-activate
 resize). Do not archive or tag anything until the user completes the latest
 Eval's Windows mouse-driven checklist.
+
+## Current checkpoint (2026-08-14, acceptance complete)
+
+All Windows mouse-driven acceptance passed and every OpenSpec change was
+archived: `pet-state-pack-and-settings`, `topbar-capsule-acrylic-clip`,
+`glass-opacity-slider`, `pet-bubble-sentence-pages` (all under
+`openspec/changes/archive/2026-08-14-*`, specs synced to `openspec/specs/`).
+INC-022 is Verified. No active changes remain. Future work starts a fresh
+OpenSpec change after appending the verbatim requirement.

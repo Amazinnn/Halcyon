@@ -25,7 +25,7 @@
 - [x] 2.5 Add stable-content analysis, non-blocking artifact warnings, DPI-safe
   canvas geometry, package-scoped horizontal correction, and pet-only derived
   host tint, with automated coverage and real-package read-only evidence.
-- [ ] 2.6 Run the deferred package/rendering manual gate.
+- [x] 2.6 Run the deferred package/rendering manual gate.
 
 ## 3. Focus state mapping and companion bubble
 
@@ -36,7 +36,7 @@
 - [x] 3.3 Implement and test exactly-once successful direct-reply bubbles,
   chat-independent visibility, six-candidate placement, pet/chat avoidance,
   drag suppression, replacement, two-line pagination, rotation, and fades.
-- [ ] 3.4 Run the state/bubble manual gate.
+- [x] 3.4 Run the state/bubble manual gate.
 - [x] 3.5 Add red-first reliable-delivery tests for late initialization,
   delivery-id de-duplication, expiry, and Agent switching.
 - [x] 3.6 Add the 30-second current-Agent in-memory delivery handoff and
@@ -86,6 +86,6 @@
   increments; Codex public-text path unchanged.
 - [x] 5.6 Refresh diagnostics expiry so stale pending envelopes expire on
   read.
-- [ ] 5.7 User mouse-driven Windows acceptance: bubble beside the pet on every
+- [x] 5.7 User mouse-driven Windows acceptance: bubble beside the pet on every
   successful reply, visible streaming with thinking, and no pet/chat overlap
   regressions.

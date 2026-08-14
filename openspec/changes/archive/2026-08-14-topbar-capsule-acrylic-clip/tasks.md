@@ -16,7 +16,7 @@
 - [x] 2.2 Run frontend tests, frontend build, `cargo test --lib`, event-schema
   tests, strict validation for this and the pet change plus global specs,
   `git diff --check`, and `launch-focus.cmd rebuild`.
-- [ ] 2.3 Pause for user mouse-driven Windows acceptance: visible/hidden and
+- [x] 2.3 Pause for user mouse-driven Windows acceptance: visible/hidden and
   focus-state capsule boundaries remain pill-shaped, global acrylic toggles
   apply, clicks pass through, and no float/grid/tray regressions occur.
 - [x] 2.4 After Requirement #118 invalidated the region-only visible result,
@@ -31,5 +31,5 @@
 - [x] 2.6 After requirement #121, add shadow-margin window geometry and CSS
   insets so the WebView pill shadow renders fully and follows the pill curve;
   keep position, mouse-through, and no-activate behavior.
-- [ ] 2.7 User mouse-driven Windows acceptance: fully aligned capsule shadow,
+- [x] 2.7 User mouse-driven Windows acceptance: fully aligned capsule shadow,
   pill position unchanged, clicks pass through, no float/grid/tray regressions.

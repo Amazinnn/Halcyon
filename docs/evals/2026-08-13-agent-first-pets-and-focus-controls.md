@@ -425,3 +425,18 @@ Manual Windows acceptance required after rebuild:
    overlapping the pet or the visible chat window after resize.
 5. Regressions: bubble appears with chat open/closed, capsule shadow, streaming
    thinking, no caption/freeze.
+
+## 2026-08-14 Windows acceptance complete
+
+The user completed the mouse-driven Windows checklists for both rounds and
+reported full acceptance: the pet bubble appears beside the pet on successful
+replies with chat open and closed (INC-022 closed as Verified), streaming shows
+Claude thinking and text increments, the topbar pill shadow follows the capsule
+curve, the glass opacity slider changes all windows in real time and persists
+across restart, short replies show whole in the bubble, long replies rotate
+sentence-complete pages with a content-sized host, and no caption/overlap/
+freeze regressions were found. All four OpenSpec changes were synced to main
+specs and archived: `2026-08-14-pet-state-pack-and-settings`,
+`2026-08-14-topbar-capsule-acrylic-clip`,
+`2026-08-14-glass-opacity-slider`, and
+`2026-08-14-pet-bubble-sentence-pages`.
