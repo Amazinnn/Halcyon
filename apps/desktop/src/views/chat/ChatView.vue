@@ -8,8 +8,10 @@ import {
   type InlineComposerPart,
 } from "../../lib/inline-composer";
 import WindowHeader from "../../components/WindowHeader.vue";
+import { useSettingsStore } from "../../stores/settings";
 
 const agent = useAgentStore();
+const settings = useSettingsStore();
 const skillPicker = ref("");
 const listRef = ref<HTMLElement | null>(null);
 const editorRef = ref<HTMLElement | null>(null);
@@ -43,6 +45,7 @@ watch(
 onMounted(async () => {
   document.addEventListener("selectionchange", rememberComposerSelection);
   await agent.init();
+  await settings.load();
 });
 
 onBeforeUnmount(() => {
@@ -225,6 +228,9 @@ function selectSkill(event: Event) {
       <button v-else class="ghost" @click="agent.refreshCharacters()">Agent 正在初始化，点击刷新</button>
       <span class="badge">{{ agent.provider === "claude" ? "Claude" : "Codex" }}</span>
       <span v-if="isBusy" class="phase" :class="agent.phase">{{ phaseText }}</span>
+      <button class="ghost" :class="{ on: settings.chatStreamingEnabled }" :disabled="isBusy" @click="settings.setChatStreamingEnabled(!settings.chatStreamingEnabled)">
+        流式 {{ settings.chatStreamingEnabled ? "开" : "关" }}
+      </button>
     </div>
 
     <div ref="listRef" class="msg-list">

@@ -12,6 +12,7 @@ export const useSettingsStore = defineStore("settings", {
     soundEnabled: true,
     showTopbar: "auto" as "auto" | "on" | "off",
     petBgFade: true,
+    chatStreamingEnabled: false,
     currentAgentId: null as string | null,
     focusMode: DEFAULT_FOCUS_MODE as FocusMode,
   }),
@@ -24,6 +25,7 @@ export const useSettingsStore = defineStore("settings", {
         soundEnabled?: boolean;
         showTopbar?: string;
         petBgFade?: boolean;
+        chatStreamingEnabled?: boolean;
         currentAgentId?: string | null;
         focusMode?: string;
       }>("get_bootstrap");
@@ -33,6 +35,7 @@ export const useSettingsStore = defineStore("settings", {
       this.soundEnabled = !!b.soundEnabled;
       this.showTopbar = (b.showTopbar as "auto" | "on" | "off") ?? "auto";
       this.petBgFade = !!b.petBgFade;
+      this.chatStreamingEnabled = !!b.chatStreamingEnabled;
       this.currentAgentId = b.currentAgentId ?? null;
       this.focusMode = normalizeFocusMode(b.focusMode);
       this.loaded = true;
@@ -59,6 +62,10 @@ export const useSettingsStore = defineStore("settings", {
     async setPetBgFade(enabled: boolean) {
       await invoke("set_pet_bg_fade", { enabled });
       this.petBgFade = enabled;
+    },
+    async setChatStreamingEnabled(enabled: boolean) {
+      await invoke("set_chat_streaming_enabled", { enabled });
+      this.chatStreamingEnabled = enabled;
     },
     async setShowTopbar(mode: "auto" | "on" | "off") {
       await invoke("set_show_topbar", { mode });

@@ -43,6 +43,12 @@
 > synchronization. Automated gates and release rebuild now pass; Windows visual
 > acceptance is the only remaining gate.
 
+> 2026-08-14 retry: the prior visual report contradicted the first checkpoint.
+> Current rebuild adds nonzero-client fallback for bubble placement, defers
+> topbar region creation until HWND creation is complete, and surfaces the
+> global stream switch in chat. These are automated changes only; require a
+> fresh Windows report before any closeout.
+
 ## 项目一句话
 
 本地专注桌面 + Agent 桌宠系统（Windows 优先，AGPL-3.0-only）。技术栈：Tauri 2 + Vue 3 + TypeScript + Rust + SQLite（apps/desktop）；AgentEvent 协议 v1（packages/event-schema）。

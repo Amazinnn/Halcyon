@@ -275,3 +275,13 @@ The remaining work is exclusively the required Windows mouse-driven acceptance:
 bubble delivery with chat closed/open, public-text streaming switch behavior,
 pet translucency, and topbar pill glass during show/hide/focus without input
 interception or float/grid/tray regressions.
+
+## 2026-08-14 Follow-up after failed visual report
+
+The user reported that all four requested visual behaviors were still absent.
+The previous automated checkpoint is therefore not visual evidence. The retry
+now falls back to the pet HWND outer rect when client geometry is zero, moves
+topbar native-region creation until after HWND creation but before first show,
+and exposes the persisted streaming preference directly in the chat header as
+well as Settings. Fresh frontend, Rust, schema, strict-validation, diff, and
+release-rebuild gates passed. Windows acceptance remains required.

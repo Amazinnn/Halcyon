@@ -2512,6 +2512,23 @@ impl BubblePosition {
     fn rect(self) -> ScreenRect { ScreenRect::new(self.x, self.y, self.width, self.height) }
 }
 
+fn pet_client_rect_or_outer(
+    outer_x: i32,
+    outer_y: i32,
+    outer_width: u32,
+    outer_height: u32,
+    client_x: i32,
+    client_y: i32,
+    client_width: u32,
+    client_height: u32,
+) -> ScreenRect {
+    if client_width > 0 && client_height > 0 {
+        ScreenRect::new(client_x, client_y, client_width, client_height)
+    } else {
+        ScreenRect::new(outer_x, outer_y, outer_width, outer_height)
+    }
+}
+
 fn choose_bubble_placement(
     pet: ScreenRect,
     work: ScreenRect,
@@ -2580,6 +2597,7 @@ fn position_pet_bubble(app: &tauri::AppHandle, _anchor_x: f32, _anchor_y: f32) -
     let bubble = app.get_webview_window("pet-bubble")?;
     let geometry = client_geometry_snapshot(&pet);
     let pet_outer = pet.outer_position().unwrap_or_default();
+    let pet_outer_size = pet.outer_size().unwrap_or(tauri::PhysicalSize::new(1, 1));
     let (client_x, client_y, client_w, client_h) = geometry.client_rect_for_outer(pet_outer.x, pet_outer.y);
     let bubble_size = bubble.outer_size().unwrap_or(tauri::PhysicalSize::new(248, 82));
     let monitor_rect = pet.current_monitor().ok().flatten()
@@ -2594,7 +2612,10 @@ fn position_pet_bubble(app: &tauri::AppHandle, _anchor_x: f32, _anchor_y: f32) -
         .filter(|window| window.is_visible().unwrap_or(false))
         .and_then(|window| window_screen_rect(&window));
     let placement = choose_bubble_placement(
-        ScreenRect::new(client_x, client_y, client_w, client_h),
+        pet_client_rect_or_outer(
+            pet_outer.x, pet_outer.y, pet_outer_size.width, pet_outer_size.height,
+            client_x, client_y, client_w, client_h,
+        ),
         work,
         chat,
         bubble_size.width,
@@ -2857,7 +2878,6 @@ fn create_windows(app: &mut tauri::App) -> tauri::Result<()> {
         .build()?;
     // informational only: never intercept mouse clicks on apps underneath
     topbar.set_ignore_cursor_events(true)?;
-    configure_topbar_capsule_region(&topbar);
     if let Ok(hwnd) = topbar.hwnd() {
         acrylic::noactivate(hwnd.0);
     }
@@ -3198,6 +3218,13 @@ pub fn run() {
 
             create_windows(app)?;
 
+            // The hidden builder can report a zero client rect. Apply the
+            // creation-only topbar region only after the HWND has completed
+            // creation, still before the first visibility decision.
+            if let Some(topbar) = app.get_webview_window("topbar") {
+                configure_topbar_capsule_region(&topbar);
+            }
+
             // frosted glass on floating windows (respects settings toggle)
             let acrylic_enabled = app
                 .state::<AppState>()
@@ -3531,8 +3558,8 @@ mod tests {
         discard_runtime_after_provider_error, elapsed_sec, ensure_runtime_serialized,
         float_corner_preference_attribute, float_corner_preference_value, float_host_style,
         float_nonclient_message_result, frame_change_required, is_float_label, list_provider_skills,
-        outer_rect_for_client, pet_window_should_be_visible, provider_ready, provider_skills_dir,
-        resolve_window_placement, ClientFrame, ClientGeometry,
+        outer_rect_for_client, pet_client_rect_or_outer, pet_window_should_be_visible, provider_ready, provider_skills_dir,
+        resolve_window_placement, ClientFrame, ClientGeometry, ScreenRect,
         FloatVisibilityGate,
         resume_with_initial_message, saved_session_for_today, select_status_character,
         set_agent_provider_serialized_with, topbar_capsule_region, topbar_visible, with_agent_runtime_serialized,
@@ -4477,6 +4504,18 @@ mod tests {
     fn topbar_capsule_region_uses_client_height_as_its_diameter_once() {
         assert_eq!(topbar_capsule_region(500, 44), (500, 44, 22));
         assert_eq!(topbar_capsule_region(137, 43), (137, 43, 21));
+    }
+
+    #[test]
+    fn bubble_positioning_uses_pet_outer_rect_when_hidden_client_geometry_is_zero() {
+        assert_eq!(
+            pet_client_rect_or_outer(120, 800, 96, 96, 0, 0, 0, 0),
+            ScreenRect::new(120, 800, 96, 96),
+        );
+        assert_eq!(
+            pet_client_rect_or_outer(120, 800, 96, 96, 122, 802, 92, 92),
+            ScreenRect::new(122, 802, 92, 92),
+        );
     }
 
     #[test]
