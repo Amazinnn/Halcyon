@@ -209,18 +209,27 @@ export const useAgentStore = defineStore("agent", {
       if (pending.length) this.persistVisibleHistory();
       if (broadcast) await emit("agent:selected", { characterId: id });
     },
-    async init() {
+    async init(opts?: { thin?: boolean }) {
       if (this._initPromise) return this._initPromise;
-      this._initPromise = this.initInternal();
+      this._initPromise = this.initInternal(opts);
       try {
         await this._initPromise;
       } finally {
         this._initPromise = null;
       }
     },
-    async initInternal() {
+    async initInternal(opts?: { thin?: boolean }) {
       if (this.initialized) return;
       this.initialized = true;
+      if (opts?.thin) {
+        // Thin mode (extensibility plan C3): light windows (topbar,
+        // pet-bubble, grid-overlay) only track the pet state dot; no
+        // characters, sessions, or workflow state is initialized.
+        await listen<{ state: AgentState; animation: string }>("pet:state_changed", (e) => {
+          this.state = e.payload.state;
+        });
+        return;
+      }
       await listen<AgentEventEnvelope>("agent:event", (e) => {
         // M5 (ADR-0022): only handle events whose agentId matches the current
         // character — other Agents' events never pollute this dialog.

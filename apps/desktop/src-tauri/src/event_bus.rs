@@ -54,8 +54,7 @@ pub enum CoreEvent {
     },
 }
 
-impl CoreEvent {
-    pub fn event_name(&self) -> &'static str {
+/// Event domain grouping (extensibility plan C3): every core event maps to
         match self {
             CoreEvent::AgentEvent(_) => "agent:event",
             CoreEvent::PetStateChanged { .. } => "pet:state_changed",
@@ -202,3 +201,21 @@ mod tests {
         );
     }
 }
+
+    #[test]
+    fn every_event_maps_to_a_domain() {
+        // Match exhaustiveness in domain() is the real guard; assert a few
+        // representative mappings and that no event is missing a domain.
+        assert_eq!(CoreEvent::FocusStateChanged { state: "focus".into(), completed: false }.domain(), Domain::Focus);
+        assert_eq!(CoreEvent::MusicTick { position_ms: 0, duration_ms: 1 }.domain(), Domain::Music);
+        assert_eq!(CoreEvent::AgentEvent(json!({"kind": "ping"})).domain(), Domain::Agent);
+        assert_eq!(CoreEvent::WorkflowChanged { action: "update".into(), workflow_id: "w".into() }.domain(), Domain::Workflow);
+        assert_eq!(CoreEvent::SupervisionAlert { rule: "r".into(), app: None, level: 1, text: "t".into() }.domain(), Domain::Supervision);
+        assert_eq!(CoreEvent::PetStateChanged { state: "idle".into(), animation: "idle".into() }.domain(), Domain::Pet);
+        assert_eq!(CoreEvent::ProbeRecorded { process: "p".into(), title: "t".into() }.domain(), Domain::Probe);
+        assert_eq!(CoreEvent::PanelModeChanged { mode: "stats".into() }.domain(), Domain::Panel);
+        assert_eq!(CoreEvent::BubbleRequested { text: "t".into(), priority: "normal".into(), agent_id: None, delivery_id: None, reliable_delivery: true }.domain(), Domain::Agent);
+        assert_eq!(CoreEvent::WorkflowSystemAction { action: "ring".into(), seconds: 1 }.domain(), Domain::Workflow);
+        assert_eq!(CoreEvent::WorkflowRunChanged { workflow_id: "w".into(), run_id: "r".into(), status: "ok".into(), error: None }.domain(), Domain::Workflow);
+        assert_eq!(CoreEvent::WorkflowAgentResult { workflow_id: "w".into(), workflow_name: "n".into(), agent_id: "a".into(), text: "t".into() }.domain(), Domain::Workflow);
+    }

@@ -13,13 +13,17 @@ const label = getCurrentWebviewWindow().label;
 
 const view = computed(() => viewForLabel(label));
 
+// Thin agent windows (extensibility plan C3): light windows subscribe to the
+// minimum event set instead of initializing the full Agent store.
+const THIN_AGENT_LABELS = new Set(["topbar", "pet-bubble", "grid-overlay"]);
+
 onMounted(() => {
   if (isTransparentLabel(label)) {
     document.documentElement.classList.add("transparent-window");
     document.body.classList.add("transparent-window");
   }
   void useUiStore().init();
-  void useAgentStore().init();
+  void useAgentStore().init({ thin: THIN_AGENT_LABELS.has(label) });
   window.addEventListener("pointerdown", () => {
     void invoke("drag_diagnostic_browser_event", {
       label: "pet",

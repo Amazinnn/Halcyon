@@ -631,3 +631,46 @@ describe("per-character provider selection", () => {
     expect(agent.workspaceDir).not.toBe("other");
   });
 });
+
+describe("thin agent store mode (extensibility plan C3)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    installEventHarness();
+    storage.clear();
+    storage.set("focus-agent", "char-a");
+    invoke.mockReset();
+    emit.mockReset();
+  });
+
+  it("subscribes only to pet:state_changed and skips character/session init", async () => {
+    const agent = useAgentStore();
+    await agent.init({ thin: true });
+    const listened = [...handlers.keys()];
+    expect(listened).toEqual(["pet:state_changed"]);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("still updates the state dot from pet:state_changed", async () => {
+    const agent = useAgentStore();
+    await agent.init({ thin: true });
+    for (const h of handlers.get("pet:state_changed") ?? []) {
+      h({ payload: { state: "working", animation: "work" } });
+    }
+    expect(agent.state).toBe("working");
+  });
+
+  it("full init still loads characters and listens broadly", async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "characters_list") return [{ id: "char-a", name: "A", tool: "codex" }];
+      if (command === "agent_status") return { characterId: "char-a", provider: "codex", ready: true, workspaceDir: "" };
+      if (command === "agent_list_skills") return [];
+      if (command === "agent_list_threads") return [];
+      return null;
+    });
+    const agent = useAgentStore();
+    await agent.init();
+    expect(handlers.has("agent:event")).toBe(true);
+    expect(handlers.has("pet:state_changed")).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("characters_list");
+  });
+});
