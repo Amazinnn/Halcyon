@@ -176,3 +176,9 @@ input and atomic adjacent-token deletion are implemented and tested.
    事件集（topbar 目前仍初始化完整 agent store）。保留编译期类型安全。
 5. **插件边界**：不建插件 API；每个领域 = 独立 Rust module + 前端 lib + 事件命名空间，
    未来若要插件化则开放既有模块边界。
+
+> 2026-08-14：扩展性方向已由 [总规划文档](../architecture/extensibility-plan-v1.md)
+> 定稿（需求 #126/#127）：用户选定场景 = 自定义面板窗口 / Agent 经 focus-cli
+> 扩展 / 多窗口事件协同；桌宠扩展为 P2 预留。实施路线图 C1 Focus UI Kit →
+> C2 CLI 命令注册表 → C3 事件流领域分组+薄窗口订阅 → C4 面板框架；每项为独立
+> OpenSpec 变更。

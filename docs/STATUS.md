@@ -94,6 +94,13 @@
 > `2026-08-14-window-registry-declarative` 保持开放，Windows 鼠标验收为唯一剩余门槛。
 > 见 [本轮 Eval](./evals/2026-08-14-window-registry-refactor-checkpoint.md)。
 
+> 2026-08-14 扩展性规划（需求 #126/#127）：brainstorming 定稿后产出
+> [扩展性总规划 v1](./architecture/extensibility-plan-v1.md)——用户选定场景
+> （自定义面板窗口 / Agent 经 focus-cli 扩展 / 多窗口事件协同，桌宠 P2 预留）
+> 映射到四领域扩展点与路线图 C1 UI Kit → C2 CLI 命令注册表 → C3 事件流分组+
+> 薄窗口订阅 → C4 面板框架，每项为独立 OpenSpec 变更。见
+> [规划 Eval](./evals/2026-08-14-extensibility-planning-checkpoint.md)。
+
 
 ## 项目一句话
 
