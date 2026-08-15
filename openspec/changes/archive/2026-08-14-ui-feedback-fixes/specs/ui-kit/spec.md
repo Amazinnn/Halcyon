@@ -1,14 +1,14 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Kit controls replace duplicated hand-written styles
-Kit controls SHALL set font-size after any font inheritance declaration so the declared size always wins.
+### Requirement: Declared font sizes always win
+Kit controls SHALL declare font-family inheritance BEFORE font-size and SHALL NOT use the font shorthand after a font-size declaration.
 
 #### Scenario: Toggle font size is the declared size
 - **WHEN** a FocusToggle, FocusSegmented, or FocusSelect renders
 - **THEN** its font-size equals the kit token (12px / 12px / 11px), not the inherited default
 
-### Requirement: Overflow-prone flex rows wrap
-A compact select in a form row SHALL have a bounded width so the row control (not the longest option) determines the width; the opened list may still size to its content.
+### Requirement: Compact selects in form rows have bounded width
+A closed native select in a form row SHALL have an explicit bounded width so the row control, not the longest option, determines the width; the opened list may still size to its content.
 
 #### Scenario: Skills select stays compact
 - **WHEN** the chat composer renders the Skills select

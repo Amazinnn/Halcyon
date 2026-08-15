@@ -1,7 +1,7 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Kit controls replace duplicated hand-written styles
-The kit SHALL support content-sized inputs: an autosize mode whose width follows the content between a minimum floor and 100% of the container, never exceeding the container.
+### Requirement: Autosize inputs follow content within hard bounds
+FocusInput SHALL support an autosize mode whose width follows the content between a minimum floor (--ctrl-min-input-auto) and 100% of the container; the input SHALL NEVER exceed its container.
 
 #### Scenario: Short content shrinks the input
 - **WHEN** an autosize input contains one or two characters
@@ -9,7 +9,7 @@ The kit SHALL support content-sized inputs: an autosize mode whose width follows
 
 #### Scenario: Long content never breaks the frame
 - **WHEN** an autosize input reaches its container width
-- **THEN** the input stops growing and further text is hidden inside the input (native caret behavior), with no overflow beyond the container
+- **THEN** the input stops growing and further text is hidden inside the input, with no overflow beyond the container
 
 ### Requirement: Overflowing display text fades instead of hard-cutting
 Long display text in constrained rows SHALL fade at the overflowing edge (mask gradient) rather than hard-wrap or overflow the frame.

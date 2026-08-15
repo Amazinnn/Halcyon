@@ -130,6 +130,12 @@
 > 前端 130 测试、Rust 222 测试全绿；rebuild 与手测待完成。见
 > [本轮 Eval](./evals/2026-08-14-ui-feedback-fixes.md)。
 
+> 2026-08-14 归档收尾：用户逐项验收通过后，9 个 OpenSpec 变更已全部同步主规格
+> 并归档（window-registry-declarative、focus-ui-kit、cli-command-registry、
+> event-grouping-thin-windows、panel-window-framework、remove-overview-panel、
+> ui-layout-polish、content-sized-inputs、ui-feedback-fixes），主规格现有
+> 12 个 capability。当前无进行中变更。未打 release tag（版本仍 v1.12.10）。
+
 
 ## 项目一句话
 
