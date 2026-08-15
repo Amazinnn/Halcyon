@@ -36,6 +36,10 @@
   --shadow-pop: 0 10px 28px rgba(0, 0, 0, 0.35);
   --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.35);
   --z-tray: 12; --z-backdrop: 20; --z-popover: 30;
+  /* layout floors (ADR-0038, requirement #130): usable minimum widths */
+  --ctrl-min-input: 96px;
+  --ctrl-min-select: 88px;
+  --text-min-row: 120px;
 }
 
 html, body, #app { height: 100%; margin: 0; padding: 0; }

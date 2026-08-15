@@ -42,6 +42,8 @@ describe("focus kit controls", () => {
     expect(sliderSource).toContain(":disabled=\"disabled\"");
     expect(selectSource).toContain("class=\"focus-select\"");
     expect(selectSource).toContain(":disabled=\"disabled\"");
+    expect(inputSource).toContain("min-width: var(--ctrl-min-input)");
+    expect(selectSource).toContain("min-width: var(--ctrl-min-select)");
   });
 
   it("FocusCard and FocusWindowFrame keep header behavior", () => {
@@ -52,7 +54,7 @@ describe("focus kit controls", () => {
   });
 
   it("tokens provide control-level values", () => {
-    for (const t of ["--fs-xs", "--fs-sm", "--fs-md", "--fs-lg", "--shadow-pop", "--shadow-float", "--z-tray", "--z-popover"]) {
+    for (const t of ["--fs-xs", "--fs-sm", "--fs-md", "--fs-lg", "--shadow-pop", "--shadow-float", "--z-tray", "--z-popover", "--ctrl-min-input", "--ctrl-min-select", "--text-min-row"]) {
       expect(stylesSource).toContain(t);
     }
   });

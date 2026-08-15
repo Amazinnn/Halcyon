@@ -71,13 +71,28 @@ Status: 随 C1 变更交付；新控件/新面板以此为准
   顶条（Topbar）是点击穿透的信息层，不参与网格。
 - 托盘条目 = view-registry.ts 中 kind: "float" 且 inTray: true 的窗口。
 
-## 5. 例外原则
+## 5. 布局与文本宽度准则（需求 #130）
+
+1. **文本项最小宽度**：承载多行文本的 flex 项必须给最小宽度
+   （`--text-min-row: 120px`）或 ellipsis 保护；禁止裸 `min-width: 0` 让
+   名字/说明被压成竖排窄列。
+2. **输入与下拉最小宽度**：FocusInput/FocusSelect 强制
+   `--ctrl-min-input: 96px` / `--ctrl-min-select: 88px`，窄容器里也不得
+   被压扁。
+3. **行容器换行**：内容可能溢出的 flex 行（按钮组、管理行）必须
+   `flex-wrap: wrap` 并留 `row-gap`；按钮 `white-space: nowrap` 的溢出
+   由容器换行兜底。
+4. **长文本**：单行元数据用 ellipsis；正文/说明文字要占满可用宽度
+   （flex: 1 + 最小宽度），不强行限宽。
+5. **设置弹窗（300px）**：Agent 命名输入独占一行；管理行按钮允许换行。
+
+## 6. 例外原则
 
 领域专用控件允许不入 Kit：MusicView 播放进度条、PetView 对话按钮、
 TopbarView 胶囊。例外必须记录在本节；新领域控件先尝试 Kit 组合，确实无法
 组合时才写专用样式。
 
-## 6. 验收标准
+## 7. 验收标准
 
 - 新控件/新窗口必须消费 tokens（grep 检查无硬编码色值）。
 - 前端门禁：npm test -- --run、npm run build（vue-tsc 强制类型）。

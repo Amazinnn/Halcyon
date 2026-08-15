@@ -31,7 +31,7 @@ const emit = defineEmits<{ (e: "update:modelValue", v: string | number): void }>
   padding: 4px 8px;
   font-size: var(--fs-md);
   font-family: inherit;
-  min-width: 0;
+  min-width: var(--ctrl-min-input);
 }
 .focus-input:focus { outline: none; border-color: var(--accent); }
 </style>

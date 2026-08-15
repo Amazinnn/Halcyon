@@ -408,10 +408,12 @@ onMounted(load);
       <SettingsHelp summary="每个 Agent 只能有一个桌宠；无桌宠时桌面不显示宠物。" detail="导入官方 Hatch Pet 原样 pet.json，或 format 为 focus-hatch-pet 的 Focus 包。图集路径、网格与单元尺寸都由 JSON 声明；包复制到 Agent 工作区。Provider 登录由 Codex 或 Claude CLI 自行管理。" />
       <div v-if="agentError" class="err">{{ agentError }}</div>
       <div v-if="petError" class="err">{{ petError }}</div>
-      <div class="row">
+      <div class="row col agent-create">
         <FocusInput v-model="newAgentName" placeholder="Agent 名称" @keydown.enter="createAgent" />
-        <FocusSelect v-model="newAgentProvider" :options="[{ label: 'Codex', value: 'codex' }, { label: 'Claude', value: 'claude' }]" />
-        <FocusButton variant="ghost" size="sm" @click="createAgent">添加</FocusButton>
+        <div class="row">
+          <FocusSelect v-model="newAgentProvider" :options="[{ label: 'Codex', value: 'codex' }, { label: 'Claude', value: 'claude' }]" />
+          <FocusButton variant="ghost" size="sm" @click="createAgent">添加</FocusButton>
+        </div>
       </div>
       <div v-if="agentList.length" class="pack-list">
         <div v-for="a in agentList" :key="a.id" class="pack-row">
@@ -577,9 +579,9 @@ onMounted(load);
 .app-actions { display: inline-flex; gap: 4px; flex-shrink: 0; }
 .err { font-size: 11px; color: var(--err); }
 .pack-list { display: flex; flex-direction: column; gap: 2px; max-height: 140px; overflow-y: auto; }
-.pack-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.pack-row { display: flex; align-items: center; flex-wrap: wrap; row-gap: 4px; gap: 6px; }
 .pack-name {
-  flex: 1; min-width: 0; text-align: left;
+  flex: 1 1 var(--text-min-row); min-width: var(--text-min-row); text-align: left;
   border: none; background: transparent; color: var(--text-hi);
   padding: 4px 8px; border-radius: var(--r-sm); cursor: pointer; font-size: 12px;
 }
