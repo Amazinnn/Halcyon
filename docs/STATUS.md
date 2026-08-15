@@ -139,6 +139,8 @@
 > 2026-08-14 启动事故（无代码改动）：release 曾导航 devUrl（localhost 拒绝连接），
 > 根因为 cargo 增量缓存污染 tauri-build 配置；
 > `cargo clean --release` 后重建已确认 9 窗口全部走 tauri.localhost。
+> 2026-08-14 收尾：死代码清理变更（#133）用户验收通过并已归档；当前无进行中
+> OpenSpec 变更，主规格 12 个 capability。版本保持 v1.12.10，未打 release tag。
 
 > 2026-08-14 归档收尾：用户逐项验收通过后，9 个 OpenSpec 变更已全部同步主规格
 > 并归档（window-registry-declarative、focus-ui-kit、cli-command-registry、
