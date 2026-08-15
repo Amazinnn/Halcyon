@@ -200,24 +200,6 @@ pub const WINDOW_SPECS: &[WindowSpec] = &[
     },
 
     WindowSpec {
-        label: "overview",
-        title: "概览",
-        kind: WindowKind::Float,
-        default_rect: float_rect(0, 2, 2, 2),
-        birth_rect: float_rect(0, 2, 2, 2),
-        fixed_size: None,
-        transparent: true,
-        transparent_background: true,
-        always_on_top: true,
-        skip_taskbar: true,
-        resizable: false,
-        fullscreen: false,
-        ignore_cursor_events: false,
-        float_host: true,
-        setup_acrylic: true,
-        hidden_at_start: true,
-    },
-    WindowSpec {
         label: "grid-overlay",
         title: "Grid Overlay",
         kind: WindowKind::Overlay,
@@ -280,7 +262,7 @@ mod tests {
     #[test]
     fn float_set_matches_the_historical_lifecycle() {
         let labels: Vec<&str> = float_labels().collect();
-        assert_eq!(labels, ["chat", "stats", "music", "pet", "workflow", "overview"]);
+        assert_eq!(labels, ["chat", "stats", "music", "pet", "workflow"]);
         for label in ["desktop", "pet-bubble", "grid-overlay", "topbar"] {
             assert!(!is_float_label(label), "{label} must not be a float");
         }

@@ -38,7 +38,6 @@ Status: 随 C1/C4 变更交付；扩展性规划见 docs/architecture/extensibil
 ## 3. 新增一个面板（声明 + 拼积木）
 
 面板 = 窗口（按 §2 声明，Float + inTray）+ 只读查询 + 事件订阅 + Kit 拼装。
-参考 apps/desktop/src/views/overview/OverviewPanelView.vue（C4 示例）：
 
 1. 查询：优先复用现有只读 invoke（get_today_focus_summary、
    workflow_runs_recent、stats_dashboard …）；不要为面板新建写命令。
@@ -47,6 +46,8 @@ Status: 随 C1/C4 变更交付；扩展性规划见 docs/architecture/extensibil
 3. 组装：FocusWindowFrame + FocusCard + Kit 控件；布局样式留在视图内，
    控件样式全部来自 Kit。
 4. 手测：打开/关闭/实时更新/重启后布局保持。
+5. 示例说明：曾以 overview 面板验证该链路（C4），因与统计窗口重复已移除
+   （需求 #129）；本配方即验证后的标准流程。
 
 ## 4. 修改 Design Tokens
 

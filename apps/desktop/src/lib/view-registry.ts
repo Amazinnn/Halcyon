@@ -11,7 +11,6 @@ import PetView from "../views/pet/PetView.vue";
 import PetBubbleView from "../views/pet/PetBubbleView.vue";
 import TopbarView from "../views/topbar/TopbarView.vue";
 import GridOverlayView from "../views/overlay/GridOverlayView.vue";
-import OverviewPanelView from "../views/overview/OverviewPanelView.vue";
 
 export type ViewKind = "desktop" | "float" | "bubble" | "overlay" | "topbar";
 
@@ -36,7 +35,6 @@ export const VIEW_REGISTRY: readonly ViewSpec[] = [
   { label: "pet", kind: "float", title: "桌宠", icon: "panel", component: PetView, transparent: true, inTray: false },
   { label: "pet-bubble", kind: "bubble", title: "气泡", icon: "panel", component: PetBubbleView, transparent: true, inTray: false },
   { label: "workflow", kind: "float", title: "工作流", icon: "panel", component: WorkflowView, transparent: true, inTray: true },
-  { label: "overview", kind: "float", title: "概览", icon: "panel", component: OverviewPanelView, transparent: true, inTray: true },
   { label: "grid-overlay", kind: "overlay", title: "Grid Overlay", icon: "panel", component: GridOverlayView, transparent: true, inTray: false },
   { label: "topbar", kind: "topbar", title: "状态", icon: "panel", component: TopbarView, transparent: true, inTray: false },
 ];

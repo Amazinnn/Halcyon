@@ -43,9 +43,9 @@ describe("view registry", () => {
 
   it("lists exactly the tray floats in registry order", () => {
     const views = floatViews();
-    expect(views.map((v) => v.label)).toEqual(["chat", "stats", "music", "workflow", "overview"]);
-    expect(views.map((v) => v.title)).toEqual(["对话", "统计", "音乐", "工作流", "概览"]);
-    expect(views.map((v) => v.icon)).toEqual(["chat", "stats", "music", "panel", "panel"]);
+    expect(views.map((v) => v.label)).toEqual(["chat", "stats", "music", "workflow"]);
+    expect(views.map((v) => v.title)).toEqual(["对话", "统计", "音乐", "工作流"]);
+    expect(views.map((v) => v.icon)).toEqual(["chat", "stats", "music", "panel"]);
   });
 
   it("keeps every label unique", () => {
