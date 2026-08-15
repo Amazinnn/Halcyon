@@ -409,7 +409,7 @@ onMounted(load);
       <div v-if="agentError" class="err">{{ agentError }}</div>
       <div v-if="petError" class="err">{{ petError }}</div>
       <div class="row col agent-create">
-        <FocusInput v-model="newAgentName" placeholder="Agent 名称" @keydown.enter="createAgent" />
+        <FocusInput autosize v-model="newAgentName" placeholder="Agent 名称" @keydown.enter="createAgent" />
         <div class="row">
           <FocusSelect v-model="newAgentProvider" :options="[{ label: 'Codex', value: 'codex' }, { label: 'Claude', value: 'claude' }]" />
           <FocusButton variant="ghost" size="sm" @click="createAgent">添加</FocusButton>
@@ -544,7 +544,7 @@ onMounted(load);
   padding: 3px 6px; border-radius: var(--r-sm); background: var(--glass-strong);
 }
 .run-main { display: flex; flex-direction: column; min-width: 0; }
-.run-name { font-size: 11px; color: var(--text-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-name { font-size: 11px; color: var(--text-hi); white-space: nowrap; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent 100%); mask-image: linear-gradient(90deg, #000 85%, transparent 100%); }
 .run-meta { font-size: 9px; color: var(--text-low); }
 .run-status { font-size: 10px; padding: 1px 6px; border-radius: var(--r-pill); }
 .run-status.success { color: #2ecc71; background: rgba(46, 204, 113, 0.12); }
@@ -584,6 +584,9 @@ onMounted(load);
   flex: 1 1 var(--text-min-row); min-width: var(--text-min-row); text-align: left;
   border: none; background: transparent; color: var(--text-hi);
   padding: 4px 8px; border-radius: var(--r-sm); cursor: pointer; font-size: 12px;
+  white-space: nowrap; overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 85%, transparent 100%);
 }
 .pack-name:hover { background: var(--accent-wash); color: var(--accent-bright); }
 .pack-name.active { background: var(--accent-wash); color: var(--accent-bright); }

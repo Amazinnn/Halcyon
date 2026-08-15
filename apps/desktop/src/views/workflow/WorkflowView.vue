@@ -883,6 +883,9 @@ function removeOpt(i: number) {
   color: var(--text-hi);
   box-sizing: border-box;
   font-family: inherit;
+  field-sizing: content;
+  max-height: var(--ctrl-max-input-h);
+  overflow-y: auto;
 }
 textarea.ta { min-height: 56px; resize: vertical; }
 .ta.num { width: 90px; }

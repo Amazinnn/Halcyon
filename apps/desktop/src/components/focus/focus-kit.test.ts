@@ -43,6 +43,8 @@ describe("focus kit controls", () => {
     expect(selectSource).toContain("class=\"focus-select\"");
     expect(selectSource).toContain(":disabled=\"disabled\"");
     expect(inputSource).toContain("min-width: var(--ctrl-min-input)");
+    expect(inputSource).toContain("autosize");
+    expect(inputSource).toContain("field-sizing: content");
     expect(selectSource).toContain("min-width: var(--ctrl-min-select)");
   });
 
@@ -54,7 +56,7 @@ describe("focus kit controls", () => {
   });
 
   it("tokens provide control-level values", () => {
-    for (const t of ["--fs-xs", "--fs-sm", "--fs-md", "--fs-lg", "--shadow-pop", "--shadow-float", "--z-tray", "--z-popover", "--ctrl-min-input", "--ctrl-min-select", "--text-min-row"]) {
+    for (const t of ["--fs-xs", "--fs-sm", "--fs-md", "--fs-lg", "--shadow-pop", "--shadow-float", "--z-tray", "--z-popover", "--ctrl-min-input", "--ctrl-min-select", "--text-min-row", "--ctrl-min-input-auto", "--ctrl-max-input-h"]) {
       expect(stylesSource).toContain(t);
     }
   });

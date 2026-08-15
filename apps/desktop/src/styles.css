@@ -40,6 +40,8 @@
   --ctrl-min-input: 96px;
   --ctrl-min-select: 88px;
   --text-min-row: 120px;
+  --ctrl-min-input-auto: 40px;
+  --ctrl-max-input-h: 132px;
 }
 
 html, body, #app { height: 100%; margin: 0; padding: 0; }
@@ -48,6 +50,21 @@ body {
   -webkit-font-smoothing: antialiased;
   user-select: none;
   color: var(--text-hi);
+}
+
+/* overflow fade utilities (requirement #131): text that cannot grow fades
+   at the overflowing edge instead of hard-cutting or breaking the frame */
+.fade-x {
+  display: block;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 85%, transparent 100%);
+}
+.fade-y {
+  display: block;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(0deg, #000 88%, transparent 100%);
+  mask-image: linear-gradient(0deg, #000 88%, transparent 100%);
 }
 
 /* transparent windows (acrylic shows through) */

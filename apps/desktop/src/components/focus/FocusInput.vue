@@ -6,7 +6,10 @@ withDefaults(defineProps<{
   placeholder?: string;
   min?: number;
   max?: number;
-}>(), { type: "text" });
+  /** Content-sized width (requirement #131): shrinks toward a floor, grows
+   *  with content, never exceeds the container (max-width: 100%). */
+  autosize?: boolean;
+}>(), { type: "text", autosize: false });
 const emit = defineEmits<{ (e: "update:modelValue", v: string | number): void }>();
 </script>
 
@@ -18,6 +21,7 @@ const emit = defineEmits<{ (e: "update:modelValue", v: string | number): void }>
     :min="min"
     :max="max"
     :value="modelValue"
+    :class="{ autosize }"
     @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
   />
 </template>
@@ -34,4 +38,9 @@ const emit = defineEmits<{ (e: "update:modelValue", v: string | number): void }>
   min-width: var(--ctrl-min-input);
 }
 .focus-input:focus { outline: none; border-color: var(--accent); }
+.focus-input.autosize {
+  field-sizing: content;
+  min-width: var(--ctrl-min-input-auto);
+  max-width: 100%;
+}
 </style>

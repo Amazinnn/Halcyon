@@ -251,6 +251,7 @@ function selectSkill(value: string) {
     <form class="composer" @submit.prevent="send">
       <FocusSelect
         v-if="agent.skills.length"
+        class="skills-pick"
         aria-label="Skills"
         :model-value="skillPicker"
         :disabled="isBusy || !agent.characterId"
@@ -409,6 +410,8 @@ function selectSkill(value: string) {
   border: 1px solid var(--glass-border);
   border-radius: var(--r-sm);
   min-height: 36px;
+  max-height: var(--ctrl-max-input-h);
+  overflow-y: auto;
   padding: 3px 8px;
   background: #101a15;
 }
@@ -449,6 +452,7 @@ function selectSkill(value: string) {
 .composer-input:focus-within {
   border-color: var(--accent);
 }
+.skills-pick { align-self: stretch; min-height: 36px; }
 .composer button {
   border: none;
   border-radius: var(--r-sm);
@@ -458,6 +462,7 @@ function selectSkill(value: string) {
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
+  height: 36px;
 }
 .composer button:disabled {
   opacity: 0.45;

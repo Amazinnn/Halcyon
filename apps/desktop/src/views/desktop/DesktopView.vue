@@ -276,7 +276,7 @@ onBeforeUnmount(() => {
             <button @click="pickFolders">文件夹</button>
             <button @click="menuMode = menuMode === 'url' ? '' : 'url'">URL 链接</button>
             <div v-if="menuMode === 'url'" class="menu-inline">
-              <FocusInput v-model="urlName" placeholder="名称（可选）" @keydown.enter="submitUrl" />
+              <FocusInput autosize v-model="urlName" placeholder="名称（可选）" @keydown.enter="submitUrl" />
               <FocusInput v-model="urlValue" placeholder="https://…" @keydown.enter="submitUrl" />
               <FocusButton variant="glass" @click="submitUrl">添加</FocusButton>
             </div>
