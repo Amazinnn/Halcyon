@@ -56,4 +56,3 @@ This registry change SHALL NOT alter any observable window behavior: creation or
 #### Scenario: Behavior regression guard
 - **WHEN** the application is rebuilt after this change
 - **THEN** existing automated gates pass and a manual Windows acceptance checklist reports no regression in window behavior
-

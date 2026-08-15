@@ -37,4 +37,3 @@ Token check, agent-thread audit records, JSON framing, and response payload shap
 #### Scenario: Audit still records
 - **WHEN** an agent-thread call succeeds or is denied
 - **THEN** one audit row is recorded exactly as before
-

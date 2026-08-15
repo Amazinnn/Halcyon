@@ -34,4 +34,3 @@ Event names, payloads, and all existing window behavior SHALL remain identical.
 #### Scenario: No regression
 - **WHEN** the app runs after the change
 - **THEN** existing automated gates pass and the manual checklist reports no behavior change
-

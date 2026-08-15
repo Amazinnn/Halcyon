@@ -23,4 +23,3 @@ The new window SHALL NOT alter any existing window, event, or command behavior.
 #### Scenario: Regression guard
 - **WHEN** the app runs with the overview panel added
 - **THEN** existing gates pass and the manual checklist shows no regression in other windows
-

@@ -104,4 +104,3 @@ Settings rows that pair a text label with a toggle SHALL render a very light div
 #### Scenario: Toggle row divider
 - **WHEN** a settings toggle row renders
 - **THEN** a light horizontal line separates it from the next row, with breathing room between text and line
-
