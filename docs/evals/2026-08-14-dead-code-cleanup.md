@@ -45,6 +45,17 @@ Status: Automated gates green; lightweight manual regression Pending
    endpoint (bubble state removal regression).
 3. Startup/focus flow/glass unchanged.
 
+## Startup Incident (fixed, no code change)
+
+After the cleanup round the release app failed to start with "localhost 拒绝连接":
+CDP showed all windows navigating to `http://localhost:1420/` (the dev URL)
+instead of the custom protocol. Root cause: cargo incremental-build cache
+pollution — tauri-build's generated context (devUrl vs frontendDist) was
+stale; the binary compiled fine but pointed at the dev server. Fix:
+`cargo clean --release` + rebuild; CDP then confirmed all 9 windows on
+`http://tauri.localhost/` with the page loaded. If a future release build
+mislabels URLs after dev/test builds, clean the release target first.
+
 ## Notes
 
 - clippy style lints and rustfmt remain out of scope (pre-existing 30+

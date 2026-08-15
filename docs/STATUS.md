@@ -136,6 +136,9 @@
 > 升级：任何 rustc 警告即失败 + clippy correctness 检查（rustfmt 因既有 304
 > 处差异暂不强制）。Rust 215 测试、前端 128 测试全绿。见
 > [本轮 Eval](./evals/2026-08-14-dead-code-cleanup.md)。
+> 2026-08-14 启动事故（无代码改动）：release 曾导航 devUrl（localhost 拒绝连接），
+> 根因为 cargo 增量缓存污染 tauri-build 配置；
+> `cargo clean --release` 后重建已确认 9 窗口全部走 tauri.localhost。
 
 > 2026-08-14 归档收尾：用户逐项验收通过后，9 个 OpenSpec 变更已全部同步主规格
 > 并归档（window-registry-declarative、focus-ui-kit、cli-command-registry、
