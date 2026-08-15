@@ -22,9 +22,9 @@ const emit = defineEmits<{ (e: "update:modelValue", v: string): void }>();
   color: var(--text-hi);
   border-radius: var(--r-sm);
   padding: 2px 5px;
+  font-family: inherit;
   font-size: var(--fs-sm);
   cursor: pointer;
-  font: inherit;
   min-width: var(--ctrl-min-select);
 }
 </style>

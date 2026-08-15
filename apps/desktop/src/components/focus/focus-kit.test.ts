@@ -21,6 +21,17 @@ describe("focus kit controls", () => {
     expect(buttonSource).toContain(":disabled");
   });
 
+  it("font inheritance never overrides the declared size (#132)", () => {
+    for (const src of [toggleSource, segmentedSource, selectSource]) {
+      const fontSizeIdx = src.indexOf("font-size:");
+      const familyIdx = src.indexOf("font-family: inherit");
+      expect(fontSizeIdx, "font-size must exist").toBeGreaterThan(-1);
+      expect(familyIdx, "font-family: inherit must exist").toBeGreaterThan(-1);
+      expect(fontSizeIdx).toBeGreaterThan(familyIdx);
+      expect(src).not.toContain("font: inherit");
+    }
+  });
+
   it("FocusToggle binds modelValue and exposes on state", () => {
     expect(toggleSource).toContain("update:modelValue");
     expect(toggleSource).toContain("aria-pressed");

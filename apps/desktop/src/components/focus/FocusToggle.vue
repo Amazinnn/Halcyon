@@ -23,9 +23,9 @@ const emit = defineEmits<{ (e: "update:modelValue", v: boolean): void }>();
   color: var(--text-low);
   border-radius: var(--r-pill);
   padding: 4px 14px;
+  font-family: inherit;
   font-size: var(--fs-md);
   cursor: pointer;
-  font: inherit;
 }
 .focus-toggle.on { background: var(--accent); color: #0a110e; border-color: var(--accent); font-weight: 600; }
 </style>

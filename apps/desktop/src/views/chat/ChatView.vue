@@ -452,7 +452,7 @@ function selectSkill(value: string) {
 .composer-input:focus-within {
   border-color: var(--accent);
 }
-.skills-pick { align-self: stretch; min-height: 36px; }
+.skills-pick { align-self: stretch; min-height: 36px; width: 88px; flex: 0 0 88px; }
 .composer button {
   border: none;
   border-radius: var(--r-sm);

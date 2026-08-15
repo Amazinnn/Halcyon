@@ -124,6 +124,12 @@
 > 129 测试、Rust 222 测试全绿；rebuild 与手测待完成。见
 > [本轮 Eval](./evals/2026-08-14-content-sized-inputs.md)。
 
+> 2026-08-14 反馈修复轮（需求 #132）：修复 Kit 组件 `font: inherit` 覆盖字号
+> 的回归（开关/分段回到 12px、下拉 11px）；对话窗口 Skills 下拉固定 88px 宽
+> （列表弹层不受影响）；设置弹窗分区间距放宽，五个开关行加极浅分隔线。
+> 前端 130 测试、Rust 222 测试全绿；rebuild 与手测待完成。见
+> [本轮 Eval](./evals/2026-08-14-ui-feedback-fixes.md)。
+
 
 ## 项目一句话
 

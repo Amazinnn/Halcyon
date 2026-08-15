@@ -35,9 +35,9 @@ const emit = defineEmits<{ (e: "update:modelValue", v: string): void }>();
   color: var(--text-mid);
   border-radius: var(--r-sm);
   padding: 3px 10px;
+  font-family: inherit;
   font-size: var(--fs-md);
   cursor: pointer;
-  font: inherit;
 }
 .focus-seg.soft button.on { background: var(--accent-wash); color: var(--accent-bright); border-color: var(--accent); }
 .focus-seg.solid button { background: var(--glass-strong); }

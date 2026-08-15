@@ -330,7 +330,7 @@ onMounted(load);
     <section class="group">
       <h4>外观</h4>
       <SettingsHelp summary="控制毛玻璃、提示音与顶条显示，不改变计时或锁定规则。" detail="顶条只展示当前计时和 Agent 状态。毛玻璃仅影响内部浮窗的视觉效果。" />
-      <div class="row">
+      <div class="row toggle-row">
         <span class="label">毛玻璃</span>
         <FocusToggle :model-value="acrylicOn" :label="acrylicOn ? '开' : '关'" @update:model-value="toggleAcrylic" />
       </div>
@@ -346,15 +346,15 @@ onMounted(load);
           @change="changeAcrylicOpacity"
         />
       </div>
-      <div class="row">
+      <div class="row toggle-row">
         <span class="label">显示流式输出</span>
         <FocusToggle :model-value="streamingOn" :label="streamingOn ? '开' : '关'" @update:model-value="toggleStreaming" />
       </div>
-      <div class="row">
+      <div class="row toggle-row">
         <span class="label">提示音</span>
         <FocusToggle :model-value="settings.soundEnabled" :label="settings.soundEnabled ? '开' : '关'" @update:model-value="settings.setSound" />
       </div>
-      <div class="row">
+      <div class="row toggle-row">
         <span class="label">顶条</span>
         <FocusSegmented
           variant="solid"
@@ -430,7 +430,7 @@ onMounted(load);
         <span class="label">状态</span>
         <span :class="agent.ready ? 'ok' : 'err'">{{ agent.ready ? `${agent.provider} ready` : `${agent.provider} unavailable` }}</span>
       </div>
-      <div class="row"><span class="label">桌宠背景淡化</span><FocusToggle :model-value="settings.petBgFade" :label="settings.petBgFade ? '开' : '关'" @update:model-value="settings.setPetBgFade" /></div>
+      <div class="row toggle-row"><span class="label">桌宠背景淡化</span><FocusToggle :model-value="settings.petBgFade" :label="settings.petBgFade ? '开' : '关'" @update:model-value="settings.setPetBgFade" /></div>
       <div v-if="activePetInfo" class="pet-correction">
         <div class="row">
           <span class="label">宽高校正 {{ activePetInfo.horizontalCorrection.toFixed(2) }}</span>
@@ -511,7 +511,7 @@ onMounted(load);
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   border-radius: var(--r-md);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
 }
@@ -521,10 +521,11 @@ onMounted(load);
   justify-content: space-between;
 }
 .title { font-size: 13px; font-weight: 600; color: var(--text-hi); }
-.group { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: 1px solid var(--glass-border); }
+.group { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--glass-border); }
 .group h4 { margin: 0; font-size: 11px; color: var(--text-low); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
 .group-note { margin: -2px 0 0; color: var(--text-low); font-size: 11px; line-height: 1.45; }
 .row { display: flex; align-items: center; gap: 8px; }
+.toggle-row { border-bottom: 1px solid rgba(255, 255, 255, 0.05); padding-bottom: 8px; margin-bottom: 2px; }
 .row.col { flex-direction: column; align-items: stretch; }
 .label { font-size: 12px; color: var(--text-mid); flex-shrink: 0; }
 .btns { display: flex; gap: 6px; }
