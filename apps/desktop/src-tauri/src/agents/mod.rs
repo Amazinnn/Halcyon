@@ -11,8 +11,6 @@ pub mod mock;
 use serde::Serialize;
 use serde_json::Value;
 
-pub const AGENT_ID: &str = "focus-codex";
-
 /// M5 (ADR-0022): full display for direct conversation — initial short
 /// sentence, thinking stream and final result all shown.
 pub fn agent_display_full(streaming_enabled: bool) -> crate::workflow_engine::engine::AgentDisplay {

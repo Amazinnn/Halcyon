@@ -2240,7 +2240,6 @@ fn should_reject_quit(focus_state: &str, active_focus_mode: Option<&str>) -> boo
 // ---------------------------------------------------------------------------
 
 /// v1.10.3.1 (#46): physical initial rect for a float at its saved grid slot.
-
 const FLOAT_NONCLIENT_STYLE_BITS: isize = 0x00cf_0000u32 as isize;
 const WS_POPUP_STYLE: isize = 0x8000_0000u32 as isize;
 const WM_NCCALCSIZE: u32 = 0x0083;
@@ -2254,10 +2253,6 @@ pub(crate) const fn float_corner_preference_attribute() -> u32 {
 pub(crate) const fn float_corner_preference_value() -> i32 {
     2 // DWMWCP_ROUND
 }
-
-/// The topbar is a transparent host: its exact visible pill is wholly owned by
-/// the WebView, so it never asks Windows for rectangular acrylic composition.
-pub(crate) const fn topbar_uses_native_composition() -> bool { false }
 
 /// Topbar pill geometry (requirement #121): the 500x44 pill keeps its size and
 /// position, while the transparent host reserves shadow margins so the
@@ -2603,13 +2598,15 @@ impl ScreenRect {
 
     fn right(self) -> i32 { self.x.saturating_add(self.width as i32) }
     fn bottom(self) -> i32 { self.y.saturating_add(self.height as i32) }
+    #[cfg(test)]
+    fn contains(self, other: Self) -> bool {
+        other.x >= self.x && other.y >= self.y && other.right() <= self.right() && other.bottom() <= self.bottom()
+    }
+
     fn intersection_area(self, other: Self) -> u64 {
         let width = (self.right().min(other.right()) - self.x.max(other.x)).max(0) as u64;
         let height = (self.bottom().min(other.bottom()) - self.y.max(other.y)).max(0) as u64;
         width * height
-    }
-    fn contains(self, other: Self) -> bool {
-        other.x >= self.x && other.y >= self.y && other.right() <= self.right() && other.bottom() <= self.bottom()
     }
     fn clamp_inside(self, work: Self) -> Self {
         let max_x = work.right().saturating_sub(self.width as i32).max(work.x);
@@ -2631,9 +2628,12 @@ struct BubblePosition {
     direction: BubbleDirection,
 }
 
+#[cfg(test)]
 impl BubblePosition {
     fn rect(self) -> ScreenRect { ScreenRect::new(self.x, self.y, self.width, self.height) }
 }
+
+
 
 fn pet_client_rect_or_outer(
     outer_x: i32,
@@ -3110,7 +3110,7 @@ pub fn run() {
                     std::process::exit(0);
                 }
                 // Keep the handle alive for the whole process.
-                std::mem::forget(handle);
+                let _ = handle;
             }
             Err(e) => eprintln!("[focus] single-instance mutex failed: {e}"),
         }
@@ -3559,7 +3559,7 @@ mod tests {
         resolve_window_placement, ClientFrame, ClientGeometry, ScreenRect,
         FloatVisibilityGate,
         resume_with_initial_message, saved_session_for_today, select_status_character,
-        set_agent_provider_serialized_with, topbar_uses_native_composition, topbar_visible, with_agent_runtime_serialized,
+        set_agent_provider_serialized_with, topbar_visible, with_agent_runtime_serialized,
         BubbleController, PendingBubble, PENDING_BUBBLE_TTL_MS,
     };
 
@@ -4535,8 +4535,7 @@ mod tests {
     }
 
     #[test]
-    fn topbar_has_no_native_composition_or_float_lifecycle() {
-        assert!(!topbar_uses_native_composition());
+    fn topbar_stays_outside_grid_and_tray_lifecycle() {
         assert!(!is_float_label("topbar"), "topbar remains outside grid/tray lifecycle");
     }
 

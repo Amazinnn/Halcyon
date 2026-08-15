@@ -3,7 +3,6 @@
 //! app data dir `pet-packs/<id>/`, validates the manifest, and resolves the
 //! currently active pack. Rendering/playback lives in the frontend.
 
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -93,8 +92,9 @@ pub struct PetPackage {
     pub animations: Vec<PetAnimation>,
 }
 
+#[cfg(test)]
 impl PetPackage {
-    pub fn animation(&self, id: &str) -> Option<&PetAnimation> {
+    fn animation(&self, id: &str) -> Option<&PetAnimation> {
         self.animations.iter().find(|animation| animation.id == id)
     }
 }
@@ -207,8 +207,6 @@ struct AtlasManifest {
     rows: u32,
     cell_width: u32,
     cell_height: u32,
-    #[serde(default)]
-    row_order: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -369,17 +367,6 @@ pub fn check_transparent_background(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Remove an imported pack by id (safe id only).
-pub fn remove(data_dir: &Path, id: &str) -> Result<(), String> {
-    if !is_valid_id(id) {
-        return Err("宠物包 id 非法".into());
-    }
-    let dir = pets_root(data_dir).join(id);
-    if !dir.is_dir() {
-        return Err(format!("宠物包不存在: {id}"));
-    }
-    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
-}
 /// Load and validate `pet.json` in `dir`.
 pub fn load_manifest(dir: &Path) -> Result<PetManifest, String> {
     let manifest_path = dir.join("pet.json");
@@ -875,61 +862,6 @@ fn load_official_package(manifest: OfficialHatchManifest, dir: &Path) -> Result<
     })
 }
 
-fn load_draft_package(dir: &Path) -> Result<PetPackage, String> {
-    let manifest_path = dir.join("manifest.json");
-    let text = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("manifest.json 读取失败: {e}"))?;
-    let manifest: DraftManifest = serde_json::from_str(&text)
-        .map_err(|e| format!("manifest.json 解析失败: {e}"))?;
-    if manifest.format != "hatch-pet-draft-0.2" {
-        return Err(format!("不支持的宠物包格式: {}", manifest.format));
-    }
-    if !is_valid_id(&manifest.id) || manifest.display_name.trim().is_empty() || manifest.description.trim().is_empty() {
-        return Err("manifest.json 的 id/displayName/description 非法".into());
-    }
-    if manifest.animations.is_empty() {
-        return Err("manifest.json 未声明可播放动画".into());
-    }
-    let mut animations = Vec::with_capacity(manifest.animations.len());
-    for (id, entry) in manifest.animations {
-        if id.trim().is_empty() || entry.columns == 0 || entry.rows == 0 || entry.frames == 0 || entry.fps == 0 {
-            return Err(format!("动画 \"{id}\" 的网格、帧数或 FPS 非法"));
-        }
-        if entry.frames > entry.columns.saturating_mul(entry.rows) {
-            return Err(format!("动画 \"{id}\" 的帧数超过图表容量"));
-        }
-        let asset = relative_asset(dir, &entry.sheet_path, &id)?;
-        let (width, height) = sheet_dimensions(&asset)?;
-        let expected_w = entry.columns.saturating_mul(CELL_W as u32);
-        let expected_h = entry.rows.saturating_mul(CELL_H as u32);
-        if width != expected_w || height != expected_h {
-            return Err(format!(
-                "动画 \"{id}\" 图像尺寸不符：需要 {expected_w}x{expected_h}，实际 {width}x{height}"
-            ));
-        }
-        check_transparent_background(&asset)?;
-        animations.push(PetAnimation {
-            id,
-            asset_path: asset.to_string_lossy().into_owned(),
-            columns: entry.columns,
-            rows: entry.rows,
-            frames: entry.frames,
-            fps: entry.fps,
-            looped: entry.looped,
-            start_row: 0,
-            cell_width: CELL_W as u32,
-            cell_height: CELL_H as u32,
-        });
-    }
-    Ok(PetPackage {
-        id: manifest.id,
-        display_name: manifest.display_name,
-        description: manifest.description,
-        anchor: manifest.bubble_anchor,
-        animations,
-    })
-}
-
 /// Load either an explicit official atlas or the supported draft multi-sheet
 /// manifest. No other JSON shape is treated as a pet package.
 pub fn load_package(dir: &Path) -> Result<PetPackage, String> {
@@ -994,25 +926,6 @@ fn copy_dir(src: &Path, dest: &Path) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// Validate `src_dir` (must contain pet.json + spritesheet) and copy it into
-/// `data_dir/pet-packs/<id>/` (replacing any previous pack with the same id).
-pub fn import(src_dir: &Path, data_dir: &Path) -> Result<PetInfo, String> {
-    if !src_dir.is_dir() {
-        return Err("所选路径不是文件夹".into());
-    }
-    let m = load_manifest(src_dir)?;
-    let root = pets_root(data_dir);
-    let dest = root.join(&m.id);
-    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
-    }
-    copy_dir(src_dir, &dest)?;
-    // Re-read from the copied location so spritesheet_path points at app data.
-    let copied = load_manifest(&dest)?;
-    to_info(&copied, &dest)
 }
 
 pub struct PendingAgentPetImport {
@@ -1099,15 +1012,6 @@ pub fn prepare_legacy_import_for_agent(src_dir: &Path, workspace: &Path) -> Resu
     prepare_import_for_agent_impl(src_dir, workspace, true)
 }
 
-/// Copy an imported package into its owning Agent workspace. This convenience
-/// path is for callers with no related database update.
-pub fn import_for_agent(src_dir: &Path, workspace: &Path) -> Result<PetInfo, String> {
-    let pending = prepare_import_for_agent(src_dir, workspace)?;
-    let info = pending.info.clone();
-    pending.commit();
-    Ok(info)
-}
-
 pub fn info_for_agent(workspace: &Path) -> Result<PetInfo, String> {
     let dir = workspace.join(AGENT_PET_DIR);
     let package = load_package(&dir)?;
@@ -1174,29 +1078,6 @@ pub fn list(data_dir: &Path) -> Result<Vec<PetInfo>, String> {
     Ok(out)
 }
 
-/// v1.10 (#32): return the spritesheet as base64 so the frontend can build a
-/// same-origin Blob (`createImageBitmap`) instead of drawing the cross-origin
-/// asset-protocol URL (which taints the canvas and breaks getImageData).
-pub fn sheet_base64(data_dir: &Path, id: &str) -> Result<String, String> {
-    let info = info_for(data_dir, id)?;
-    let bytes = std::fs::read(&info.spritesheet_path)
-        .map_err(|e| format!("读取 spritesheet 失败: {e}"))?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
-}
-
-/// Resolve one pack by id; errors when missing or invalid.
-pub fn info_for(data_dir: &Path, id: &str) -> Result<PetInfo, String> {
-    if !is_valid_id(id) {
-        return Err("宠物包 id 非法".into());
-    }
-    let dir = pets_root(data_dir).join(id);
-    if !dir.is_dir() {
-        return Err(format!("宠物包不存在: {id}"));
-    }
-    let m = load_manifest(&dir)?;
-    to_info(&m, &dir)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1207,6 +1088,14 @@ mod tests {
             tag,
             chrono::Utc::now().timestamp_millis()
         ))
+    }
+
+    /// Test helper mirroring the retired convenience API: prepare + commit.
+    fn import_for_agent(src_dir: &Path, workspace: &Path) -> Result<PetInfo, String> {
+        let pending = prepare_import_for_agent(src_dir, workspace)?;
+        let info = pending.info().clone();
+        pending.commit();
+        Ok(info)
     }
 
     /// Minimal valid PNG header for ATLAS_W x ATLAS_H.
@@ -1250,75 +1139,6 @@ mod tests {
     }
 
     #[test]
-    fn valid_manifest_passes_and_imports() {
-        let tmp = temp_dir("valid");
-        let src = tmp.join("src");
-        let data = tmp.join("data");
-        write_pack(&src, "my.pet", "My Pet", "A test pet");
-        let info = import(&src, &data).unwrap();
-        assert_eq!(info.id, "my.pet");
-        assert_eq!(info.display_name, "My Pet");
-        let copied = data.join(PETS_DIR).join("my.pet");
-        assert!(copied.join("pet.json").exists());
-        assert!(copied.join("spritesheet.png").exists());
-        assert!(info.spritesheet_path.ends_with("spritesheet.png"));
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn import_rejects_invalid_manifest() {
-        let tmp = temp_dir("invalid");
-        let src = tmp.join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        // missing description
-        std::fs::write(
-            src.join("pet.json"),
-            r#"{"id":"x","displayName":"X","spritesheetPath":"spritesheet.webp"}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("pet.json"),
-            r#"{"id":"x","displayName":"X","spritesheetPath":"spritesheet.png"}"#,
-        )
-        .unwrap();
-        std::fs::write(src.join("spritesheet.png"), png_header(1536, 1872)).unwrap();
-        assert!(import(&src, &tmp.join("data")).is_err());
-
-        // invalid id (path traversal)
-        let src2 = tmp.join("src2");
-        std::fs::create_dir_all(&src2).unwrap();
-        std::fs::write(
-            src2.join("pet.json"),
-            r#"{"id":"../evil","displayName":"X","description":"d","spritesheetPath":"spritesheet.png"}"#,
-        )
-        .unwrap();
-        std::fs::write(src2.join("spritesheet.png"), png_header(1536, 1872)).unwrap();
-        assert!(import(&src2, &tmp.join("data")).is_err());
-
-        // missing spritesheet
-        let src3 = tmp.join("src3");
-        std::fs::create_dir_all(&src3).unwrap();
-        std::fs::write(
-            src3.join("pet.json"),
-            r#"{"id":"x","displayName":"X","description":"d","spritesheetPath":"spritesheet.png"}"#,
-        )
-        .unwrap();
-        assert!(import(&src3, &tmp.join("data")).is_err());
-
-        // wrong spritesheet dimensions
-        let src4 = tmp.join("src4");
-        std::fs::create_dir_all(&src4).unwrap();
-        std::fs::write(
-            src4.join("pet.json"),
-            r#"{"id":"x","displayName":"X","description":"d","spritesheetPath":"spritesheet.png"}"#,
-        )
-        .unwrap();
-        std::fs::write(src4.join("spritesheet.png"), png_header(64, 64)).unwrap();
-        assert!(import(&src4, &tmp.join("data")).is_err());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
     fn sheet_dimensions_parses_png_and_webp() {
         let tmp = temp_dir("dims");
         std::fs::create_dir_all(&tmp).unwrap();
@@ -1355,95 +1175,34 @@ mod tests {
         let tmp = temp_dir("alpha");
         std::fs::create_dir_all(&tmp).unwrap();
 
-        // fully transparent sheet -> import ok
-        let src = tmp.join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(
-            src.join("pet.json"),
-            r#"{"id":"a","displayName":"A","description":"d","spritesheetPath":"spritesheet.png"}"#,
-        )
-        .unwrap();
+        // fully transparent sheet -> ok
         let clear = RgbaImage::from_pixel(1536, 1872, Rgba([0, 0, 0, 0]));
-        clear.save(src.join("spritesheet.png")).unwrap();
-        assert!(import(&src, &tmp.join("data")).is_ok());
+        let clear_path = tmp.join("clear.png");
+        clear.save(&clear_path).unwrap();
+        assert!(check_transparent_background(&clear_path).is_ok());
 
-        // opaque corner -> import rejected
-        let src2 = tmp.join("src2");
-        std::fs::create_dir_all(&src2).unwrap();
-        std::fs::write(
-            src2.join("pet.json"),
-            r#"{"id":"b","displayName":"B","description":"d","spritesheetPath":"spritesheet.png"}"#,
-        )
-        .unwrap();
+        // opaque corner -> rejected
         let mut opaque = RgbaImage::from_pixel(1536, 1872, Rgba([0, 0, 0, 0]));
         opaque.put_pixel(0, 0, Rgba([255, 0, 255, 255]));
-        opaque.save(src2.join("spritesheet.png")).unwrap();
-        let err = import(&src2, &tmp.join("data")).unwrap_err();
-        assert!(err.contains("??"), "unexpected error: {err}");
+        let opaque_path = tmp.join("opaque.png");
+        opaque.save(&opaque_path).unwrap();
+        assert!(check_transparent_background(&opaque_path).is_err());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
-    fn remove_deletes_imported_pack() {
-        let tmp = temp_dir("remove");
-        let src = tmp.join("src");
-        let data = tmp.join("data");
-        write_pack(&src, "r.pet", "R", "remove me");
-        import(&src, &data).unwrap();
-        assert!(info_for(&data, "r.pet").is_ok());
-        remove(&data, "r.pet").unwrap();
-        assert!(info_for(&data, "r.pet").is_err());
-        assert!(remove(&data, "../evil").is_err());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn sheet_base64_roundtrips_png_bytes() {
-        let tmp = temp_dir("b64");
-        let src = tmp.join("src");
-        let data = tmp.join("data");
-        write_pack(&src, "b64.pet", "B64", "test");
-        let info = import(&src, &data).unwrap();
-        let b64 = sheet_base64(&data, &info.id).unwrap();
-        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64).unwrap();
-        assert!(!bytes.is_empty());
-        assert_eq!(&bytes[..4], &[0x89, b'P', b'N', b'G'], "decoded bytes must be the PNG we imported");
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn list_and_info_for_resolve_imported_packs() {
+    fn list_resolves_imported_packs() {
         let tmp = temp_dir("list");
-        let src = tmp.join("src");
         let data = tmp.join("data");
-        write_pack(&src, "a.pet", "A", "first");
-        import(&src, &data).unwrap();
-        let src2 = tmp.join("src2");
-        write_pack(&src2, "b.pet", "B", "second");
-        import(&src2, &data).unwrap();
+        let root = data.join(PETS_DIR);
+        write_pack(&root.join("a.pet"), "a.pet", "A", "first");
+        write_pack(&root.join("b.pet"), "b.pet", "B", "second");
         let all = list(&data).unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].id, "a.pet");
         assert_eq!(all[1].id, "b.pet");
-        let b = info_for(&data, "b.pet").unwrap();
-        assert_eq!(b.display_name, "B");
-        assert!(info_for(&data, "missing").is_err());
-        assert!(info_for(&data, "../evil").is_err());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn import_replaces_existing_pack_same_id() {
-        let tmp = temp_dir("replace");
-        let src = tmp.join("src");
-        let data = tmp.join("data");
-        write_pack(&src, "same.pet", "V1", "old");
-        import(&src, &data).unwrap();
-        write_pack(&src, "same.pet", "V2", "new");
-        import(&src, &data).unwrap();
-        let info = info_for(&data, "same.pet").unwrap();
-        assert_eq!(info.display_name, "V2");
+        assert_eq!(all[1].display_name, "B");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

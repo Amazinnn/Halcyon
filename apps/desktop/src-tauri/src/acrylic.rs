@@ -42,7 +42,13 @@ fn resolve() -> Option<SetWindowCompositionAttributeFn> {
         let Some(proc) = GetProcAddress(user32, s!("SetWindowCompositionAttribute")) else {
             return None;
         };
-        Some(std::mem::transmute(proc))
+        Some(std::mem::transmute::<
+            unsafe extern "system" fn() -> isize,
+            unsafe extern "system" fn(
+                windows::Win32::Foundation::HWND,
+                *mut WindowCompositionAttribData,
+            ) -> i32,
+        >(proc))
     }
 }
 

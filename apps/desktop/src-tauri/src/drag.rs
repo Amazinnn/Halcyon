@@ -33,6 +33,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+#[cfg(test)]
 use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::Duration;

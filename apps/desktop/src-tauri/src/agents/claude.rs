@@ -165,7 +165,6 @@ struct TurnState {
     character_id: String,
     session_id: Mutex<String>,
     display: AgentDisplay,
-    first_delta_sent: Mutex<bool>,
     last_message: Mutex<String>,
     active_tools: Mutex<HashMap<String, String>>,
     /// Resident-mode cumulative text length per assistant message id
@@ -185,7 +184,6 @@ impl TurnState {
             character_id,
             session_id: Mutex::new(session_id),
             display,
-            first_delta_sent: Mutex::new(false),
             last_message: Mutex::new(String::new()),
             active_tools: Mutex::new(HashMap::new()),
             assistant_text_len: Mutex::new(HashMap::new()),

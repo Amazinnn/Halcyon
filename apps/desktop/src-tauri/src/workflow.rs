@@ -34,14 +34,6 @@ fn claim_workflow_run(running: &Mutex<HashSet<String>>, workflow_id: &str) -> bo
     running.lock().unwrap().insert(workflow_id.to_string())
 }
 
-fn initial_provider_for_pet(pet_pack_id: &str, display_name: &str) -> &'static str {
-    if pet_pack_id == "focus-demo-pet" && display_name == "Focus Demo Pet" {
-        "claude"
-    } else {
-        "codex"
-    }
-}
-
 /// Short unique id (millis + counter) for workflows/runs/characters.
 pub fn new_id() -> String {
     let t = std::time::SystemTime::now()
@@ -950,20 +942,6 @@ mod tests {
     fn workflow_from_payload_rejects_missing_or_invalid() {
         assert!(workflow_from_payload(None).is_err());
         assert!(workflow_from_payload(Some(&serde_json::json!({"nodes": 1}))).is_err());
-    }
-
-    #[test]
-    fn focus_demo_pet_alone_gets_claude_as_its_initial_provider() {
-        assert_eq!(
-            initial_provider_for_pet("focus-demo-pet", "Focus Demo Pet"),
-            "claude"
-        );
-        assert_eq!(initial_provider_for_pet("other-pet", "Other Pet"), "codex");
-        assert_eq!(
-            initial_provider_for_pet("focus-demo-pet", "Renamed Pet"),
-            "codex"
-        );
-        assert_eq!(initial_provider_for_pet("", "Focus 助手"), "codex");
     }
 
     #[test]

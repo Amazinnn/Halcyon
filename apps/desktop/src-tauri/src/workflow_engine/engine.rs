@@ -510,32 +510,6 @@ fn param_str_array(node: &NodeDef, key: &str) -> Result<Vec<String>, String> {
         .ok_or_else(|| format!("节点 {} 缺少参数数组 {}", node.id, key))
 }
 
-/// Resolve {{nodeId.field}} references against the run-local data context.
-/// Missing refs are hard errors (fail-fast, ADR-0012).
-pub fn resolve(text: &str, data: &HashMap<String, Value>) -> Result<String, String> {
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let Some(end) = after.find("}}") else {
-            return Err("未闭合的引用 {{".into());
-        };
-        let token = after[..end].trim();
-        let (node_id, field) = token
-            .split_once('.')
-            .ok_or_else(|| format!("引用格式应为 {{节点.字段}}: {token}"))?;
-        let v = data
-            .get(node_id)
-            .and_then(|o| o.get(field))
-            .ok_or_else(|| format!("引用缺失: {token}"))?;
-        out.push_str(&value_to_string(v));
-        rest = &after[end + 2..];
-    }
-    out.push_str(rest);
-    Ok(out)
-}
-
 /// v2: like `resolve` but also handles {{system.<field>}} refs (focus state /
 /// wall-clock time) through the injected SystemActions.
 pub fn resolve_with_system(
@@ -1272,16 +1246,6 @@ mod tests {
         let out = run(&w, &agent, &system);
         assert_eq!(out.status, RunStatus::Failed);
         assert!(out.error.as_deref().unwrap().contains("引用缺失"));
-    }
-
-    #[test]
-    fn resolve_plain_text_and_missing() {
-        let mut data = HashMap::new();
-        data.insert("a".into(), json!({ "result": "ok", "n": 3 }));
-        assert_eq!(resolve("x {{a.result}} y", &data).unwrap(), "x ok y");
-        assert_eq!(resolve("n={{a.n}}", &data).unwrap(), "n=3");
-        assert!(resolve("{{a.missing}}", &data).is_err());
-        assert_eq!(resolve("no refs", &data).unwrap(), "no refs");
     }
 
     #[test]

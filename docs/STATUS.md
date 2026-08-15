@@ -130,6 +130,13 @@
 > 前端 130 测试、Rust 222 测试全绿；rebuild 与手测待完成。见
 > [本轮 Eval](./evals/2026-08-14-ui-feedback-fixes.md)。
 
+> 2026-08-14 死代码清理轮（需求 #133，ponytail）：18 个编译警告全部清零——
+> 移除 v1.7 遗留宠物 API 簇、topbar 组合标志、AGENT_ID、claude 冗余字段等；
+> 前端 agent store 的 bubble 死状态删除（pet-bubble 独立端点接管）。rust-gate
+> 升级：任何 rustc 警告即失败 + clippy correctness 检查（rustfmt 因既有 304
+> 处差异暂不强制）。Rust 215 测试、前端 128 测试全绿。见
+> [本轮 Eval](./evals/2026-08-14-dead-code-cleanup.md)。
+
 > 2026-08-14 归档收尾：用户逐项验收通过后，9 个 OpenSpec 变更已全部同步主规格
 > 并归档（window-registry-declarative、focus-ui-kit、cli-command-registry、
 > event-grouping-thin-windows、panel-window-framework、remove-overview-panel、

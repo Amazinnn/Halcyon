@@ -68,16 +68,14 @@ describe("workflow result messages", () => {
     });
   });
 
-  it("delivers one pending workflow result without synthesizing a second bubble", async () => {
+  it("delivers one pending workflow result to its target Agent", async () => {
     const agent = useAgentStore();
     await agent.init();
     agent.messages = [];
 
     const resultHandler = handlers.get("workflow:agent_result")?.[0];
-    const bubbleHandler = handlers.get("bubble:requested")?.[0];
     expect(resultHandler).toBeDefined();
-    expect(bubbleHandler).toBeDefined();
-    if (!resultHandler || !bubbleHandler) return;
+    if (!resultHandler) return;
 
     resultHandler({
       payload: {
@@ -87,11 +85,7 @@ describe("workflow result messages", () => {
         text: "不应出现",
       },
     });
-    bubbleHandler({
-      payload: { text: "不应出现", priority: "normal", agentId: "char-b" },
-    });
     expect(agent.messages).toEqual([]);
-    expect(agent.bubble).toBeNull();
 
     await agent.selectCharacter("char-b");
 
@@ -103,7 +97,6 @@ describe("workflow result messages", () => {
         source: "日程 · 别人的日程",
       },
     ]);
-    expect(agent.bubble).toBeNull();
 
     await agent.selectCharacter("char-a");
     await agent.selectCharacter("char-b");
@@ -129,16 +122,13 @@ describe("workflow result messages", () => {
       agentId: "char-b",
       text: "Only the selected pet should show this",
     });
-    expect(pet.bubble).toBeNull();
-
     setActivePinia(chatPinia);
     await chat.selectCharacter("char-b");
 
     expect(pet.characterId).toBe("char-b");
-    expect(pet.bubble).toBeNull();
   });
 
-  it("does not synthesize a bubble from a current Agent workflow history event", async () => {
+  it("appends a current Agent workflow history event to the visible history", async () => {
     const agent = useAgentStore();
     await agent.init();
     const resultHandler = handlers.get("workflow:agent_result")?.[0];
@@ -152,7 +142,6 @@ describe("workflow result messages", () => {
       },
     });
     expect(agent.messages[agent.messages.length - 1]?.source).toBe("日程 · Current result");
-    expect(agent.bubble).toBeNull();
   });
 });
 
@@ -211,7 +200,6 @@ describe("direct chat stream convergence", () => {
     });
 
     expect(agent.messages).toEqual([{ role: "agent", text: "正在回答", kind: "completed" }]);
-    expect(agent.bubble).toBeNull();
   });
 
   it("accumulates Claude thinking on the live message and keeps it after finalize", () => {
@@ -298,42 +286,12 @@ describe("direct chat stream convergence", () => {
       timestamp: "2026-08-13T00:00:00.000Z",
       event: { type: "message.completed", text: "同一条回复" },
     });
-    expect(agent.bubble).toBeNull();
-
-    handlers.get("bubble:requested")?.[0]?.({
-      payload: { text: "同一条回复", priority: "normal", agentId: "char-a" },
-    });
-    expect(agent.bubble?.text).toBe("同一条回复");
-  });
-
-  it("gives identical consecutive bubble replies distinct playback identities", async () => {
-    const agent = useAgentStore();
-    agent.characterId = "char-a";
-    await agent.init();
-    const bubbleHandler = handlers.get("bubble:requested")?.[0];
-
-    bubbleHandler?.({ payload: { text: "重复回复", priority: "normal", agentId: "char-a" } });
-    const firstId = agent.bubble?.id;
-    bubbleHandler?.({ payload: { text: "重复回复", priority: "normal", agentId: "char-a" } });
-
-    expect(agent.bubble?.id).not.toBe(firstId);
-  });
-
-  it("ignores a repeated delivery id from immediate and claimed bubble events", async () => {
-    const agent = useAgentStore();
-    await agent.init();
-    const bubbleHandler = handlers.get("bubble:requested")?.[0];
-    expect(bubbleHandler).toBeDefined();
-    bubbleHandler?.({ payload: { deliveryId: "delivery-1", text: "同一条", priority: "normal", agentId: "char-a" } });
-    const first = agent.bubble?.id;
-    bubbleHandler?.({ payload: { deliveryId: "delivery-1", text: "同一条", priority: "normal", agentId: "char-a" } });
-    expect(agent.bubble?.id).toBe(first);
   });
 
   it("shares concurrent initialization work instead of registering duplicate listeners", async () => {
     const agent = useAgentStore();
     await Promise.all([agent.init(), agent.init()]);
-    expect(listen).toHaveBeenCalledTimes(7);
+    expect(listen).toHaveBeenCalledTimes(6);
   });
 
   it("keeps same-day visible history isolated by character and provider", async () => {
@@ -594,7 +552,6 @@ describe("per-character provider selection", () => {
         { id: "char-a", name: "A", tool: "codex" },
         { id: "char-b", name: "B", tool: "claude" },
       ];
-      agent.showBubble("A reply");
       agent.applyProviderPetState("success");
       invoke.mockImplementation(async (command: string) => {
         if (command === "agent_status") return { characterId: "char-b", provider: "claude", ready: true, exePath: null, workspaceDir: "B" };
@@ -604,7 +561,6 @@ describe("per-character provider selection", () => {
 
       await agent.selectCharacter("char-b", false);
 
-      expect(agent.bubble).toBeNull();
       expect(agent.petState).toBe("resting");
       vi.advanceTimersByTime(5000);
       expect(agent.petState).toBe("resting");

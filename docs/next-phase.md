@@ -149,6 +149,8 @@ input and atomic adjacent-token deletion are implemented and tested.
 ### 梯队 2：工程基建（质量护栏自动化）
 - Rust：`clippy -D warnings` + `rustfmt --check` 进门禁；前端 ESLint；pre-push hook 跑 `git diff --check`。
 - 一键门禁脚本：frontend tests/build + `cargo test --lib` + event-schema + openspec validate（当前全手动，易漏）。
+- 2026-08-14 进度：`scripts/rust-gate.ps1` 已含测试 + 警告扫描 + clippy correctness；
+  死代码清零（#133）。rustfmt 全量格式化（304 处差异）与 clippy 风格 lint 暂缓。
 - 将"源码字符串断言"类测试逐步替换为行为测试。
 
 ### 梯队 3：架构级（逐个单独论证）

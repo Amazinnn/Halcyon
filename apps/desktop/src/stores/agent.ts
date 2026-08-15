@@ -86,9 +86,6 @@ export const useAgentStore = defineStore("agent", {
     // that Agent's next selection.
     pendingWorkflowResults: {} as Record<string, WorkflowAgentResult[]>,
     tools: [] as { tool: string; summary: string; status: "started" | "completed" }[],
-    bubble: null as { id: number; text: string; priority: string; deliveryId?: string } | null,
-    _bubbleSequence: 0,
-    _seenBubbleDeliveryIds: [] as string[],
     reaction: null as PetReaction | null,
     lastEvent: null as AgentEventEnvelope | null,
     provider: "codex" as "codex" | "claude",
@@ -107,9 +104,6 @@ export const useAgentStore = defineStore("agent", {
     _happyTimer: null as ReturnType<typeof setTimeout> | null,
   }),
   actions: {
-    showBubble(text: string, priority = "high") {
-      this.bubble = { id: ++this._bubbleSequence, text, priority };
-    },
     persistVisibleHistory() {
       if (!this.characterId) return;
       const key = chatHistoryKey(this.characterId, this.provider);
@@ -187,7 +181,6 @@ export const useAgentStore = defineStore("agent", {
       this.phase = "idle";
       this.publicTextDeltaSeen = false;
       this.errorMessage = "";
-      this.bubble = null;
       this.reaction = null;
       this.lastEvent = null;
       this.state = "idle";
@@ -236,17 +229,6 @@ export const useAgentStore = defineStore("agent", {
         if (e.payload.agentId !== this.characterId) return;
         this.lastEvent = e.payload;
         this.handleEvent(e.payload);
-      });
-      await listen<{ text: string; priority: string; agentId?: string; deliveryId?: string }>("bubble:requested", (e) => {
-        if (e.payload.agentId && e.payload.agentId !== this.characterId) return;
-        if (e.payload.deliveryId && this._seenBubbleDeliveryIds.includes(e.payload.deliveryId)) return;
-        if (e.payload.deliveryId) this._seenBubbleDeliveryIds.push(e.payload.deliveryId);
-        this.bubble = {
-          id: ++this._bubbleSequence,
-          text: e.payload.text,
-          priority: e.payload.priority,
-          deliveryId: e.payload.deliveryId,
-        };
       });
       await listen<{ state: AgentState; animation: string }>("pet:state_changed", (e) => {
         this.state = e.payload.state;
@@ -544,9 +526,6 @@ export const useAgentStore = defineStore("agent", {
       this.syncVisibleHistoryDay();
       this.messages.push({ role: "user", text, kind: "completed" });
       this.persistVisibleHistory();
-    },
-    clearBubble() {
-      this.bubble = null;
     },
   },
 });
