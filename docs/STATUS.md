@@ -111,6 +111,13 @@
 > 与 rebuild 需重启系统后补跑**，随后交付手测清单。见
 > [C1-C4 Eval](./evals/2026-08-14-extensibility-c1-c4-checkpoint.md)。
 
+> 2026-08-14 验收反馈轮（需求 #129/#130）：概览面板因与统计窗口重复已移除
+> （面板配方保留于 ui-maintenance.md §3）；UI 布局修复——布局最小宽度 tokens
+> （输入 96px/下拉 88px/文本行 120px）、Agent 命名输入独占一行、Agent 管理行
+> 换行不溢出，ui-design.md 新增布局与文本宽度准则。前端 129 测试、Rust 222
+> 测试全绿；rebuild 与手测待完成。见
+> [本轮 Eval](./evals/2026-08-14-overview-removal-and-layout-polish.md)。
+
 
 ## 项目一句话
 
