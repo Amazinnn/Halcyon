@@ -118,6 +118,12 @@
 > 测试全绿；rebuild 与手测待完成。见
 > [本轮 Eval](./evals/2026-08-14-overview-removal-and-layout-polish.md)。
 
+> 2026-08-14 动态尺寸轮（需求 #131）：输入控件内容自适应（field-sizing:
+> content，40px 下限/容器 100% 上限，绝不破框）；多行输入区上限 ~4 行内部
+> 滚动；超长显示文本右缘虚化渐隐；对话窗口 Skills 与输入框同高对齐。前端
+> 129 测试、Rust 222 测试全绿；rebuild 与手测待完成。见
+> [本轮 Eval](./evals/2026-08-14-content-sized-inputs.md)。
+
 
 ## 项目一句话
 
